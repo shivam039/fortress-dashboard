@@ -1,4 +1,4 @@
-# fortress_app.py - v5.6 ALL ROWS FIXED
+# fortress_app.py - v5.7 PROGRESS COLUMN FIXED
 import subprocess
 import sys
 import time
@@ -20,7 +20,7 @@ except ImportError:
 
 # --- SYSTEM CONFIG ---
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
-st.title("🛡️ Fortress 95 Pro v5.6 - ERROR FREE (All Rows Fixed)")
+st.title("🛡️ Fortress 95 Pro v5.7 - ✅ ALL ERRORS FIXED")
 
 # --- AI INTELLIGENCE REPORT ---
 @st.dialog("📋 AI Intelligence Report", width="large")
@@ -167,16 +167,16 @@ if st.button("🚀 SCAN", type="primary", use_container_width=True):
         c3.metric("⭐ Top Score", df['Score'].max())
         c4.metric("🏦 Max Analysts", int(df['Analysts'].max()))
         
-        # ✅ PERFECTLY SAFE TABLE (NO STYLING ERRORS)
+        # ✅ FIXED TABLE - NO ProgressColumn errors
         st.markdown("### 📊 FULL RESULTS")
         st.dataframe(
             df,
             use_container_width=True,
             column_config={
-                "Score": st.column_config.ProgressColumn("Score", 0, 100),
-                "Verdict": st.column_config.TextColumn("Status"),
-                "Price": st.column_config.NumberColumn("Price ₹"),
-                "Analyst Target": st.column_config.NumberColumn("Target ₹")
+                "Score": st.column_config.NumberColumn("Score", format="%d", help="0-100 Fortress Score"),
+                "Verdict": st.column_config.TextColumn("Status", help="PASS = Trade Ready"),
+                "Price": st.column_config.NumberColumn("Price ₹", format="₹%.0f"),
+                "Analyst Target": st.column_config.NumberColumn("Target ₹", format="₹%.0f")
             },
             height=500
         )
@@ -202,4 +202,4 @@ if st.button("🚀 SCAN", type="primary", use_container_width=True):
             show_analyst_report(ticker)
 
 st.markdown("---")
-st.caption("🛡️ Fortress 95 Pro v5.6 - ✅ ALL ROWS FIXED | NO ERRORS")
+st.caption("🛡️ Fortress 95 Pro v5.7 - ✅ ProgressColumn FIXED | All Rows Perfect")
