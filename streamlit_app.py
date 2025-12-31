@@ -2,15 +2,17 @@ import streamlit as st
 import pandas_ta as ta
 import yfinance as yf
 import pandas as pd
-import time
+import uuid  # Used for generating a truly unique ID
 
-# 1. Page Configuration
+# 1. Page Config
 st.set_page_config(page_title="Fortress 95 Scanner", layout="wide")
 st.title("🛡️ Fortress 95: High-Probability Scanner")
 
-# 2. Reset Keys (The absolute fix for Duplicate Key Error)
-if 'scan_id' not in st.session_state:
-    st.session_state.scan_id = 0
+# 2. Initialize a unique ID for this specific session run
+if 'run_id' not in st.session_state:
+    st.session_state.run_id = str(uuid.uuid4())[:8]
+
+# ... (Keep your TICKERS list and check_fortress function here) ...
 
 # 3. Hardcoded Ticker List
 TICKERS = [
@@ -46,8 +48,7 @@ TICKERS = [
     "CHAMBLFERT.NS", "INDIACEM.NS", "IBULHSGFIN.NS", "BHEL.NS", "RAIN.NS", 
     "RBLBANK.NS", "CANFINHOME.NS", "GRANULES.NS", "MANAPPURAM.NS", "IEX.NS", 
     "MGL.NS", "PVRINOX.NS", "MCX.NS"
-]
-
+] 
 # 4. Logic Engine
 def check_fortress(ticker):
     try:
@@ -72,48 +73,44 @@ def check_fortress(ticker):
             return {"Price": round(float(price), 2), "RSI": round(float(rsi), 2)}
         return None
     except:
-        return None
+        return NoneÏ
 
-# 5. Sidebar
-st.sidebar.metric("Stocks Ready", len(TICKERS))
-
-# 6. Scanning Execution
+# 3. Main Execution
 if st.button("🚀 Start Scan"):
-    # This is the secret: st.empty() creates a fresh hole in the page
-    # that wipes itself clean every time the script reruns.
-    main_container = st.empty()
+    # Every time the button is clicked, we change the run_id
+    st.session_state.run_id = str(uuid.uuid4())[:8]
     
-    # Increment scan_id to refresh the "namespace"
-    st.session_state.scan_id += 1
+    # We create a results list first, then display
+    found_signals = []
     
-    with st.status("Searching for Fortress Entries...", expanded=True) as status:
-        found_signals = []
+    with st.status("Scanning Nifty Heavyweights...", expanded=True) as status:
         progress_bar = st.progress(0)
         for i, s in enumerate(TICKERS):
             res = check_fortress(s)
             if res:
                 found_signals.append({"Symbol": s, "Price": res['Price'], "RSI": res['RSI']})
             progress_bar.progress((i + 1) / len(TICKERS))
-        status.update(label="Scan Complete!", state="complete", expanded=False)
+        status.update(label="Scan Complete!", state="complete")
 
-    # We now draw EVERYTHING inside that fresh placeholder
-    with main_container.container():
-        if found_signals:
-            st.success(f"Found {len(found_signals)} Matches!")
+    # 4. Displaying Results with "Anti-Crash" Keys
+    if found_signals:
+        st.success(f"Found {len(found_signals)} Fortress Signals!")
+        
+        for idx, stock in enumerate(found_signals):
+            # We generate a key that includes the unique run_id
+            # Format: Symbol_Index_RunID (e.g., RELIANCE.NS_0_a1b2c3d4)
+            unique_btn_key = f"{stock['Symbol']}_{idx}_{st.session_state.run_id}"
             
-            for idx, stock in enumerate(found_signals):
-                # Use a very specific key format that includes the scan_id
-                # This makes the button completely new to Streamlit
-                btn_key = f"link_{stock['Symbol']}_{idx}_s{st.session_state.scan_id}"
-                
-                c1, c2, c3 = st.columns([2, 3, 2])
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([2, 2, 2])
                 with c1:
-                    st.markdown(f"### {stock['Symbol']}")
+                    st.write(f"### {stock['Symbol']}")
                 with c2:
-                    st.write(f"Price: **{stock['Price']}** \nRSI: **{stock['RSI']}**")
+                    st.metric("Price", stock['Price'])
+                    st.metric("RSI", stock['RSI'])
                 with c3:
                     dhan_url = f"https://dhan.co/basket/?symbol={stock['Symbol']}&qty=1&side=BUY"
-                    st.link_button("⚡ Buy on Dhan", dhan_url, key=btn_key)
-                st.divider()
-        else:
-            st.warning("No Fortress signals found. Market is sideways/bearish.")
+                    # link_button is placed here with a guaranteed unique key
+                    st.link_button("⚡ Buy on Dhan", dhan_url, key=unique_btn_key)
+    else:
+        st.warning("No matches found. Market is currently sideways.")
