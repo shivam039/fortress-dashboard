@@ -43,7 +43,7 @@ TICKERS = [
     "MGL.NS", "PVRINOX.NS", "MCX.NS"
 ]
 
-# 3. Logic Engine
+# 4. Scanning Logic
 def check_fortress(ticker):
     try:
         data = yf.download(ticker, period="1y", interval="1d", progress=False)
@@ -54,50 +54,31 @@ def check_fortress(ticker):
 
         data['EMA200'] = ta.ema(data['Close'], length=200)
         data['RSI'] = ta.rsi(data['Close'], length=14)
-        st_df = ta.supertrend(data['High'], data['Low'], data['Close'], length=10, multiplier=3)
+        st_df = ta.supertrend(data['High'], data['Low'], data['Close'], 10, 3)
+        
+        price, rsi, ema = data['Close'].iloc[-1], data['RSI'].iloc[-1], data['EMA200'].iloc[-1]
+        trend = st_df.iloc[:, 1].iloc[-1]
 
-        if st_df is None or st_df.empty: return None
-
-        price = data['Close'].iloc[-1]
-        rsi = data['RSI'].iloc[-1]
-        ema = data['EMA200'].iloc[-1]
-        trend_dir = st_df.iloc[:, 1].iloc[-1] 
-
-        if (price > ema) and (45 < rsi < 65) and (trend_dir == 1):
-            return {"Price": round(float(price), 2), "RSI": round(float(rsi), 2)}
-        return None
+        if (price > ema) and (45 < rsi < 65) and (trend == 1):
+            return {"Symbol": ticker, "Price": round(price, 2), "RSI": round(rsi, 2)}
     except:
         return None
 
-# 4. Main Execution
-if st.button("🚀 Start Full Market Scan"):
-    found_signals = []
-    
-    with st.status("Scanning Nifty Heavyweights...", expanded=True) as status:
-        progress_bar = st.progress(0)
-        for i, s in enumerate(TICKERS):
-            res = check_fortress(s)
+# 5. Execution
+if st.button("🚀 Run Full Scan"):
+    results = []
+    with st.status("Scanning stocks...", expanded=True) as status:
+        bar = st.progress(0)
+        for i, t in enumerate(TICKERS):
+            res = check_fortress(t)
             if res:
-                found_signals.append({"Symbol": s, "Price": res['Price'], "RSI": res['RSI']})
-            progress_bar.progress((i + 1) / len(TICKERS))
+                results.append(res)
+            bar.progress((i + 1) / len(TICKERS))
         status.update(label="Scan Complete!", state="complete")
 
-    # 5. Displaying Results using clean Markdown (No Buttons)
-    if found_signals:
-        st.success(f"Found {len(found_signals)} Fortress Signals!")
-        
-        for stock in found_signals:
-            dhan_url = f"https://dhan.co/basket/?symbol={stock['Symbol']}&qty=1&side=BUY"
-            
-            with st.container(border=True):
-                c1, c2, c3 = st.columns([2, 2, 2])
-                with c1:
-                    st.markdown(f"### {stock['Symbol']}")
-                with c2:
-                    st.metric("Price", f"₹{stock['Price']}")
-                    st.metric("RSI", stock['RSI'])
-                with c3:
-                    # Clean link instead of button to avoid TypeError
-                    st.markdown(f"### [🔗 Buy on Dhan]({dhan_url})")
+    if results:
+        st.success(f"Found {len(results)} signals!")
+        # Use a static table for maximum stability
+        st.table(pd.DataFrame(results))
     else:
-        st.warning("No matches found today.")
+        st.warning("No setup found today.")
