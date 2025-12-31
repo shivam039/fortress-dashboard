@@ -8,7 +8,11 @@ import time
 st.set_page_config(page_title="Fortress 95 Scanner", layout="wide")
 st.title("🛡️ Fortress 95: High-Probability Scanner")
 
-# 2. Hardcoded Ticker List
+# 2. Reset Keys (The absolute fix for Duplicate Key Error)
+if 'scan_id' not in st.session_state:
+    st.session_state.scan_id = 0
+
+# 3. Hardcoded Ticker List
 TICKERS = [
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "BHARTIARTL.NS", 
     "SBIN.NS", "LICI.NS", "ITC.NS", "HINDUNILVR.NS", "LT.NS", "BAJFINANCE.NS",
@@ -44,7 +48,7 @@ TICKERS = [
     "MGL.NS", "PVRINOX.NS", "MCX.NS"
 ]
 
-# 3. Fortress Logic Engine
+# 4. Logic Engine
 def check_fortress(ticker):
     try:
         data = yf.download(ticker, period="1y", interval="1d", progress=False)
@@ -64,49 +68,46 @@ def check_fortress(ticker):
         ema = data['EMA200'].iloc[-1]
         trend_dir = st_df.iloc[:, 1].iloc[-1] 
 
-        # Fortress 95 Rules
-        is_fortress = (price > ema) and (45 < rsi < 65) and (trend_dir == 1)
-
-        if is_fortress:
+        if (price > ema) and (45 < rsi < 65) and (trend_dir == 1):
             return {"Price": round(float(price), 2), "RSI": round(float(rsi), 2)}
         return None
     except:
         return None
 
-# 4. Sidebar info
-st.sidebar.metric("Database", f"{len(TICKERS)} Stocks")
+# 5. Sidebar
+st.sidebar.metric("Stocks Ready", len(TICKERS))
 
-# 5. Main Execution Loop
-if st.button(f"🚀 Start Scan"):
-    # This empty container ensures old results are wiped before new ones appear
-    results_area = st.container()
+# 6. Scanning Execution
+if st.button("🚀 Start Scan"):
+    # Increment scan_id to force unique keys for ALL buttons
+    st.session_state.scan_id += 1
     
-    with st.status("Scanning Markets...", expanded=True) as status:
+    with st.status("Searching for Fortress Entries...", expanded=True) as status:
         found_signals = []
         progress_bar = st.progress(0)
-        
         for i, s in enumerate(TICKERS):
-            result = check_fortress(s)
-            if result:
-                found_signals.append({"Symbol": s, "Price": result['Price'], "RSI": result['RSI']})
+            res = check_fortress(s)
+            if res:
+                found_signals.append({"Symbol": s, "Price": res['Price'], "RSI": res['RSI']})
             progress_bar.progress((i + 1) / len(TICKERS))
-        
         status.update(label="Scan Complete!", state="complete", expanded=False)
 
-    # 6. Display Results inside the clean container
-    with results_area:
-        if found_signals:
-            st.success(f"Found {len(found_signals)} Fortress Signals!")
-            # Use a unique timestamp to prevent button key collisions
-            ts = int(time.time())
+    if found_signals:
+        st.success(f"Found {len(found_signals)} Matches!")
+        
+        # Display results in a clean grid
+        for idx, stock in enumerate(found_signals):
+            # We create a unique key using the scan_id + index
+            unique_key = f"{stock['Symbol']}_{idx}_scan_{st.session_state.scan_id}"
             
-            for idx, stock in enumerate(found_signals):
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.write(f"**{stock['Symbol']}** | Price: {stock['Price']} | RSI: {stock['RSI']}")
-                with col2:
-                    dhan_url = f"https://dhan.co/basket/?symbol={stock['Symbol']}&qty=1&side=BUY"
-                    # KEY FIX: Symbol + Index + Timestamp makes it impossible to duplicate
-                    st.link_button(f"⚡ Buy", dhan_url, key=f"{stock['Symbol']}_{idx}_{ts}")
-        else:
-            st.warning("No matches found today.")
+            c1, c2, c3 = st.columns([2, 3, 2])
+            with c1:
+                st.subheader(stock['Symbol'])
+            with c2:
+                st.write(f"Price: **{stock['Price']}** | RSI: **{stock['RSI']}**")
+            with c3:
+                dhan_url = f"https://dhan.co/basket/?symbol={stock['Symbol']}&qty=1&side=BUY"
+                st.link_button("⚡ Buy on Dhan", dhan_url, key=unique_key)
+            st.divider()
+    else:
+        st.warning("No Fortress signals found. Market is sideways/bearish.")
