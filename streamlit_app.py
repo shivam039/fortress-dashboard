@@ -14,30 +14,34 @@ dhan = dhanhq(client_id, access_token)
 
 # 3. The Logic Function
 def check_fortress(ticker):
-    # Use 1y data to ensure EMA200 has enough points to calculate
+    # 1. Download data
     data = yf.download(ticker, period="1y", interval="1d", progress=False)
-    if len(data) < 200: return "Need more data"
+    if len(data) < 200: return "Need 200+ days of data"
     
-    # 1. Indicators
+    # 2. Calculate Indicators
     data['EMA200'] = ta.ema(data['Close'], length=200)
     data['RSI'] = ta.rsi(data['Close'], length=14)
     
-    # 2. Supertrend (Fixed Logic)
-    # This returns a DataFrame with 4 columns: [Trend, Direction, Long, Short]
+    # 3. Supertrend Calculation
+    # This returns a table with 4 columns: [Trend, Direction, Long, Short]
     st_df = ta.supertrend(data['High'], data['Low'], data['Close'], length=10, multiplier=3)
     
-    # We grab the 'Direction' column (usually the 2nd one) by its position
-    # 1 = Green/Uptrend, -1 = Red/Downtrend
-    trend_direction = st_df.iloc[:, 1].iloc[-1] 
+    # 4. Grab Direction by position (iloc[:, 1] means the 2nd column)
+    # 1 = Bullish (Green), -1 = Bearish (Red)
+    trend_direction = st_df.iloc[:, 1].iloc[-1]
     
-    # 3. Final Check
+    # 5. Fortress 95 Logic
     price = data['Close'].iloc[-1]
     rsi = data['RSI'].iloc[-1]
     ema = data['EMA200'].iloc[-1]
     
+    # All 3 must be true
     is_fortress = (price > ema) and (45 < rsi < 65) and (trend_direction == 1)
     
-    return "🔥 BUY SIGNAL" if is_fortress else "Wait..."
+    if is_fortress:
+        return "🔥 CRITICAL ENTRY"
+    else:
+        return "STAY IN CASH"
 
 # 4. User Interface
 stocks = ["TITAN.NS", "VEDL.NS", "HINDCOPPER.NS", "RELIANCE.NS"]
