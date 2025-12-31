@@ -14,22 +14,29 @@ dhan = dhanhq(client_id, access_token)
 
 # 3. The Logic Function
 def check_fortress(ticker):
+    # Use 1y data to ensure EMA200 has enough points to calculate
     data = yf.download(ticker, period="1y", interval="1d", progress=False)
-    if data.empty: return "Error"
+    if len(data) < 200: return "Need more data"
     
-    # Indicators
+    # 1. Indicators
     data['EMA200'] = ta.ema(data['Close'], length=200)
     data['RSI'] = ta.rsi(data['Close'], length=14)
-    st_df = ta.supertrend(data['High'], data['Low'], data['Close'], 10, 3)
     
-    # Criteria
+    # 2. Supertrend (Fixed Logic)
+    # This returns a DataFrame with 4 columns: [Trend, Direction, Long, Short]
+    st_df = ta.supertrend(data['High'], data['Low'], data['Close'], length=10, multiplier=3)
+    
+    # We grab the 'Direction' column (usually the 2nd one) by its position
+    # 1 = Green/Uptrend, -1 = Red/Downtrend
+    trend_direction = st_df.iloc[:, 1].iloc[-1] 
+    
+    # 3. Final Check
     price = data['Close'].iloc[-1]
     rsi = data['RSI'].iloc[-1]
     ema = data['EMA200'].iloc[-1]
-    trend = st_df['SUPERTd_10_3.0'].iloc[-1]
     
-    # Fortress 95 Hit Logic
-    is_fortress = (price > ema) and (45 < rsi < 65) and (trend == 1)
+    is_fortress = (price > ema) and (45 < rsi < 65) and (trend_direction == 1)
+    
     return "🔥 BUY SIGNAL" if is_fortress else "Wait..."
 
 # 4. User Interface
