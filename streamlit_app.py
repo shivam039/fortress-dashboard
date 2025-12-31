@@ -66,7 +66,8 @@ def check_institutional_fortress(ticker):
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
         data.dropna(inplace=True)
-        if len(data) < 200: return None
+        if len(data) < 200: 
+            return None
 
         # --- TECHNICALS ---
         price = data['Close'].iloc[-1]
@@ -91,7 +92,7 @@ def check_institutional_fortress(ticker):
             if (check_price > check_ema) and (45 <= check_rsi <= 70) and (check_trend == 1):
                 days_in_trend += 1
             else:
-                break # Sequence broken
+                break  # Sequence broken
 
         # --- RELIABILITY STATUS ---
         is_fresh_buy = (price > ema) and (45 <= rsi <= 65) and (trend == 1)
@@ -108,14 +109,18 @@ def check_institutional_fortress(ticker):
 
         # --- CONVICTION SCORE ---
         score = 0
-        if trend == 1: score += 30
-        if price > ema: score += 20
-        if 48 <= rsi <= 58: score += 30
-        elif 45 <= rsi <= 65: score += 15
+        if trend == 1: 
+            score += 30
+        if price > ema: 
+            score += 20
+        if 48 <= rsi <= 58: 
+            score += 30
+        elif 45 <= rsi <= 65: 
+            score += 15
         
         # Stability Bonus: If it's been a buy for 2-3 days, it's more reliable than a 15-min spike
-        if days_in_trend >= 2: score += 10
-
+        if days_in_trend >= 2: 
+            score += 10
 
         # --- ANALYST DATA ---
         info = ticker_obj.info
@@ -130,7 +135,8 @@ def check_institutional_fortress(ticker):
             return None
             
         expert_target = info.get('targetMeanPrice', 0)
-        if expert_target and expert_target > price: score += 10
+        if expert_target and expert_target > price: 
+            score += 10
 
         return {
             "Symbol": ticker,
@@ -139,7 +145,7 @@ def check_institutional_fortress(ticker):
             "Status": status,
             "Price": round(price, 2),
             "2-Week (ATR) Target": round(price + (data['ATR'].iloc[-1] * 2.5), 2),
-            "Analysts 👤": analysts,
+            "Analysts 👤": analyst_count,  # Fixed: was undefined 'analysts'
             "Expert Target": round(expert_target, 2) if expert_target else "N/A",
             "RSI": round(rsi, 2),
             "SL": round(price * 0.96, 2)
@@ -160,7 +166,6 @@ if st.button("🚀 Run Institutional Scan"):
 
     # --- 5. Execution & Display ---
     if results:
-        # Indented correctly under 'if results:'
         IST = pytz.timezone('Asia/Kolkata')
         timestamp_str = datetime.now(IST).strftime("%d-%b-%Y | %I:%M:%S %p")
         
@@ -201,9 +206,10 @@ if st.button("🚀 Run Institutional Scan"):
                 "SL": st.column_config.NumberColumn("Stop Loss", format="₹%.2f"),
                 "Age": st.column_config.TextColumn(
                     "Trend Age",
-                    help="How many consecutive days this stock has been in the Fortress Buy zone"
-                            }
-                        )
+                    help="1 Day = Fresh Breakout. 5+ Days = Mature Trend."
+                )
+            }
+        )
     else:
         # This 'else' belongs to the 'if results:'
         st.warning("No matches found today. Wait for the market to setup.")
