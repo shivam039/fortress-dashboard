@@ -107,8 +107,14 @@ if st.button(f"🚀 Start Scan ({len(TICKERS)} Heavyweights)"):
         st.table(df_results)
         
         # Dhan Order Placement Buttons
-        for stock in found_signals:
+        for i, stock in enumerate(found_signals):
             dhan_url = f"https://dhan.co/basket/?symbol={stock['Symbol']}&qty=1&side=BUY"
-            st.link_button(f"⚡ Buy {stock['Symbol']} on Dhan", dhan_url, key=stock['Symbol'])
+            
+            # FIXED: Added 'i' to the key to make it unique every time
+            st.link_button(
+                f"⚡ Buy {stock['Symbol']} on Dhan", 
+                dhan_url, 
+                key=f"btn_{stock['Symbol']}_{i}"
+            )
     else:
         st.warning("No matches found. Market conditions may be overextended or bearish.")
