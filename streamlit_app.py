@@ -16,7 +16,7 @@ except ImportError:
 
 # --- SYSTEM INITIALIZATION ---
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
-st.title("🛡️ Fortress 95 Pro: Dual Target Institutional Scanner")
+st.title("🛡️ Fortress 95 Pro: FULL RESULTS SCANNER (Pass/Fail + Analyst Data)")
 
 # --- MASTER TICKER LISTS (250+ Tickers) ---
 TICKER_GROUPS = {
@@ -43,106 +43,57 @@ SECTOR_MAP = {
     "TRENT.NS": "Retail", "ZOMATO.NS": "Retail", "NYKAA.NS": "Retail"
 }
 
-# --- ULTIMATE DUAL-TARGET ENGINE ---
+# --- ULTIMATE FULL-RESULTS ENGINE (RETURNS ALL STOCKS) ---
 def check_institutional_fortress(ticker, data, ticker_obj):
     try:
-        if len(data) < 200: return None
+        if len(data) < 200: 
+            return {"Symbol": ticker, "Verdict": "⚠️ ERROR", "Price": 0, "RSI": 0, "Age": "0d", "Analyst Target": "N/A", "Analysts": 0, "Upside %": "N/A", "Score": 0}
         
         # Fix MultiIndex columns
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
         data.dropna(inplace=True)
         
-        # A. Technical Analysis
+        # Technical indicators
         price = data['Close'].iloc[-1]
-        data['EMA200'] = ta.ema(data['Close'], length=200)
-        data['RSI'] = ta.rsi(data['Close'], length=14)
-        data['ATR'] = ta.atr(data['High'], data['Low'], data['Close'], length=14)
+        ema200 = ta.ema(data['Close'], length=200).iloc[-1]
+        rsi = ta.rsi(data['Close'], length=14).iloc[-1]
         st_df = ta.supertrend(data['High'], data['Low'], data['Close'], 10, 3)
-        
-        rsi = data['RSI'].iloc[-1]
-        ema = data['EMA200'].iloc[-1]
         trend = st_df.iloc[:, 1].iloc[-1]
-        atr = data['ATR'].iloc[-1]
         
-        # CORE INSTITUTIONAL FILTER
-        if not (price > ema and 40 <= rsi <= 70 and trend == 1):
-            return None
-
-        # B. Black Swan News Sentinel
-        news_sentiment = "✅ Neutral"
-        danger_keys = ['fraud', 'investigation', 'default', 'raid', 'resigns', 'scam', 'bankruptcy', 'legal']
-        positive_keys = ['growth', 'order', 'win', 'expansion', 'profit', 'deal']
+        # Determine Pass/Fail based on Fortress logic
+        is_pass = (price > ema200 and 40 <= rsi <= 70 and trend == 1)
         
-        try:
-            news = ticker_obj.news
-            if news:
-                titles = [n['title'].lower() for n in news[:5]]
-                for t in titles:
-                    if any(k in t for k in danger_keys):
-                        news_sentiment = "🚨 BLACK SWAN"
-                        break
-                    elif any(k in t for k in positive_keys):
-                        news_sentiment = "🔥 Positive"
-        except:
-            pass
-
-        # C. Quarterly Earnings Blocker
-        event_risk = "✅ Safe"
-        try:
-            calendar = ticker_obj.calendar
-            if calendar is not None and not calendar.empty:
-                next_date = calendar.iloc[0, 0]
-                days_to_event = (next_date.date() - datetime.now().date()).days
-                if 0 <= days_to_event <= 7:
-                    event_risk = f"🚨 EARNINGS ({next_date.strftime('%d-%b')})"
-        except:
-            pass
-
-        # D. Analyst Consensus & Targets (CRITICAL FIX)
+        # Analyst Data (Standalone Target Price & Count)
         info = ticker_obj.info
-        target = info.get('targetMeanPrice', 0)  # ANALYST TARGET PRICE
-        a_count = info.get('numberOfAnalystOpinions', 0)  # NUMBER OF ANALYSTS
-        pe = info.get('trailingPE', "N/A")
-        pb = info.get('priceToBook', "N/A")
+        target = info.get('targetMeanPrice', 0)
+        a_count = info.get('numberOfAnalystOpinions', 0)
         upside = ((target - price) / price * 100) if target > 0 else 0
 
-        # E. Trend Age (Freshness)
+        # Trend Age
         age = 0
         for i in range(1, 15):
-            if i < len(data) and data['Close'].iloc[-i] > data['EMA200'].iloc[-i] and st_df.iloc[:, 1].iloc[-i] == 1:
+            if i < len(data) and data['Close'].iloc[-i] > ema200 and st_df.iloc[:, 1].iloc[-i] == 1:
                 age += 1
-            else: 
-                break
+            else: break
 
-        # F. ULTIMATE SCORING
-        score = 80
-        if 48 <= rsi <= 58: score += 10
-        if news_sentiment == "🔥 Positive": score += 5
-        if upside > 10: score += 5
-        if a_count >= 10: score += 5
-        if news_sentiment == "🚨 BLACK SWAN": score = 10
-        if age <= 5: score += 5
+        # FULL SCORING (even for fails)
+        score = 95 if (is_pass and 48 <= rsi <= 58) else (80 if is_pass else 0)
 
         return {
             "Symbol": ticker,
             "Sector": SECTOR_MAP.get(ticker, "General"),
-            "Score": score,
-            "Age": f"{age}d",
-            "News": news_sentiment,
-            "Event": event_risk,
-            "Target Price": round(target, 2) if target > 0 else "N/A",  # ANALYST TARGET
-            "Upside": f"{upside:.1f}%" if upside > 0 else "N/A",
-            "Analysts": a_count,
+            "Verdict": "🚀 PASS" if is_pass else "❌ FAIL",
             "Price": round(price, 2),
             "RSI": round(rsi, 2),
-            "PE": pe if pe == "N/A" else round(pe, 1),
-            "PB": pb if pb == "N/A" else round(pb, 1),
-            "Technical Target": round(price + (atr * 2.5), 2),  # SWING TARGET
-            "SL": round(price * 0.96, 2)
+            "Age": f"{age}d",
+            "Analyst Target": round(target, 2) if target > 0 else "N/A",
+            "Analysts": a_count,
+            "Upside %": f"{upside:.1f}%" if upside != 0 else "N/A",
+            "Score": score
         }
-    except Exception as e:
-        return None
+    except Exception:
+        return {"Symbol": ticker, "Verdict": "⚠️ ERROR", "Price": 0, "RSI": 0, "Age": "0d", "Analyst Target": "N/A", "Analysts": 0, "Upside %": "N/A", "Score": 0}
 
 # --- MARKET PULSE ---
 st.subheader("🌐 Market Pulse")
@@ -165,18 +116,12 @@ for i, (name, tickers) in enumerate(index_benchmarks.items()):
         cols[i].error(f"{name} error")
 
 bullish_count = sum(market_health)
-if bullish_count >= 2:
-    st.success("✅ **BULL MARKET CONFIRMED** - Perfect for institutional breakouts!")
-elif bullish_count == 1:
-    st.warning("⚠️ **Mixed signals** - Focus on Nifty 50 only")
-else:
-    st.error("🛑 **BEAR MARKET** - High risk for long breakouts")
 
 # --- CONTROLS & EXECUTION ---
 st.sidebar.title("🔍 Fortress Controls")
 selected_index = st.sidebar.selectbox("Universe", list(TICKER_GROUPS.keys()), key="universe")
 TICKERS = TICKER_GROUPS[selected_index]
-st.sidebar.info(f"📊 **{len(TICKERS)} stocks** | ⏱️ **~{len(TICKERS)*0.7/60:.1f}min scan** | **0.7s delay = RATE-LIMIT SAFE**")
+st.sidebar.info(f"📊 **{len(TICKERS)} stocks** | ⏱️ **~{len(TICKERS)*0.7/60:.1f}min scan** | **FULL RESULTS**")
 
 if st.sidebar.button("🧹 Clear Cache"):
     st.cache_data.clear()
@@ -191,6 +136,7 @@ if st.button("🚀 START FULL FORTRESS SCAN", type="primary", use_container_widt
     # LIVE MONITOR
     progress_bar = st.progress(0)
     status_text = st.empty()
+    pass_count = 0
     
     for i, ticker in enumerate(ticker_list):
         status_text.text(f"🔍 [{i+1}/{total}] Scanning {ticker}...")
@@ -206,11 +152,13 @@ if st.button("🚀 START FULL FORTRESS SCAN", type="primary", use_container_widt
                 continue
             
             result = check_institutional_fortress(ticker, data, ticker_obj)
-            if result:
-                results.append(result)
-                st.toast(f"✅ FORTRESS HIT: {ticker} (Score: {result['Score']})", icon="🚀")
+            results.append(result)
             
-            time.sleep(0.7)  # CRITICAL: 0.7s for analyst data calls
+            if result['Verdict'] == "🚀 PASS":
+                pass_count += 1
+                st.toast(f"✅ FORTRESS PASS: {ticker} (Score: {result['Score']})", icon="🚀")
+            
+            time.sleep(0.7)  # CRITICAL RATE-LIMIT PROTECTION
             
         except Exception as e:
             if "429" in str(e) or "rate limit" in str(e).lower():
@@ -220,53 +168,60 @@ if st.button("🚀 START FULL FORTRESS SCAN", type="primary", use_container_widt
             
         progress_bar.progress((i + 1) / total)
 
-    status_text.success(f"✅ **SCAN COMPLETE!** Found {len(results)} Fortress setups.")
+    status_text.success(f"✅ **SCAN COMPLETE!** {pass_count}/{total} PASSED | Full report below.")
 
-    # RESULTS DISPLAY
-    if results:
-        IST = pytz.timezone('Asia/Kolkata')
-        timestamp = datetime.now(IST).strftime("%d-%b-%Y | %I:%M %p IST")
-        
-        df = pd.DataFrame(results).sort_values('Score', ascending=False)
-        
-        # SECTOR BREAKDOWN
+    # FULL RESULTS DISPLAY
+    df = pd.DataFrame(results).sort_values('Score', ascending=False)
+    
+    # Custom Styling Function
+    def color_verdict(val):
+        if val == '🚀 PASS':
+            return 'color: green; font-weight: bold; font-size: 14px'
+        elif val == '❌ FAIL':
+            return 'color: red; font-weight: bold'
+        else:
+            return 'color: orange; font-weight: bold'
+    
+    # SECTOR BREAKDOWN (only PASS stocks)
+    pass_df = df[df['Verdict'] == '🚀 PASS']
+    if not pass_df.empty:
         col1, col2 = st.columns([1, 3])
         with col1:
-            st.subheader("🏦 Sector Heatmap")
-            st.bar_chart(df['Sector'].value_counts(), height=300)
+            st.subheader("🏦 PASS Stocks by Sector")
+            st.bar_chart(pass_df['Sector'].value_counts(), height=300)
         
         with col2:
-            st.subheader("📊 Ultimate Fortress Dashboard")
-            st.caption(f"**{selected_index}** | {timestamp} | {len(results)}/{total} hits | {bullish_count}/3 indices bullish")
-        
-        # ADVANCED STYLING + FIXED COLUMN CONFIG
-        def highlight_fortress(row):
-            if row['Score'] >= 95:
-                return ['background-color: #FFD700; color: black; font-weight: bold'] * len(row)
-            elif row['Score'] >= 90:
-                return ['background-color: #90EE90; font-weight: bold'] * len(row)
-            elif row['News'] == "🚨 BLACK SWAN":
-                return ['background-color: #FF6B6B; color: white'] * len(row)
-            return [''] * len(row)
-
-        st.dataframe(
-            df.style.apply(highlight_fortress, axis=1),
-            use_container_width=True,
-            column_config={
-                "Score": st.column_config.ProgressColumn("Fortress Score", min_value=0, max_value=100, format="%d%%"),
-                "Age": st.column_config.TextColumn("Trend Age", help="Days above EMA200+SuperTrend"),
-                "Target Price": st.column_config.NumberColumn("Analyst Target", format="₹%.2f"),  # STANDALONE ANALYST TARGET
-                "Upside": st.column_config.TextColumn("Analyst Upside"),
-                "Analysts": st.column_config.NumberColumn("Institutional Coverage", help="Number of analysts backing this stock"),
-                "Technical Target": st.column_config.NumberColumn("Swing Target", format="₹%.0f"),  # ATR BASED
-                "SL": st.column_config.NumberColumn("Stop Loss", format="₹%.0f")
-            },
-            height=600
-        )
-        
-        st.info("**🛡️ Dual Targets:** `Target Price` = Analyst Fair Value | `Technical Target` = ATR Swing (2.5x) | **0.7s delay = Rate-limit safe**")
-        
+            st.metric("🚀 PASS Rate", f"{pass_count}/{total}", f"{pass_count/total*100:.1f}%")
     else:
-        st.warning("🏰 **Fortress Walls Are Up.** No institutional setups found. Try another universe.")
+        st.warning("❌ **0% PASS RATE** - No Fortress setups found.")
 
-st.caption("🛡️ **Fortress 95 Pro v3.0** - DUAL TARGETS | Analyst Visibility | 250+ Tickers | Production Ready")
+    st.subheader(f"📊 Full {selected_index} Report ({len(results)} stocks analyzed)")
+    st.caption(f"🕒 {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%d-%b-%Y | %I:%M %p IST')} | {bullish_count}/3 indices bullish")
+    
+    st.dataframe(
+        df.style.applymap(color_verdict, subset=['Verdict']),
+        use_container_width=True,
+        column_config={
+            "Score": st.column_config.ProgressColumn("Strength", min_value=0, max_value=100),
+            "Verdict": st.column_config.TextColumn("Fortress Status", help="Price>EMA200 + RSI(40-70) + SuperTrend=1"),
+            "Analyst Target": st.column_config.NumberColumn("Target Price (Avg)", format="₹%.2f", help="Institutional consensus target"),
+            "Analysts": st.column_config.NumberColumn("Analyst Count", help="Number of institutional opinions"),
+            "Upside %": st.column_config.TextColumn("Analyst Upside"),
+            "Price": st.column_config.NumberColumn("Live Price", format="₹%.2f")
+        },
+        height=700
+    )
+    
+    # SUMMARY STATS
+    st.markdown("---")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("🚀 PASSES", pass_count)
+    with col2:
+        st.metric("📈 Highest Score", df['Score'].max())
+    with col3:
+        st.metric("🔥 Top Analysts", df['Analysts'].max())
+    with col4:
+        st.metric("📊 Scan Time", f"{len(TICKERS)*0.7/60:.1f}min")
+
+st.caption("🛡️ **Fortress 95 Pro v4.0** - FULL RESULTS | Pass/Fail Verdict | 250+ Tickers | Analyst Data | Production Ready")
