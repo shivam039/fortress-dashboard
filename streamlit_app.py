@@ -2,7 +2,7 @@ import streamlit as st
 import pandas_ta as ta
 import yfinance as yf
 import pandas as pd
-import uuid  # Used for generating a truly unique ID
+import uuid
 
 # 1. Page Config
 st.set_page_config(page_title="Fortress 95 Scanner", layout="wide")
@@ -11,8 +11,6 @@ st.title("🛡️ Fortress 95: High-Probability Scanner")
 # 2. Initialize a unique ID for this specific session run
 if 'run_id' not in st.session_state:
     st.session_state.run_id = str(uuid.uuid4())[:8]
-
-# ... (Keep your TICKERS list and check_fortress function here) ...
 
 # 3. Hardcoded Ticker List
 TICKERS = [
@@ -48,7 +46,8 @@ TICKERS = [
     "CHAMBLFERT.NS", "INDIACEM.NS", "IBULHSGFIN.NS", "BHEL.NS", "RAIN.NS", 
     "RBLBANK.NS", "CANFINHOME.NS", "GRANULES.NS", "MANAPPURAM.NS", "IEX.NS", 
     "MGL.NS", "PVRINOX.NS", "MCX.NS"
-] 
+]
+
 # 4. Logic Engine
 def check_fortress(ticker):
     try:
@@ -75,12 +74,11 @@ def check_fortress(ticker):
     except:
         return None
 
-# 3. Main Execution
+# 5. Main Execution
 if st.button("🚀 Start Scan"):
     # Every time the button is clicked, we change the run_id
     st.session_state.run_id = str(uuid.uuid4())[:8]
     
-    # We create a results list first, then display
     found_signals = []
     
     with st.status("Scanning Nifty Heavyweights...", expanded=True) as status:
@@ -92,13 +90,11 @@ if st.button("🚀 Start Scan"):
             progress_bar.progress((i + 1) / len(TICKERS))
         status.update(label="Scan Complete!", state="complete")
 
-    # 4. Displaying Results with "Anti-Crash" Keys
+    # 6. Displaying Results
     if found_signals:
         st.success(f"Found {len(found_signals)} Fortress Signals!")
         
         for idx, stock in enumerate(found_signals):
-            # We generate a key that includes the unique run_id
-            # Format: Symbol_Index_RunID (e.g., RELIANCE.NS_0_a1b2c3d4)
             unique_btn_key = f"{stock['Symbol']}_{idx}_{st.session_state.run_id}"
             
             with st.container(border=True):
@@ -110,7 +106,6 @@ if st.button("🚀 Start Scan"):
                     st.metric("RSI", stock['RSI'])
                 with c3:
                     dhan_url = f"https://dhan.co/basket/?symbol={stock['Symbol']}&qty=1&side=BUY"
-                    # link_button is placed here with a guaranteed unique key
                     st.link_button("⚡ Buy on Dhan", dhan_url, key=unique_btn_key)
     else:
         st.warning("No matches found. Market is currently sideways.")
