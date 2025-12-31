@@ -182,9 +182,12 @@ if st.button("🚀 Run Institutional Scan"):
                 "Price": st.column_config.NumberColumn(format="₹%.2f"),
                 "2-Week (ATR) Target": st.column_config.NumberColumn(format="₹%.2f"),
                 "Expert Target": st.column_config.NumberColumn(format="₹%.2f"),
-                "SL": st.column_config.NumberColumn("Stop Loss", format="₹%.2f")
-            }
-        )
+                "SL": st.column_config.NumberColumn("Stop Loss", format="₹%.2f"),Ï
+                "Age": st.column_config.TextColumn(
+                    "Trend Age",
+                    help="How many consecutive days this stock has been in the Fortress Buy zone"
+                            }
+                        )
     else:
         # This 'else' belongs to the 'if results:'
         st.warning("No matches found today. Wait for the market to setup.")
