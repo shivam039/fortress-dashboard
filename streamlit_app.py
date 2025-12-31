@@ -14,20 +14,27 @@ dhan = dhanhq(client_id, access_token)
 
 # 3. The Logic Function
 def check_fortress(ticker):
-    # 1. Download data
+    # 1. Download and Clean Data
     data = yf.download(ticker, period="1y", interval="1d", progress=False)
-    if len(data) < 200: return "Need 200+ days of data"
     
-    # 2. Calculate Indicators
+    # Remove any empty rows (Crucial for pandas_ta)
+    data.dropna(inplace=True)
+    
+    if len(data) < 200: 
+        return "Need 200+ days of data"
+    
+    # 2. Indicators
     data['EMA200'] = ta.ema(data['Close'], length=200)
     data['RSI'] = ta.rsi(data['Close'], length=14)
     
-    # 3. Supertrend Calculation
-    # This returns a table with 4 columns: [Trend, Direction, Long, Short]
+    # 3. Supertrend with Safety Check
     st_df = ta.supertrend(data['High'], data['Low'], data['Close'], length=10, multiplier=3)
     
-    # 4. Grab Direction by position (iloc[:, 1] means the 2nd column)
-    # 1 = Bullish (Green), -1 = Bearish (Red)
+    # If Supertrend failed and returned None, stop here
+    if st_df is None or st_df.empty:
+        return "Indicator Error"
+    
+    # 4. Grab Direction safely
     trend_direction = st_df.iloc[:, 1].iloc[-1]
     
     # 5. Fortress 95 Logic
@@ -35,13 +42,9 @@ def check_fortress(ticker):
     rsi = data['RSI'].iloc[-1]
     ema = data['EMA200'].iloc[-1]
     
-    # All 3 must be true
     is_fortress = (price > ema) and (45 < rsi < 65) and (trend_direction == 1)
     
-    if is_fortress:
-        return "🔥 CRITICAL ENTRY"
-    else:
-        return "STAY IN CASH"
+    return "🔥 BUY SIGNAL" if is_fortress else "Wait..."
 
 # 4. User Interface
 stocks = ["TITAN.NS", "VEDL.NS", "HINDCOPPER.NS", "RELIANCE.NS"]
