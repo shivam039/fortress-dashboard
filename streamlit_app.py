@@ -1,4 +1,4 @@
-# fortress_app.py - v9.3 MASTER TERMINAL (Dynamic Columns)
+# fortress_app.py - v9.4 MASTER TERMINAL (Dynamic Columns + Heatmap Safety)
 import subprocess, sys, time, sqlite3
 from datetime import datetime
 import streamlit as st
@@ -40,7 +40,7 @@ init_db()
 
 # ---------------- UI ----------------
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
-st.title("🛡️ Fortress 95 Pro v9.3 — Dynamic Columns Terminal")
+st.title("🛡️ Fortress 95 Pro v9.4 — Dynamic Columns Terminal")
 
 # Sidebar Controls
 st.sidebar.title("💰 Portfolio & Risk")
@@ -79,15 +79,15 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
     try:
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
-        if len(data) < 210: return None
+        if len(data)<210: return None
 
         close, high, low = data["Close"], data["High"], data["Low"]
 
-        ema200 = ta.ema(close, 200).iloc[-1]
-        rsi = ta.rsi(close, 14).iloc[-1]
-        atr = ta.atr(high, low, close, 14).iloc[-1]
+        ema200 = ta.ema(close,200).iloc[-1]
+        rsi = ta.rsi(close,14).iloc[-1]
+        atr = ta.atr(high,low,close,14).iloc[-1]
 
-        st_df = ta.supertrend(high, low, close, 10, 3)
+        st_df = ta.supertrend(high,low,close,10,3)
         trend_col = [c for c in st_df.columns if c.startswith("SUPERTd")][0]
         trend_dir = int(st_df[trend_col].iloc[-1])
         price = float(close.iloc[-1])
@@ -200,10 +200,8 @@ if st.button("🚀 EXECUTE SYSTEM SCAN",type="primary",use_container_width=True)
         status_text.success(f"Scan Complete: {len(df[df['Score']>=60])} actionable setups.")
         log_scan_results(df)
 
-        # Dynamic column selection
         display_df = df[selected_columns]
 
-        # Dynamic column_config for Streamlit
         st_column_config = {}
         for col in selected_columns:
             cfg = ALL_COLUMNS[col]
@@ -222,14 +220,18 @@ if st.button("🚀 EXECUTE SYSTEM SCAN",type="primary",use_container_width=True)
                            file_name=f"Fortress_Trades_{datetime.now().strftime('%Y%m%d')}.csv",
                            mime="text/csv",use_container_width=True)
 
-        st.subheader("📊 Conviction Heatmap")
-        df["Conviction_Band"] = df["Score"].apply(lambda x: "🔥 High (85+)" if x>=85 else "🚀 Pass (60-85)" if x>=60 else "🟡 Watch (<60)")
-        plt.figure(figsize=(12,len(df)/2))
-        heatmap_data = df.pivot_table(index="Symbol", columns="Conviction_Band", values="Score", fill_value=0)
-        sns.heatmap(heatmap_data, annot=True, cmap="Greens", cbar=False, linewidths=0.5, linecolor='grey')
-        st.pyplot(plt)
+        # ---------------- HEATMAP ----------------
+        if not df.empty and "Score" in df.columns:
+            st.subheader("📊 Conviction Heatmap")
+            plt.figure(figsize=(12,len(df)/2))
+            df["Conviction_Band"] = df["Score"].apply(lambda x: "🔥 High (85+)" if x>=85 else "🚀 Pass (60-85)" if x>=60 else "🟡 Watch (<60)")
+            heatmap_data = df.pivot_table(index="Symbol", columns="Conviction_Band", values="Score", fill_value=0)
+            sns.heatmap(heatmap_data, annot=True, cmap="Greens", cbar=False, linewidths=0.5, linecolor='grey')
+            st.pyplot(plt)
+        else:
+            st.info("Insufficient data for heatmap generation.")
 
     else:
         st.warning("No data retrieved. Check internet or ticker config.")
 
-st.caption("🛡️ Fortress 95 Pro v9.3 — Dynamic Columns | ATR SL | Analyst Dispersion | Full Logic")
+st.caption("🛡️ Fortress 95 Pro v9.4 — Dynamic Columns | ATR SL | Analyst Dispersion | Full Logic")
