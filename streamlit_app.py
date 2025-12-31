@@ -10,10 +10,15 @@ import pytz
 st.set_page_config(page_title="Fortress 95 Scanner", layout="wide")
 st.title("🛡️ Fortress 95: High-Probability Scanner")
 
-# 2. Sidebar Filters (Optional)
+# 2. Sidebar Filters
 st.sidebar.title("🔍 Strategy Filters")
 use_analyst_filter = st.sidebar.checkbox("Filter by Analyst Support", value=False)
 min_analysts = st.sidebar.slider("Min Analysts Required", 0, 50, 10) if use_analyst_filter else 0
+
+# NEW: Freshness Filter
+st.sidebar.divider()
+st.sidebar.subheader("🕒 Entry Freshness")
+max_age = st.sidebar.slider("Max Trend Age (Days)", 1, 10, 5, help="Only see stocks that started their trend within these many days")
 
 # 2. Hardcoded Ticker List
 TICKERS = [
@@ -111,8 +116,19 @@ def check_institutional_fortress(ticker):
         # Stability Bonus: If it's been a buy for 2-3 days, it's more reliable than a 15-min spike
         if days_in_trend >= 2: score += 10
 
+
+        # --- ANALYST DATA ---
         info = ticker_obj.info
-        analysts = info.get('numberOfAnalystOpinions', 0)
+        analyst_count = info.get('numberOfAnalystOpinions', 0)
+        
+        # --- FILTRATION CHECKS ---
+        if use_analyst_filter and analyst_count < min_analysts:
+            return None
+            
+        # NEW: Age Filter (Added here)
+        if days_in_trend > max_age:
+            return None
+            
         expert_target = info.get('targetMeanPrice', 0)
         if expert_target and expert_target > price: score += 10
 
@@ -182,7 +198,7 @@ if st.button("🚀 Run Institutional Scan"):
                 "Price": st.column_config.NumberColumn(format="₹%.2f"),
                 "2-Week (ATR) Target": st.column_config.NumberColumn(format="₹%.2f"),
                 "Expert Target": st.column_config.NumberColumn(format="₹%.2f"),
-                "SL": st.column_config.NumberColumn("Stop Loss", format="₹%.2f"),Ï
+                "SL": st.column_config.NumberColumn("Stop Loss", format="₹%.2f"),
                 "Age": st.column_config.TextColumn(
                     "Trend Age",
                     help="How many consecutive days this stock has been in the Fortress Buy zone"
