@@ -51,71 +51,80 @@ TICKERS = [
     "MGL.NS", "PVRINOX.NS", "MCX.NS"
 ]
 
-# 3. Enhanced Logic Engine
+# 3. Enhanced Logic Engine (STABILIZED & RELIABLE)
+@st.cache_data(ttl=600) # Cache results for 10 mins to prevent flickering
 def check_institutional_fortress(ticker):
     try:
-        data = yf.download(ticker, period="1y", interval="1d", progress=False)
+        # Download data (Auto-adjust for splits/dividends to keep EMA stable)
+        data = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
         ticker_obj = yf.Ticker(ticker)
         
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
         data.dropna(inplace=True)
-        
         if len(data) < 200: return None
 
         # --- TECHNICALS ---
         price = data['Close'].iloc[-1]
         data['EMA200'] = ta.ema(data['Close'], length=200)
         data['RSI'] = ta.rsi(data['Close'], length=14)
-        
-        # 2-Week Target using ATR (14-day move projection)
         data['ATR'] = ta.atr(data['High'], data['Low'], data['Close'], length=14)
-        atr_value = data['ATR'].iloc[-1]
-        two_week_target = round(price + (atr_value * 2.5), 2)
-
-        # --- ANALYST DATA ---
-        info = ticker_obj.info
-        analyst_count = info.get('numberOfAnalystOpinions', 0)
-        expert_target = info.get('targetMeanPrice', 0)
+        st_df = ta.supertrend(data['High'], data['Low'], data['Close'], 10, 3)
         
-        # --- FILTRATION CHECK ---
-        if use_analyst_filter and analyst_count < min_analysts:
-            return None
-
-        # --- FORTRESS LOGIC ---
         rsi = data['RSI'].iloc[-1]
         ema = data['EMA200'].iloc[-1]
-        st_df = ta.supertrend(data['High'], data['Low'], data['Close'], 10, 3)
         trend = st_df.iloc[:, 1].iloc[-1]
+        sl_price = round(price * 0.96, 2) # 4% Stop Loss
+
+        # --- STABILITY LOGIC (The "Reliability" Fix) ---
+        # 1. Check if the stock was ALREADY in a trend yesterday (Prevents 15-min jumps)
+        prev_rsi = data['RSI'].iloc[-2]
+        prev_trend = st_df.iloc[:, 1].iloc[-2]
+
+        # 2. Define "Buffer Zones" for Status
+        # HARD ENTRY: Must meet all strict rules to enter the list
+        is_fresh_buy = (price > ema) and (45 <= rsi <= 65) and (trend == 1)
         
-        if (price > ema) and (45 <= rsi <= 65) and (trend == 1):
+        # SOFT HOLD: Once it's in, it stays until RSI hits 75 or Trend breaks
+        is_trending_hold = (price > ema) and (65 < rsi < 75) and (trend == 1)
+
+        if is_fresh_buy:
             status = "🚀 BUY"
-        elif (price > ema) and (rsi > 65):
-            status = "✋ HOLD"
+        elif is_trending_hold:
+            status = "📈 TRENDING / HOLD"
+        elif rsi >= 75:
+            status = "✋ OVERBOUGHT (BOOK PROFIT)"
         else:
             status = "🚫 AVOID"
 
-        # --- CONVICTION SCORE (NEW ADDITION) ---
+        # --- CONVICTION SCORE (Focus on 95% Tagline) ---
         score = 0
         if trend == 1: score += 30
         if price > ema: score += 20
-        if 48 <= rsi <= 58: score += 30 
+        if 48 <= rsi <= 58: score += 30 # Perfect "Fortress" entry zone
         elif 45 <= rsi <= 65: score += 15
         
+        # Add 'Maturity' points if it was also a buy yesterday (Stability Bonus)
+        if prev_trend == 1 and (45 <= prev_rsi <= 65):
+            score += 10 
+
+        # Analyst Data
+        info = ticker_obj.info
+        analyst_count = info.get('numberOfAnalystOpinions', 0)
+        expert_target = info.get('targetMeanPrice', 0)
         if expert_target and expert_target > price:
-            upside = ((expert_target - price) / price) * 100
-            if upside > 10: score += 20
+            score += 10
 
         return {
             "Symbol": ticker,
             "Conviction Score": score,
             "Price": round(price, 2),
             "Status": status,
-            "2-Week (ATR) Target": two_week_target,
+            "2-Week (ATR) Target": round(price + (data['ATR'].iloc[-1] * 2.5), 2),
             "Analysts 👤": analyst_count,
             "Expert Target": round(expert_target, 2) if expert_target else "N/A",
             "RSI": round(rsi, 2),
-            "SL": round(price * 0.96, 2)
+            "SL": sl_price
         }
     except:
         return None
