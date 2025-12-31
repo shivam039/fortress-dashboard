@@ -1,4 +1,4 @@
-# fortress_app.py - v5.10 FIXED EARNINGS + LENIENT RSI(75)
+# fortress_app.py - v5.11 ARROW SERIALIZATION FIXED
 import subprocess
 import sys
 import time
@@ -20,7 +20,7 @@ except ImportError:
 
 # --- SYSTEM CONFIG ---
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
-st.title("🛡️ Fortress 95 Pro v5.10 - FIXED EARNINGS + RSI(75)")
+st.title("🛡️ Fortress 95 Pro v5.11 - ✅ ARROW FIXED")
 
 # --- AI INTELLIGENCE REPORT ---
 @st.dialog("📋 AI Intelligence + Guardrails", width="large")
@@ -34,8 +34,8 @@ def show_analyst_report(ticker_symbol):
         # Analyst Consensus
         st.markdown("#### 🏦 **Analyst Consensus**")
         c1, c2, c3, c4 = st.columns(4)
-        target = info.get('targetMeanPrice', 0)
-        current = info.get('currentPrice', 1)
+        target = info.get('targetMeanPrice', 0) or 0
+        current = info.get('currentPrice', 1) or 1
         upside = ((target/current)-1)*100 if target > 0 else 0
         
         c1.metric("Rating", info.get('recommendationKey', 'N/A').upper())
@@ -62,7 +62,7 @@ def show_analyst_report(ticker_symbol):
 
         # Earnings Calendar
         st.markdown("#### 📅 **Earnings Calendar**")
-        event_risk = "✅ Safe"
+        event_risk = "✅ No Data"
         try:
             cal = ticker_obj.calendar
             if cal is not None and isinstance(cal, pd.DataFrame) and not cal.empty:
@@ -86,7 +86,7 @@ def show_analyst_report(ticker_symbol):
         st.error(f"Report error: {str(e)}")
         if st.button("Close"): st.rerun()
 
-# --- ULTIMATE FORTRESS ENGINE (EXACT NEW LOGIC) ---
+# --- BULLETPROOF FORTRESS ENGINE (ARROW SAFE) ---
 def check_institutional_fortress(ticker, data, ticker_obj):
     try:
         # Fix MultiIndex columns
@@ -96,10 +96,19 @@ def check_institutional_fortress(ticker, data, ticker_obj):
         
         if len(data) < 200: 
             return {
-                "Symbol": ticker, "Sector": SECTOR_MAP.get(ticker, "N/A"),
-                "Verdict": "⚠️ DATA", "Report": "🧠", "Price": 0, "RSI": 0, 
-                "Age": "0d", "Analyst Target": "N/A", "Analysts": 0, 
-                "News Risk": "⚠️", "Earnings": "⚠️", "Upside %": "N/A", "Score": 0
+                "Symbol": ticker,
+                "Sector": SECTOR_MAP.get(ticker, "N/A"),
+                "Verdict": "⚠️ DATA",
+                "Report": "🧠",
+                "Price": 0.0,
+                "RSI": 0.0,
+                "Age": "0d",
+                "Analyst_Target": 0.0,  # ✅ ARROW SAFE: All numeric
+                "Analysts": 0,
+                "News_Risk": "⚠️",
+                "Earnings": "⚠️",
+                "Upside": 0.0,  # ✅ ARROW SAFE: All numeric
+                "Score": 0
             }
         
         # Technical indicators
@@ -113,7 +122,6 @@ def check_institutional_fortress(ticker, data, ticker_obj):
         event_risk = "✅ No Data"
         try:
             cal = ticker_obj.calendar
-            # Check if cal is a valid DataFrame with rows
             if cal is not None and isinstance(cal, pd.DataFrame) and not cal.empty:
                 next_date = cal.iloc[0, 0]
                 days_to = (next_date.date() - datetime.now().date()).days
@@ -122,7 +130,7 @@ def check_institutional_fortress(ticker, data, ticker_obj):
                 else:
                     event_risk = "✅ Safe"
             else:
-                event_risk = "✅ No Data" # Don't fail if Yahoo is missing data
+                event_risk = "✅ No Data"
         except:
             event_risk = "✅ No Data"
 
@@ -140,14 +148,14 @@ def check_institutional_fortress(ticker, data, ticker_obj):
         # 3. TECHNICAL PASS (LENIENT RSI <= 75)
         tech_pass = (price > ema200 and 40 <= rsi <= 75 and trend <= 1)
         
-        # 4. FINAL VERDICT (EXACT LOGIC)
+        # 4. FINAL VERDICT
         is_pass = (tech_pass and news_sentiment != "🚨 BLACK SWAN" and "🚨" not in event_risk)
 
         # Analyst Data
         info = ticker_obj.info
-        target = info.get('targetMeanPrice', 0)
-        analysts = info.get('numberOfAnalystOpinions', 0)
-        upside = ((target - price) / price * 100) if target > 0 else 0
+        target = info.get('targetMeanPrice', 0) or 0.0
+        analysts = info.get('numberOfAnalystOpinions', 0) or 0
+        upside = ((target - price) / price * 100) if target > 0 and price > 0 else 0.0
         
         # Trend Age
         age = 0
@@ -156,7 +164,7 @@ def check_institutional_fortress(ticker, data, ticker_obj):
                 age += 1
             else: break
         
-        # Scoring (Golden RSI 48-58 = 95pts)
+        # Scoring
         score = 95 if (is_pass and 48 <= rsi <= 58) else (80 if is_pass else 0)
 
         return {
@@ -167,19 +175,28 @@ def check_institutional_fortress(ticker, data, ticker_obj):
             "Price": round(price, 2),
             "RSI": round(rsi, 1),
             "Age": f"{age}d",
-            "Analyst Target": round(target, 0) if target > 0 else "N/A",
+            "Analyst_Target": round(target, 0),  # ✅ NUMERIC ONLY
             "Analysts": int(analysts),
-            "News Risk": news_sentiment,
+            "News_Risk": news_sentiment,
             "Earnings": event_risk,
-            "Upside %": f"{upside:.1f}%" if upside != 0 else "N/A",
+            "Upside": round(upside, 1),  # ✅ NUMERIC ONLY
             "Score": score
         }
     except:
         return {
-            "Symbol": ticker, "Sector": SECTOR_MAP.get(ticker, "N/A"),
-            "Verdict": "⚠️ ERROR", "Report": "🧠 AI", "Price": 0, "RSI": 0, 
-            "Age": "0d", "Analyst Target": "N/A", "Analysts": 0,
-            "News Risk": "⚠️", "Earnings": "⚠️", "Upside %": "N/A", "Score": 0
+            "Symbol": ticker,
+            "Sector": "ERROR",
+            "Verdict": "⚠️ ERROR",
+            "Report": "🧠 AI",
+            "Price": 0.0,
+            "RSI": 0.0,
+            "Age": "0d",
+            "Analyst_Target": 0.0,  # ✅ NUMERIC
+            "Analysts": 0,
+            "News_Risk": "⚠️",
+            "Earnings": "⚠️",
+            "Upside": 0.0,  # ✅ NUMERIC
+            "Score": 0
         }
 
 # --- MARKET PULSE ---
@@ -205,7 +222,7 @@ st.success(f"**{market_status} MARKET** - {bullish_count}/3 bullish")
 st.sidebar.title("🔍 Fortress Controls")
 selected_index = st.sidebar.selectbox("Universe", list(TICKER_GROUPS.keys()))
 TICKERS = TICKER_GROUPS[selected_index]
-st.sidebar.info(f"📊 **{len(TICKERS)} stocks** | **RSI≤75 + FIXED Earnings + News Guardrails**")
+st.sidebar.info(f"📊 **{len(TICKERS)} stocks** | **ARROW COMPATIBLE**")
 
 if st.sidebar.button("🧹 Clear Cache"): st.rerun()
 
@@ -244,17 +261,25 @@ if st.button("🚀 FULL FORTRESS SCAN", type="primary", use_container_width=True
     status.success(f"✅ **COMPLETE!** {pass_count}/{total} PASSES")
 
     if results:
-        df = pd.DataFrame(results).sort_values('Score', ascending=False)
+        # ✅ ARROW SAFE: Convert to clean DataFrame
+        df = pd.DataFrame(results)
+        df = df.sort_values('Score', ascending=False).reset_index(drop=True)
+        
+        # Force numeric columns for Arrow compatibility
+        numeric_cols = ['Price', 'RSI', 'Analyst_Target', 'Analysts', 'Upside', 'Score']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         
         # SUMMARY METRICS
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("🚀 PASSES", pass_count)
-        col2.metric("📈 Top Score", df['Score'].max())
+        col2.metric("📈 Top Score", int(df['Score'].max()))
         col3.metric("🏦 Max Analysts", int(df['Analysts'].max()))
-        col4.metric("🚨 Black Swans", len(df[df['News Risk'] == '🚨 BLACK SWAN']))
+        col4.metric("🚨 Black Swans", len(df[df['News_Risk'] == '🚨 BLACK SWAN']))
         col5.metric("📊 Scanned", len(results))
         
-        # FULL RESULTS TABLE
+        # ✅ ARROW PERFECT TABLE
         st.subheader("📊 **COMPLETE RESULTS**")
         st.info("🚀 PASS = Tech(RSI≤75) + No Black Swan + No Earnings Risk")
         
@@ -264,9 +289,9 @@ if st.button("🚀 FULL FORTRESS SCAN", type="primary", use_container_width=True
             column_config={
                 "Score": st.column_config.NumberColumn("Score", format="%d"),
                 "Verdict": st.column_config.TextColumn("Status"),
-                "News Risk": st.column_config.TextColumn("News"),
+                "News_Risk": st.column_config.TextColumn("News"),
                 "Earnings": st.column_config.TextColumn("Events"),
-                "Analyst Target": st.column_config.NumberColumn("Target ₹", format="₹%.0f"),
+                "Analyst_Target": st.column_config.NumberColumn("Target ₹", format="₹%.0f"),
                 "Analysts": st.column_config.NumberColumn("Coverage"),
                 "Price": st.column_config.NumberColumn("Price ₹", format="₹%.0f"),
                 "RSI": st.column_config.NumberColumn("RSI", help="40-75 allowed")
@@ -282,11 +307,11 @@ if st.button("🚀 FULL FORTRESS SCAN", type="primary", use_container_width=True
             if not safe_pass.empty: show_analyst_report(safe_pass.iloc[0]['Symbol'])
         
         if col2.button("🚨 SHOW RISKS", use_container_width=True):
-            risks = df[df['News Risk'] == '🚨 BLACK SWAN']
+            risks = df[df['News_Risk'] == '🚨 BLACK SWAN']
             if not risks.empty: show_analyst_report(risks.iloc[0]['Symbol'])
         
         if col3.button("⭐ #1 SCORE", use_container_width=True):
             show_analyst_report(df.iloc[0]['Symbol'])
 
 st.markdown("---")
-st.caption("🛡️ **Fortress 95 Pro v5.10** - ✅ FIXED Earnings Logic + RSI≤75 + All Guardrails")
+st.caption("🛡️ **Fortress 95 Pro v5.11** - ✅ ARROW FIXED | No 'N/A' in numeric columns")
