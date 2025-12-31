@@ -93,8 +93,21 @@ def check_institutional_fortress(ticker):
         else:
             status = "🚫 AVOID"
 
+        # --- CONVICTION SCORE (NEW ADDITION) ---
+        # This score helps identify the best "95%" setups within the BUY category
+        score = 0
+        if trend == 1: score += 30
+        if price > ema: score += 20
+        if 48 <= rsi <= 58: score += 30  # High points for the "Spring" zone
+        elif 45 <= rsi <= 65: score += 15
+        
+        if expert_target and expert_target > price:
+            upside = ((expert_target - price) / price) * 100
+            if upside > 10: score += 20
+
         return {
             "Symbol": ticker,
+            "Conviction Score": score,Ï
             "Price": round(price, 2),
             "Status": status,
             "2-Week (ATR) Target": two_week_target,
