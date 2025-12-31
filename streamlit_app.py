@@ -43,42 +43,73 @@ TICKERS = [
     "MGL.NS", "PVRINOX.NS", "MCX.NS"
 ]
 
-# 4. Scanning Logic
-def check_fortress(ticker):
+# 4. Advanced Logic Engine
+def check_advanced_fortress(ticker):
     try:
         data = yf.download(ticker, period="1y", interval="1d", progress=False)
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
         data.dropna(inplace=True)
+        
         if len(data) < 200: return None
 
         data['EMA200'] = ta.ema(data['Close'], length=200)
         data['RSI'] = ta.rsi(data['Close'], length=14)
         st_df = ta.supertrend(data['High'], data['Low'], data['Close'], 10, 3)
         
-        price, rsi, ema = data['Close'].iloc[-1], data['RSI'].iloc[-1], data['EMA200'].iloc[-1]
+        price = data['Close'].iloc[-1]
+        rsi = data['RSI'].iloc[-1]
+        ema = data['EMA200'].iloc[-1]
         trend = st_df.iloc[:, 1].iloc[-1]
 
-        if (price > ema) and (45 < rsi < 65) and (trend == 1):
-            return {"Symbol": ticker, "Price": round(price, 2), "RSI": round(rsi, 2)}
+        # Calculation of Levels
+        sl_pct = 0.03 # 3% Stop Loss
+        stop_loss = round(price * (1 - sl_pct), 2)
+        risk = price - stop_loss
+        target = round(price + (risk * 2), 2) # 1:2 Risk-Reward
+
+        # Status Logic
+        if (price > ema) and (45 <= rsi <= 65) and (trend == 1):
+            status = "🚀 BUY"
+        elif (price > ema) and (rsi > 65):
+            status = "✋ HOLD (Overbought)"
+        else:
+            status = "🚫 AVOID"
+
+        return {
+            "Symbol": ticker,
+            "Price": round(price, 2),
+            "Status": status,
+            "RSI": round(rsi, 2),
+            "Entry": round(price, 2),
+            "SL": stop_loss,
+            "Target": target
+        }
     except:
         return None
 
 # 5. Execution
-if st.button("🚀 Run Full Scan"):
+if st.button("🚀 Run Advanced Scan"):
     results = []
-    with st.status("Scanning stocks...", expanded=True) as status:
+    with st.status("Calculating Risk/Reward Levels...", expanded=True):
         bar = st.progress(0)
         for i, t in enumerate(TICKERS):
-            res = check_fortress(t)
+            res = check_advanced_fortress(t)
             if res:
                 results.append(res)
             bar.progress((i + 1) / len(TICKERS))
-        status.update(label="Scan Complete!", state="complete")
 
     if results:
-        st.success(f"Found {len(results)} signals!")
-        # Use a static table for maximum stability
-        st.table(pd.DataFrame(results))
+        df = pd.DataFrame(results)
+        
+        # Stylizing the table
+        def color_status(val):
+            if "BUY" in val: color = '#90EE90' # Light Green
+            elif "HOLD" in val: color = '#FFFFE0' # Light Yellow
+            else: color = '#FFB6C1' # Light Pink
+            return f'background-color: {color}'
+
+        st.subheader("Market Opportunities")
+        st.dataframe(df.style.applymap(color_status, subset=['Status']), use_container_width=True)
     else:
-        st.warning("No setup found today.")
+        st.warning("No data found.")
