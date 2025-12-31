@@ -16,11 +16,11 @@ from fortress_config import TICKER_GROUPS, SECTOR_MAP, INDEX_BENCHMARKS
 try:
     import yfinance as yf
 except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "yfinance"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "yfinance"))
 
 # --- SYSTEM CONFIG ---
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
-st.title("🛡️ Fortress 95 Pro v5.1 - FULL RESULTS + AI REPORTS")
+st.title("🛡️ Fortress 95 Pro v5.2 - FULL VISIBILITY (ALL STOCKS)")
 
 # --- AI ANALYST REPORT POPUP ---
 @st.dialog("📋 Analyst Consensus & AI Summary", width="large")
@@ -65,49 +65,36 @@ def show_analyst_report(ticker_symbol):
         if st.button("❌ Close"):
             st.rerun()
 
-# --- FORTRESS SCAN ENGINE ---
+# --- UPDATED FORTRESS ENGINE (RETURNS ALL STOCKS) ---
 def check_institutional_fortress(ticker, data, ticker_obj):
     try:
-        if len(data) < 200:
-            return {
-                "Symbol": ticker, "Sector": SECTOR_MAP.get(ticker, "N/A"),
-                "Verdict": "⚠️ ERROR", "Report": "📋", "Price": 0, "RSI": 0, 
-                "Age": "0d", "Analyst Target": "N/A", "Analysts": 0, 
-                "Upside %": "N/A", "Score": 0
-            }
-        
-        # Fix column issues
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
-        data = data.dropna()
-        
-        # Core technicals
+        # Technical indicators (ALWAYS calculate)
         price = data['Close'].iloc[-1]
         ema200 = ta.ema(data['Close'], length=200).iloc[-1]
         rsi = ta.rsi(data['Close'], length=14).iloc[-1]
         st_df = ta.supertrend(data['High'], data['Low'], data['Close'], 10, 3)
         trend = st_df.iloc[:, 1].iloc[-1]
         
-        # Fortress criteria
+        # Fortress Pass/Fail (CORE LOGIC)
         is_pass = (price > ema200 and 40 <= rsi <= 70 and trend == 1)
         
-        # Analyst data
+        # Analyst Data (ALWAYS fetch - standalone columns)
         info = ticker_obj.info
         target = info.get('targetMeanPrice', 0)
-        analysts = info.get('numberOfAnalystOpinions', 0)
+        a_count = info.get('numberOfAnalystOpinions', 0)
         upside = ((target - price) / price * 100) if target > 0 else 0
-        
-        # Trend age
+
+        # Trend Age
         age = 0
         for i in range(1, 15):
             if i < len(data) and data['Close'].iloc[-i] > ema200 and st_df.iloc[:, 1].iloc[-i] == 1:
                 age += 1
-            else:
+            else: 
                 break
-        
-        # Score calculation
+
+        # FULL SCORING (PASS=80/95, FAIL=0)
         score = 95 if (is_pass and 48 <= rsi <= 58) else (80 if is_pass else 0)
-        
+
         return {
             "Symbol": ticker,
             "Sector": SECTOR_MAP.get(ticker, "General"),
@@ -117,11 +104,11 @@ def check_institutional_fortress(ticker, data, ticker_obj):
             "RSI": round(rsi, 2),
             "Age": f"{age}d",
             "Analyst Target": round(target, 2) if target > 0 else "N/A",
-            "Analysts": analysts,
+            "Analysts": a_count,
             "Upside %": f"{upside:.1f}%" if upside != 0 else "N/A",
             "Score": score
         }
-    except:
+    except Exception:
         return {
             "Symbol": ticker, "Sector": SECTOR_MAP.get(ticker, "N/A"),
             "Verdict": "⚠️ ERROR", "Report": "📋", "Price": 0, "RSI": 0, 
@@ -162,7 +149,7 @@ else:
 st.sidebar.title("🔍 Fortress Controls")
 selected_index = st.sidebar.selectbox("Universe", list(TICKER_GROUPS.keys()), key="universe")
 TICKERS = TICKER_GROUPS[selected_index]
-st.sidebar.info(f"📊 **{len(TICKERS)} stocks** | ⏱️ **~{len(TICKERS)*0.7/60:.1f}min** | **CLICK 📋 for AI Reports**")
+st.sidebar.info(f"📊 **{len(TICKERS)} stocks** | ⏱️ **~{len(TICKERS)*0.7/60:.1f}min** | **ALL STOCKS SHOWN**")
 
 if st.sidebar.button("🧹 Clear Cache"):
     st.cache_data.clear()
@@ -189,8 +176,9 @@ if st.button("🚀 START FULL FORTRESS SCAN", type="primary", use_container_widt
                 time.sleep(2)
                 continue
             
+            # ✅ FULL VISIBILITY: ALWAYS PROCESS & STORE
             result = check_institutional_fortress(ticker, data, ticker_obj)
-            results.append(result)
+            results.append(result)  # ← ALWAYS APPEND
             
             if result['Verdict'] == "🚀 PASS":
                 pass_count += 1
@@ -206,9 +194,9 @@ if st.button("🚀 START FULL FORTRESS SCAN", type="primary", use_container_widt
             
         progress_bar.progress((i + 1) / total)
 
-    status_text.success(f"✅ **SCAN COMPLETE!** {pass_count}/{total} Fortress setups found.")
+    status_text.success(f"✅ **SCAN COMPLETE!** {pass_count}/{total} PASSED | Full report below 👇")
 
-    # FULL RESULTS DISPLAY
+    # FULL RESULTS DISPLAY (ALL STOCKS)
     if results:
         IST = pytz.timezone('Asia/Kolkata')
         timestamp = datetime.now(IST).strftime("%d-%b-%Y | %I:%M %p IST")
@@ -220,42 +208,42 @@ if st.button("🚀 START FULL FORTRESS SCAN", type="primary", use_container_widt
         col1.metric("🚀 PASSES", pass_count)
         col2.metric("📈 Top Score", df['Score'].max())
         col3.metric("🔥 Max Analysts", int(df['Analysts'].max()))
-        col4.metric("📊 Scanned", f"{len(results)}/{total}")
+        col4.metric("📊 Total Scanned", f"{len(results)}/{total}")
         
         # SECTOR BREAKDOWN (PASS stocks only)
         pass_df = df[df['Verdict'] == '🚀 PASS']
         if not pass_df.empty:
             col1, col2 = st.columns([1, 3])
             with col1:
-                st.subheader("🏦 Sector Heatmap")
+                st.subheader("🏦 PASS Stocks by Sector")
                 st.bar_chart(pass_df['Sector'].value_counts(), height=300)
             with col2:
-                st.subheader("📊 Ultimate Fortress Dashboard")
+                st.subheader("📊 Full Market Intelligence")
                 st.caption(f"**{selected_index}** | {timestamp} | {pass_count}/{total} | {bullish_count}/3 bullish")
         
-        # INTERACTIVE DATAFRAME
-        st.subheader(f"📊 Complete {selected_index} Analysis - **CLICK ANY ROW → 📋 AI Report**")
+        # INTERACTIVE FULL VISIBILITY TABLE
+        st.subheader(f"📊 COMPLETE {selected_index} ANALYSIS - **ALL {len(results)} STOCKS**")
+        st.info("**🟢 PASS** = Trade | **🔴 FAIL** = Watch | **CLICK ANY ROW** → 📋 AI Report")
         
+        # CUSTOM STYLING FUNCTION
         def color_verdict(val):
-            if val == '🚀 PASS':
-                return 'color: green; font-weight: bold; font-size: 14px'
-            elif val == '❌ FAIL':
-                return 'color: red; font-weight: bold'
-            else:
-                return 'color: orange; font-weight: bold'
+            color = 'green' if val == '🚀 PASS' else 'red' if val == '❌ FAIL' else 'orange'
+            return f'color: {color}; font-weight: bold'
         
         selected_row = st.dataframe(
             df.style.applymap(color_verdict, subset=['Verdict']),
             use_container_width=True,
             selection_mode="single-row",
             column_config={
-                "Score": st.column_config.ProgressColumn("Fortress Score", min_value=0, max_value=100, format="%d%%"),
-                "Verdict": st.column_config.TextColumn("Status", help="Price>EMA200 + RSI(40-70) + SuperTrend=1"),
-                "Report": st.column_config.TextColumn("Report", help="Click row for AI analyst summary 📋"),
-                "Analyst Target": st.column_config.NumberColumn("Analyst Target ₹", format="₹%.0f"),
-                "Analysts": st.column_config.NumberColumn("Coverage", help="Institutional analysts"),
-                "Upside %": st.column_config.TextColumn("Upside Potential"),
-                "Price": st.column_config.NumberColumn("Current Price ₹", format="₹%.0f")
+                "Score": st.column_config.ProgressColumn("Strength", min_value=0, max_value=100),
+                "Verdict": st.column_config.TextColumn("Fortress Status"),
+                "Analyst Target": st.column_config.NumberColumn("Target Price (Avg)", format="₹%.2f"),
+                "Analysts": st.column_config.NumberColumn("Analyst Count", help="Number of institutional opinions"),
+                "Upside %": st.column_config.TextColumn("Analyst Upside"),
+                "Price": st.column_config.NumberColumn("Live Price", format="₹%.2f"),
+                "Report": st.column_config.TextColumn("Report", help="Click row → AI summary 📋"),
+                "RSI": st.column_config.NumberColumn("RSI", help="40-70 = Fortress zone"),
+                "Age": st.column_config.TextColumn("Trend Age")
             },
             height=700
         )
@@ -270,4 +258,4 @@ if st.button("🚀 START FULL FORTRESS SCAN", type="primary", use_container_widt
         st.warning("🏰 **No data returned.** Try smaller universe or check internet.")
 
 st.markdown("---")
-st.caption("🛡️ **Fortress 95 Pro v5.1** - Split Files | 250+ Tickers | Full Results | AI Reports | Production Ready")
+st.caption("🛡️ **Fortress 95 Pro v5.2** - FULL VISIBILITY | ALL STOCKS | Analyst Data | AI Reports | Production Ready")
