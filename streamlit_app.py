@@ -6,6 +6,19 @@ import numpy as np
 from datetime import datetime
 import pytz
 
+# --- HELPER FUNCTIONS ---
+def clear_full_cache():
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    st.toast("🧹 Cache cleared! Ready for a fresh scan.", icon="✅")
+
+def reset_filters():
+    st.session_state['use_analyst_filter'] = False
+    st.session_state['min_analysts'] = 10
+    st.session_state['max_age'] = 5
+    st.sidebar.divider()
+    st.toast("🔄 Filters reset to defaults.", icon="👍")
+
 # 1. Page Config
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
 st.title("🛡️ Fortress 95: Professional Scanner")
@@ -57,15 +70,55 @@ TICKERS = [
     "MGL.NS", "PVRINOX.NS", "MCX.NS"
 ]
 
-# 3. Sidebar (ALL filters preserved)
-st.sidebar.title("🛠️ Global Settings")
-use_analyst_filter = st.sidebar.checkbox("Filter by Analyst Support", value=False)
-min_analysts = st.sidebar.slider("Min Analysts Required", 0, 50, 10) if use_analyst_filter else 0
-total_capital = st.sidebar.number_input("Trading Capital (₹)", value=100000)
-risk_per_trade = st.sidebar.slider("Risk Per Trade (%)", 0.5, 3.0, 1.0)
-max_age = st.sidebar.slider("Max Trend Age (Days)", 1, 10, 5)
+# 2. ENHANCED Sidebar Controls with Keys
+st.sidebar.title("🔍 Strategy Filters")
 
-# --- YOUR MARKET PULSE (NIFTY 50 CHECK) ---
+# Global Reset Button at the Top
+if st.sidebar.button("🗑️ Reset All Filters"):
+    reset_filters()
+    st.rerun()
+
+st.sidebar.divider()
+
+# Keyed widgets for reset functionality
+use_analyst_filter = st.sidebar.checkbox(
+    "Filter by Analyst Support", 
+    value=False, 
+    key="use_analyst_filter"
+)
+
+min_analysts = st.sidebar.slider(
+    "Min Analysts Required", 0, 50, 10, 
+    key="min_analysts"
+) if use_analyst_filter else 0
+
+st.sidebar.divider()
+st.sidebar.subheader("🕒 Entry Freshness")
+max_age = st.sidebar.slider(
+    "Max Trend Age (Days)", 1, 10, 5, 
+    key="max_age"
+)
+
+# Capital Management
+st.sidebar.divider()
+st.sidebar.subheader("💰 Capital Management")
+total_capital = st.sidebar.number_input(
+    "Trading Capital (₹)", value=100000, 
+    key="total_capital"
+)
+risk_per_trade = st.sidebar.slider(
+    "Risk Per Trade (%)", 0.5, 3.0, 1.0, 
+    key="risk_per_trade"
+)
+
+# Maintenance Section
+st.sidebar.divider()
+st.sidebar.subheader("⚙️ Maintenance")
+if st.sidebar.button("🧹 Clear All Cache", help="Force-refreshes all stock data"):
+    clear_full_cache()
+    st.rerun()
+
+# --- MARKET PULSE (NIFTY 50 CHECK) ---
 st.subheader("🌐 Global Market Pulse")
 try:
     nifty = yf.download("^NSEI", period="1y", interval="1d", progress=False, auto_adjust=True)
@@ -91,9 +144,9 @@ try:
 except:
     st.write("Could not fetch Market Pulse. Proceed with caution.")
 
-# 4. YOUR Enhanced Logic Engine (News + Google Links)
+# 4. COMPLETE Logic Engine + FUNDAMENTALS (Updated to use sidebar vars)
 @st.cache_data(ttl=600)
-def check_institutional_fortress(ticker):
+def check_institutional_fortress(ticker, total_capital, risk_per_trade, use_analyst_filter, min_analysts, max_age):
     try:
         ticker_obj = yf.Ticker(ticker)
         data = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
@@ -116,7 +169,7 @@ def check_institutional_fortress(ticker):
         sl_price = round(price * 0.96, 2)
         target_price = round(price + (data['ATR'].iloc[-1] * 2.5), 2)
 
-        # Entry Age Logic (preserved)
+        # Entry Age Logic
         days_in_trend = 0
         for i in range(1, 11):
             check_price = data['Close'].iloc[-i]
@@ -128,7 +181,28 @@ def check_institutional_fortress(ticker):
         
         if days_in_trend > max_age: return None
 
-        # Status Logic (preserved)
+        # --- FUNDAMENTALS (NON-BLOCKING) ---
+        info = ticker_obj.info
+        pe = info.get('trailingPE', 0)
+        pb = info.get('priceToBook', 0)
+        valuation_label = "💎 Value" if (pe > 0 and pe < 25) else "🚀 Premium" if pe > 60 else "📊 Fair"
+        
+        # CORPORATE EVENTS (Hard Block for immediate results)
+        calendar = ticker_obj.calendar
+        event_warning = "✅ Clear"
+        score = 0
+        
+        if calendar is not None and not calendar.empty:
+            upcoming_date = calendar.iloc[0, 0]
+            days_to_event = (upcoming_date.date() - datetime.now().date()).days
+            
+            if 0 <= days_to_event <= 2:
+                return None  # HARD BLOCK
+            elif 3 <= days_to_event <= 7:
+                event_warning = f"⚠️ Results ({upcoming_date.strftime('%d-%b')})"
+                score -= 20
+
+        # Status Logic
         is_fresh_buy = (price > ema) and (45 <= rsi <= 65) and (trend == 1)
         is_trending_hold = (price > ema) and (65 < rsi < 75) and (trend == 1)
         if is_fresh_buy: status = "🚀 BUY"
@@ -136,13 +210,12 @@ def check_institutional_fortress(ticker):
         elif rsi >= 75: status = "✋ OVERBOUGHT"
         else: status = "🚫 AVOID"
 
-        # Analyst Filter (preserved)
-        info = ticker_obj.info
+        # Analyst Filter
         analyst_count = info.get('numberOfAnalystOpinions', 0)
         if use_analyst_filter and analyst_count < min_analysts: return None
         expert_target = info.get('targetMeanPrice', 0)
 
-        # --- YOUR NEWS SENTINEL ---
+        # NEWS SENTINEL
         news_data = ticker_obj.news
         news_alert = "✅ Neutral"
         danger_keywords = ['fraud', 'investigation', 'default', 'bankruptcy', 'raid', 'resigns', 'scam', 'penalty', 'legal']
@@ -156,11 +229,9 @@ def check_institutional_fortress(ticker):
                 elif any(k in title for k in ['growth', 'order', 'win', 'expansion', 'profit']):
                     news_alert = "🔥 Positive"
 
-        # Google News Link
         news_link = f"https://www.google.com/search?q={ticker}+stock+news&tbm=nws"
 
-        # Conviction Score (ALL preserved + YOUR news logic)
-        score = 0
+        # COMPLETE Conviction Score
         if trend == 1: score += 30
         if price > ema: score += 20
         if 48 <= rsi <= 58: score += 30
@@ -168,15 +239,16 @@ def check_institutional_fortress(ticker):
         if days_in_trend >= 2: score += 10
         if expert_target and expert_target > price: score += 10
         if news_alert == "🔥 Positive": score += 10
-        if news_alert == "🚨 BLACK SWAN": score -= 60  # Destroy the score
+        if news_alert == "🚨 BLACK SWAN": score -= 60
+        if valuation_label == "💎 Value": score += 15
 
-        # Momentum (preserved)
+        # Momentum
         prev_rsi = data['RSI'].iloc[-2]
         if rsi > prev_rsi: momentum_icon = "🔼 Increasing"
         elif rsi < prev_rsi: momentum_icon = "🔽 Slowing"
         else: momentum_icon = "➡️ Stable"
 
-        # RR + Position Sizing (preserved)
+        # RR + Position Sizing
         risk = price - sl_price
         reward = target_price - price
         rr_ratio = round(reward / risk, 2) if risk > 0 else 0
@@ -189,12 +261,13 @@ def check_institutional_fortress(ticker):
             suggested_qty = 0
             total_investment = 0
 
-        # COMPLETE RETURN
         return {
             "Symbol": ticker,
             "News Status": news_alert,
             "Read News": news_link,
             "Sector": SECTOR_MAP.get(ticker, "General"),
+            "Valuation": valuation_label,
+            "Event Risk": event_warning,
             "Age": f"{days_in_trend} Days",
             "Momentum": momentum_icon,
             "RR Ratio": rr_ratio,
@@ -207,17 +280,18 @@ def check_institutional_fortress(ticker):
             "Analysts 👤": analyst_count,
             "Expert Target": round(expert_target, 2) if expert_target else "N/A",
             "RSI": round(rsi, 2),
+            "P/E": round(pe, 1) if pe else "N/A",
             "SL": sl_price
         }
     except: return None
 
-# 5. YOUR Execution + Enhanced Display
+# 5. Execution + SMART FILTER Display
 if st.button("🚀 Start Fortress Scan"):
     results = []
     with st.status("Scanning Nifty...", expanded=True):
         bar = st.progress(0)
         for i, t in enumerate(TICKERS):
-            res = check_institutional_fortress(t)
+            res = check_institutional_fortress(t, total_capital, risk_per_trade, use_analyst_filter, min_analysts, max_age)
             if res: results.append(res)
             bar.progress((i + 1) / len(TICKERS))
 
@@ -228,12 +302,12 @@ if st.button("🚀 Start Fortress Scan"):
         df = pd.DataFrame(results)
         df = df.sort_values(by="Conviction Score", ascending=False)
 
-        # YOUR Sector Chart
+        # Sector Chart
         st.subheader("🏦 Sector Distribution")
         sector_sums = df.groupby('Sector')['Invest'].sum()
         st.bar_chart(sector_sums)
 
-        # YOUR Updated Highlighting
+        # Enhanced Highlighting
         def highlight_rows(row):
             if row['News Status'] == "🚨 BLACK SWAN":
                 return ['background-color: #9b1c1c; color: white; font-weight: bold'] * len(row)
@@ -243,24 +317,24 @@ if st.button("🚀 Start Fortress Scan"):
 
         st.subheader("📊 Fortress 95 Dashboard")
         st.caption(f"🕒 **Last Scan (IST):** {timestamp_str}")
-        st.write("**3-Step Process:** 1️⃣ Check Market Pulse → 2️⃣ Gold trades (90+ Score) → 3️⃣ No Red rows")
+        st.write("**UI Controls:** 🗑️ Reset Filters → 🚀 Run Scan → 🧹 Clear Cache (if stale)")
 
         st.dataframe(
             df.style.apply(highlight_rows, axis=1),
             use_container_width=True,
             column_config={
                 "News Status": st.column_config.TextColumn("Sentiment", help="🚨 Black Swan = Exit Immediately"),
-                "Read News": st.column_config.LinkColumn("Verify News 🔗", help="Click for Google News headlines"),
+                "Read News": st.column_config.LinkColumn("Verify News 🔗"),
+                "Valuation": st.column_config.TextColumn("Type", help="💎 Value = Safer | 🚀 Premium = Fast but Risky"),
+                "Event Risk": st.column_config.TextColumn("Events", help="⚠️ Results soon = Higher volatility"),
                 "Sector": st.column_config.TextColumn("Sector"),
-                "Conviction Score": st.column_config.ProgressColumn("Confidence", help="Trend+RSI+News+Analysts", min_value=0, max_value=100, format="%d%%"),
+                "Conviction Score": st.column_config.ProgressColumn("Confidence", help="Technicals+Fundamentals+News", min_value=0, max_value=100, format="%d%%"),
                 "Momentum": st.column_config.TextColumn("Momentum"),
                 "RR Ratio": st.column_config.NumberColumn("Risk:Reward", format="%.2fx"),
                 "Qty": st.column_config.NumberColumn("Shares", format="%d"),
                 "Invest": st.column_config.NumberColumn("Investment", format="₹%d"),
                 "Status": st.column_config.TextColumn("Signal"),
-                "Price": st.column_config.NumberColumn(format="₹%.2f"),
-                "2-Week (ATR) Target": st.column_config.NumberColumn(format="₹%.2f"),
-                "SL": st.column_config.NumberColumn("Stop Loss", format="₹%.2f")
+                "P/E": st.column_config.NumberColumn("P/E Ratio", format="%.1f")
             }
         )
     else:
