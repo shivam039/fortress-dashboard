@@ -1,4 +1,4 @@
-# fortress_app.py - v7.0 INSTITUTIONAL SIGNAL ENGINE
+# fortress_app.py - v7.1 INSTITUTIONAL CONVICTION SCREENER
 import subprocess
 import sys
 import time
@@ -6,7 +6,6 @@ import streamlit as st
 import pandas_ta as ta
 import pandas as pd
 import numpy as np
-from datetime import datetime
 
 # ---------------- CONFIG ----------------
 from fortress_config import (
@@ -25,10 +24,10 @@ except ImportError:
 
 # ---------------- UI ----------------
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
-st.title("🛡️ Fortress 95 Pro v7.0 — Institutional Swing Signals")
+st.title("🛡️ Fortress 95 Pro v7.1 — Institutional Conviction Screener")
 
 # =========================================================
-# 🔥 CORE INSTITUTIONAL ENGINE (SIGNAL-ONLY)
+# 🔥 CORE INSTITUTIONAL CONVICTION ENGINE (NO SIGNALS)
 # =========================================================
 def check_institutional_fortress(
     ticker: str,
@@ -57,26 +56,33 @@ def check_institutional_fortress(
         if np.isnan(ema200) or np.isnan(rsi) or np.isnan(atr):
             return None
 
-        # -------- SUPERTREND DIRECTION --------
+        # -------- SUPERTREND --------
         st_df = ta.supertrend(high, low, close, 10, 3)
         trend_dir = int(
             st_df[[c for c in st_df.columns if c.startswith("SUPERTd")][0]].iloc[-1]
         )
 
-        # -------- BASE TREND FILTER --------
-        if not (price > ema200 and trend_dir == 1):
-            return None
+        # =====================================================
+        # 🧠 CONVICTION SCORING (NO BLOCKING)
+        # =====================================================
+        conviction = 0
 
-        conviction = 60
+        # 1️⃣ Trend alignment (WEIGHTED, NOT FILTERED)
+        if price > ema200 and trend_dir == 1:
+            conviction += 60
+        elif price > ema200:
+            conviction += 40
+        else:
+            conviction += 20
 
-        # -------- RSI QUALITY --------
+        # 2️⃣ RSI quality
         if 48 <= rsi <= 62:
             conviction += 20
         elif 40 <= rsi < 48 or 62 < rsi <= 72:
             conviction += 10
 
         # =====================================================
-        # 🔥 RELATIVE STRENGTH vs NIFTY (50-DAY)
+        # 🔥 RELATIVE STRENGTH vs NIFTY (50D)
         # =====================================================
         stock_ret = (close.iloc[-1] / close.iloc[-50]) - 1
         nifty_ret = (
@@ -91,7 +97,7 @@ def check_institutional_fortress(
             conviction += 10
 
         # =====================================================
-        # 🏭 SECTOR ROTATION WEIGHTING
+        # 🏭 SECTOR ROTATION
         # =====================================================
         if sector_data is not None and len(sector_data) > 60:
             s_close = sector_data["Close"]
@@ -104,25 +110,14 @@ def check_institutional_fortress(
         conviction = min(conviction, 100)
 
         # =====================================================
-        # 🎯 10-DAY PROJECTED TARGET
+        # 📊 10-DAY ATR PROJECTION (INFO ONLY)
         # =====================================================
         target_10d = price + (atr * 1.8)
-
-        # =====================================================
-        # 🚨 SIGNAL-ONLY MODE
-        # =====================================================
-        if conviction >= 85:
-            verdict = "🔥 HIGH CONVICTION"
-        elif conviction >= 70:
-            verdict = "🚀 PASS"
-        else:
-            return None
 
         return {
             "Symbol": ticker,
             "Sector": SECTOR_MAP.get(ticker, "General"),
-            "Verdict": verdict,
-            "Score": conviction,
+            "Conviction_Score": conviction,
             "Price": round(price, 2),
             "RSI": round(rsi, 1),
             "ATR": round(atr, 2),
@@ -130,12 +125,12 @@ def check_institutional_fortress(
             "RS_vs_NIFTY_%": round(rs_alpha * 100, 1)
         }
 
-    except Exception:
+    except:
         return None
 
 
 # =========================================================
-# 🌐 MARKET REGIME (FILTER ONLY)
+# 🌐 MARKET REGIME (INFORMATIONAL)
 # =========================================================
 st.subheader("🌐 Market Regime")
 cols = st.columns(3)
@@ -168,16 +163,16 @@ st.success(f"{market_state} — {bullish_count}/3 indices bullish")
 st.sidebar.title("🔍 Fortress Controls")
 selected_index = st.sidebar.selectbox("Universe", list(TICKER_GROUPS.keys()))
 TICKERS = TICKER_GROUPS[selected_index]
-st.sidebar.info(f"📊 {len(TICKERS)} stocks | Signal-Only Mode")
+st.sidebar.info(f"📊 {len(TICKERS)} stocks | Conviction Mode")
 
 # =========================================================
 # 🚀 MAIN SCAN
 # =========================================================
-if st.button("🚀 START SIGNAL SCAN", type="primary", use_container_width=True):
+if st.button("🚀 START CONVICTION SCAN", type="primary", use_container_width=True):
 
     nifty_data = yf.download(NIFTY_SYMBOL, period="1y", progress=False)
 
-    signals = []
+    results = []
     total = len(TICKERS)
     progress = st.progress(0)
     status = st.empty()
@@ -195,18 +190,17 @@ if st.button("🚀 START SIGNAL SCAN", type="primary", use_container_width=True)
             if sector_symbol:
                 sector_data = yf.download(sector_symbol, period="1y", progress=False)
 
-            signal = check_institutional_fortress(
+            row = check_institutional_fortress(
                 ticker,
                 data,
                 nifty_data,
                 sector_data
             )
 
-            if signal:
-                signals.append(signal)
-                st.toast(f"{signal['Verdict']}: {ticker}", icon="🔥")
+            if row:
+                results.append(row)
 
-            time.sleep(0.4)
+            time.sleep(0.35)
 
         except:
             pass
@@ -214,17 +208,19 @@ if st.button("🚀 START SIGNAL SCAN", type="primary", use_container_width=True)
         progress.progress((i + 1) / total)
 
     # =====================================================
-    # 📊 OUTPUT — SIGNALS ONLY
+    # 📊 OUTPUT — FULL CONVICTION TABLE
     # =====================================================
-    if signals:
-        df = pd.DataFrame(signals).sort_values("Score", ascending=False)
+    if results:
+        df = pd.DataFrame(results).sort_values(
+            "Conviction_Score", ascending=False
+        )
 
-        st.subheader("🎯 INSTITUTIONAL SWING SIGNALS (10-Day Horizon)")
-        st.info("Only stocks with **institutional alignment + alpha + sector support**")
+        st.subheader("📊 INSTITUTIONAL CONVICTION RANKING")
+        st.info("Higher score = stronger institutional alignment (NO buy/sell signals)")
 
         st.dataframe(df, use_container_width=True, height=600)
     else:
-        st.warning("No institutional-grade signals today.")
+        st.warning("No data available.")
 
 st.markdown("---")
-st.caption("🛡️ Fortress 95 Pro v7.0 — Institutional Logic | Signal-Only | No Noise")
+st.caption("🛡️ Fortress 95 Pro v7.1 — Conviction Screener | Signal-Free | Institutional Logic")
