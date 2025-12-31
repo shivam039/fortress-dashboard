@@ -79,7 +79,11 @@ st.sidebar.metric("Stocks Ready", len(TICKERS))
 
 # 6. Scanning Execution
 if st.button("🚀 Start Scan"):
-    # Increment scan_id to force unique keys for ALL buttons
+    # This is the secret: st.empty() creates a fresh hole in the page
+    # that wipes itself clean every time the script reruns.
+    main_container = st.empty()
+    
+    # Increment scan_id to refresh the "namespace"
     st.session_state.scan_id += 1
     
     with st.status("Searching for Fortress Entries...", expanded=True) as status:
@@ -92,22 +96,24 @@ if st.button("🚀 Start Scan"):
             progress_bar.progress((i + 1) / len(TICKERS))
         status.update(label="Scan Complete!", state="complete", expanded=False)
 
-    if found_signals:
-        st.success(f"Found {len(found_signals)} Matches!")
-        
-        # Display results in a clean grid
-        for idx, stock in enumerate(found_signals):
-            # We create a unique key using the scan_id + index
-            unique_key = f"{stock['Symbol']}_{idx}_scan_{st.session_state.scan_id}"
+    # We now draw EVERYTHING inside that fresh placeholder
+    with main_container.container():
+        if found_signals:
+            st.success(f"Found {len(found_signals)} Matches!")
             
-            c1, c2, c3 = st.columns([2, 3, 2])
-            with c1:
-                st.subheader(stock['Symbol'])
-            with c2:
-                st.write(f"Price: **{stock['Price']}** | RSI: **{stock['RSI']}**")
-            with c3:
-                dhan_url = f"https://dhan.co/basket/?symbol={stock['Symbol']}&qty=1&side=BUY"
-                st.link_button("⚡ Buy on Dhan", dhan_url, key=unique_key)
-            st.divider()
-    else:
-        st.warning("No Fortress signals found. Market is sideways/bearish.")
+            for idx, stock in enumerate(found_signals):
+                # Use a very specific key format that includes the scan_id
+                # This makes the button completely new to Streamlit
+                btn_key = f"link_{stock['Symbol']}_{idx}_s{st.session_state.scan_id}"
+                
+                c1, c2, c3 = st.columns([2, 3, 2])
+                with c1:
+                    st.markdown(f"### {stock['Symbol']}")
+                with c2:
+                    st.write(f"Price: **{stock['Price']}** \nRSI: **{stock['RSI']}**")
+                with c3:
+                    dhan_url = f"https://dhan.co/basket/?symbol={stock['Symbol']}&qty=1&side=BUY"
+                    st.link_button("⚡ Buy on Dhan", dhan_url, key=btn_key)
+                st.divider()
+        else:
+            st.warning("No Fortress signals found. Market is sideways/bearish.")
