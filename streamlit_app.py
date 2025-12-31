@@ -25,78 +25,100 @@ st.title("🛡️ Fortress 95 Pro v6.0 - WEIGHTED CONVICTION ENGINE")
 # --- UPDATED FORTRESS ENGINE (WEIGHTED LOGIC) ---
 def check_institutional_fortress(ticker, data, ticker_obj):
     try:
-        # Fix data columns first
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
-        
-        if len(data) < 200:
-            return {"Symbol": ticker, "Sector": SECTOR_MAP.get(ticker, "General"), "Verdict": "⚠️ DATA", "Score": 0, "Price": 0.0, "RSI": 0.0, "News": "⚠️", "Events": "⚠️", "Target_Analyst": 0.0}
-        
-        # --- 1. TECHNICAL FOUNDATION ---
-        price = float(data['Close'].iloc[-1])
-        ema200 = float(ta.ema(data['Close'], length=200).iloc[-1])
-        rsi = float(ta.rsi(data['Close'], length=14).iloc[-1])
-        
-        try:
-            st_df = ta.supertrend(data['High'], data['Low'], data['Close'], 10, 3)
-            # Handle potential column naming variations in pandas-ta
-            trend_col = 'SUPERT_10_3.0' if 'SUPERT_10_3.0' in st_df.columns else 'SUPERTd_10_3.0'
-            trend = float(st_df[trend_col].iloc[-1])
-        except:
-            trend = 1
-        
-        # --- 2. THE MODIFIERS (NON-BLOCKING) ---
-        # A. News Sentinel
-        news_sentiment = "Neutral"
-        score_mod = 0
-        danger_keys = ['fraud', 'investigation', 'default', 'scam', 'bankruptcy', 'legal']
-        try:
-            news = ticker_obj.news
-            if news:
-                titles = [n['title'].lower() for n in news[:5]]
-                if any(any(k in t for k in danger_keys) for t in titles):
-                    news_sentiment = "🚨 BLACK SWAN"
-                    score_mod -= 40
-        except: pass
 
-        # B. Earnings Date
+        if len(data) < 210:
+            return {"Symbol": ticker, "Sector": SECTOR_MAP.get(ticker, "General"),
+                    "Verdict": "⚠️ DATA", "Score": 0, "Price": 0.0,
+                    "RSI": 0.0, "News": "⚠️", "Events": "⚠️", "Target_Analyst": 0.0}
+
+        close = data['Close']
+        high = data['High']
+        low = data['Low']
+
+        # --- SAFE INDICATORS ---
+        ema200 = ta.ema(close, length=200)
+        rsi_series = ta.rsi(close, length=14)
+
+        if ema200.isna().iloc[-1] or rsi_series.isna().iloc[-1]:
+            return {"Symbol": ticker, "Sector": SECTOR_MAP.get(ticker, "General"),
+                    "Verdict": "⚠️ INDICATOR", "Score": 0,
+                    "Price": float(close.iloc[-1]), "RSI": 0.0,
+                    "News": "⚠️", "Events": "⚠️", "Target_Analyst": 0.0}
+
+        price = float(close.iloc[-1])
+        ema200_val = float(ema200.iloc[-1])
+        rsi = float(rsi_series.iloc[-1])
+
+        # --- SUPER TREND (DIRECTION ONLY) ---
+        st_df = ta.supertrend(high, low, close, length=10, multiplier=3)
+        trend_dir_col = [c for c in st_df.columns if c.startswith("SUPERTd")][0]
+        trend_dir = int(st_df[trend_dir_col].iloc[-1])  # +1 bullish, -1 bearish
+
+        # --- BASE TECH FILTER ---
+        tech_base = price > ema200_val and trend_dir == 1
+
+        conviction = 0
+        score_mod = 0
+        news_sentiment = "Neutral"
         event_status = "✅ Safe"
+        target = 0
+
+        # --- NEWS (SAFE) ---
+        try:
+            news = ticker_obj.news or []
+            danger_keys = ['fraud', 'investigation', 'default', 'scam', 'bankruptcy', 'legal']
+            titles = " ".join(n.get('title', '').lower() for n in news[:5])
+            if any(k in titles for k in danger_keys):
+                news_sentiment = "🚨 BLACK SWAN"
+                score_mod -= 40
+        except:
+            pass
+
+        # --- EARNINGS (SAFE) ---
         try:
             cal = ticker_obj.calendar
-            if cal is not None and isinstance(cal, pd.DataFrame) and not cal.empty:
-                next_date = cal.iloc[0, 0]
-                days_to = (next_date.date() - datetime.now().date()).days
+            if isinstance(cal, pd.DataFrame) and not cal.empty:
+                next_date = pd.to_datetime(cal.iloc[0, 0]).date()
+                days_to = (next_date - datetime.now().date()).days
                 if 0 <= days_to <= 7:
                     event_status = f"🚨 EARNINGS ({next_date.strftime('%d-%b')})"
                     score_mod -= 20
-        except: pass
+        except:
+            pass
 
-        # --- 3. SCORING CALCULATION ---
-        tech_base = (price > ema200 and trend <= 1)
-        conviction = 0
-        
+        # --- ANALYST TARGET (OPTIONAL BOOST) ---
+        try:
+            info = ticker_obj.info or {}
+            target = info.get('targetMeanPrice', 0) or 0
+        except:
+            pass
+
+        # --- SCORING ---
         if tech_base:
             conviction += 60
-            # Momentum Scoring (Golden Zone 48-62)
-            if 48 <= rsi <= 62: conviction += 20
-            elif 40 <= rsi < 48 or 62 < rsi <= 75: conviction += 10
-            
-            # Analyst Boost
-            info = ticker_obj.info
-            target = info.get('targetMeanPrice', 0) or 0
-            if target > price * 1.10: conviction += 10
-            
-            # Apply modifiers
+
+            if 48 <= rsi <= 62:
+                conviction += 20
+            elif 40 <= rsi < 48 or 62 < rsi <= 72:
+                conviction += 10
+
+            if target > price * 1.10:
+                conviction += 10
+
             conviction += score_mod
-        
-        # Keep score in bounds
+
         conviction = max(0, min(100, conviction))
-        
-        # --- 4. DYNAMIC VERDICT ---
-        if conviction >= 85: verdict = "🔥 HIGH CONVICTION"
-        elif conviction >= 60: verdict = "🚀 PASS"
-        elif tech_base: verdict = "🟡 WATCH"
-        else: verdict = "❌ FAIL"
+
+        if conviction >= 85:
+            verdict = "🔥 HIGH CONVICTION"
+        elif conviction >= 60:
+            verdict = "🚀 PASS"
+        elif tech_base:
+            verdict = "🟡 WATCH"
+        else:
+            verdict = "❌ FAIL"
 
         return {
             "Symbol": ticker,
@@ -109,8 +131,10 @@ def check_institutional_fortress(ticker, data, ticker_obj):
             "Events": event_status,
             "Target_Analyst": round(target, 0)
         }
-    except Exception:
-        return {"Symbol": ticker, "Verdict": "⚠️ ERROR", "Score": 0, "Price": 0.0, "RSI": 0.0, "Target_Analyst": 0.0}
+
+    except Exception as e:
+        return {"Symbol": ticker, "Verdict": "⚠️ ERROR", "Score": 0,
+                "Price": 0.0, "RSI": 0.0, "Target_Analyst": 0.0}
 
 # --- FIXED MARKET PULSE ---
 st.subheader("🌐 Market Pulse")
