@@ -151,20 +151,17 @@ elif bullish_count == 1:
 else:
     st.error("🛑 **System Alert:** Full Market BEARISH. High risk for longs.")
 
-# 3. Enhanced Logic Engine (PURE TECHNICAL BREAKOUT)
+# 3. Pure Technical Breakout Engine
 @st.cache_data(ttl=600)
 def check_institutional_fortress(ticker):
     try:
-        # 1. Technical Data Fetch
         data = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
         if len(data) < 200: return None
         
-        # Standardize columns
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
         data.dropna(inplace=True)
 
-        # --- CORE TECHNICALS ---
         price = data['Close'].iloc[-1]
         data['EMA200'] = ta.ema(data['Close'], length=200)
         data['RSI'] = ta.rsi(data['Close'], length=14)
@@ -175,19 +172,15 @@ def check_institutional_fortress(ticker):
         ema = data['EMA200'].iloc[-1]
         trend = st_df.iloc[:, 1].iloc[-1]
 
-        # --- PURE BREAKOUT LOGIC (NO FUNDAMENTAL BLOCKERS) ---
         is_buy_setup = (price > ema) and (40 <= rsi <= 70) and (trend == 1)
-        
         if not is_buy_setup:
             return None
 
-        # --- METADATA (INFORMATIONAL ONLY) ---
         ticker_obj = yf.Ticker(ticker)
         info = ticker_obj.info
         pe = info.get('trailingPE', "N/A")
         pb = info.get('priceToBook', "N/A")
         
-        # Trend Age Logic (Essential for "Freshness")
         age = 0
         for i in range(1, 15):
             if data['Close'].iloc[-i] > data['EMA200'].iloc[-i] and st_df.iloc[:, 1].iloc[-i] == 1:
@@ -209,15 +202,33 @@ def check_institutional_fortress(ticker):
     except Exception as e:
         return None
 
-# Execution
-if st.button("🚀 Start Pure Breakout Scan"):
+# 4. Execution & LIVE MONITOR
+if st.button("🚀 Start Fortress Scan"):
     results = []
-    with st.status(f"Scanning {selected_index}...", expanded=True):
-        bar = st.progress(0)
-        for i, t in enumerate(TICKERS):
-            res = check_institutional_fortress(t)
-            if res: results.append(res)
-            bar.progress((i + 1) / len(TICKERS))
+    
+    # Create placeholders for progress feedback
+    progress_bar = st.progress(0)
+    status_text = st.empty() # Placeholder for current ticker text
+    
+    with st.status("🔍 Scanning Institutional Breakouts...", expanded=True) as status_container:
+        ticker_list = TICKERS
+        total_tickers = len(ticker_list)
+        
+        for i, ticker in enumerate(ticker_list):
+            # Update the live monitor text
+            status_text.info(f"Checking: **{ticker}** ({i+1}/{total_tickers})")
+            
+            # Update progress bar
+            progress_bar.progress((i + 1) / total_tickers)
+            
+            res = check_institutional_fortress(ticker)
+            if res:
+                results.append(res)
+                st.toast(f"✅ Found Setup: {ticker}", icon="🚀")
+        
+        # Finalize the status container
+        status_container.update(label="✅ Scan Complete!", state="complete", expanded=False)
+        status_text.empty() # Clear the ticker text when done
 
     if results:
         IST = pytz.timezone('Asia/Kolkata')
