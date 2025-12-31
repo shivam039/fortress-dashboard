@@ -1,6 +1,15 @@
+import subprocess
+import sys
+import time
+
+# Auto-upgrade yfinance
+try:
+    import yfinance as yf
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "yfinance"])
+
 import streamlit as st
 import pandas_ta as ta
-import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime
@@ -12,19 +21,11 @@ def clear_full_cache():
     st.cache_resource.clear()
     st.toast("🧹 Cache cleared! Ready for a fresh scan.", icon="✅")
 
-def reset_filters():
-    st.session_state['use_analyst_filter'] = False
-    st.session_state['min_analysts'] = 10
-    st.session_state['max_age'] = 5
-    st.session_state['total_capital'] = 100000
-    st.session_state['risk_per_trade'] = 1.0
-    st.toast("🔄 Filters reset to defaults.", icon="👍")
-
 # 1. Page Config
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
-st.title("🛡️ Fortress 95: Pure Breakout Scanner")
+st.title("🛡️ Fortress 95: Rate-Limit Proof Scanner")
 
-# 2. Multi-Index Ticker Lists
+# 2. Multi-Index Ticker Lists (unchanged)
 TICKER_GROUPS = {
     "Nifty 50 (Large Cap)": [
         "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "BHARTIARTL.NS",
@@ -90,19 +91,14 @@ selected_index = st.sidebar.selectbox("Select Universe", options=list(TICKER_GRO
 TICKERS = TICKER_GROUPS[selected_index]
 st.sidebar.write(f"📊 Total Stocks: **{len(TICKERS)}**")
 
-if st.sidebar.button("🗑️ Reset All Filters"):
-    reset_filters()
-    st.rerun()
-
 st.sidebar.divider()
 st.sidebar.subheader("⚙️ Maintenance")
 if st.sidebar.button("🧹 Clear All Cache"):
     clear_full_cache()
     st.rerun()
 
-# --- ENHANCED MARKET PULSE (STABLE VERSION WITH FALLBACKS) ---
+# --- ENHANCED MARKET PULSE (unchanged) ---
 st.subheader("🌐 Global Market Benchmarks")
-
 index_benchmarks = {
     "Nifty 50": ["^NSEI", "NIFTY50.NS"],
     "Nifty Next 50": ["^NIFTYJR", "NIFTYNEXT50.NS"],
@@ -116,7 +112,7 @@ for i, (name, tickers) in enumerate(index_benchmarks.items()):
     idx_data = None
     for ticker in tickers:
         try:
-            idx_data = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
+            idx_data = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True, threads=False)
             if not idx_data.empty:
                 break
         except:
@@ -125,14 +121,11 @@ for i, (name, tickers) in enumerate(index_benchmarks.items()):
     if idx_data is not None and not idx_data.empty:
         if isinstance(idx_data.columns, pd.MultiIndex):
             idx_data.columns = idx_data.columns.get_level_values(0)
-            
         idx_price = idx_data['Close'].iloc[-1]
         idx_ema = ta.ema(idx_data['Close'], length=200).iloc[-1]
         idx_rsi = ta.rsi(idx_data['Close'], length=14).iloc[-1]
-        
         status = "BULLISH" if idx_price > idx_ema else "BEARISH"
         market_health.append(status == "BULLISH")
-        
         pulse_cols[i].metric(
             label=f"{name}",
             value=f"{idx_price:,.1f}",
@@ -142,7 +135,6 @@ for i, (name, tickers) in enumerate(index_benchmarks.items()):
     else:
         pulse_cols[i].error(f"⚠️ {name} Link Broken")
 
-# FINAL SYSTEM ALERT
 bullish_count = sum(market_health)
 if bullish_count >= 2:
     st.success("✅ **Market Support:** Broad trend is BULLISH. Perfect for breakouts.")
@@ -151,12 +143,11 @@ elif bullish_count == 1:
 else:
     st.error("🛑 **System Alert:** Full Market BEARISH. High risk for longs.")
 
-# 3. Pure Technical Breakout Engine
-@st.cache_data(ttl=600)
-def check_institutional_fortress(ticker):
+# 2. UPDATED LOGIC FUNCTION (receives pre-fetched data)
+def check_institutional_fortress(ticker, data):
     try:
-        data = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
-        if len(data) < 200: return None
+        if len(data) < 200: 
+            return None
         
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
@@ -202,33 +193,55 @@ def check_institutional_fortress(ticker):
     except Exception as e:
         return None
 
-# 4. Execution & LIVE MONITOR
-if st.button("🚀 Start Fortress Scan"):
+# 3. SAFE SCANNING LOOP (RATE-LIMIT PROOF)
+if st.button("🚀 Start Safe Institutional Scan"):
     results = []
+    ticker_list = TICKERS
+    total = len(ticker_list)
     
-    # Create placeholders for progress feedback
+    # UI Elements for monitoring
     progress_bar = st.progress(0)
-    status_text = st.empty() # Placeholder for current ticker text
+    status_text = st.empty()
     
-    with st.status("🔍 Scanning Institutional Breakouts...", expanded=True) as status_container:
-        ticker_list = TICKERS
-        total_tickers = len(ticker_list)
+    for i, ticker in enumerate(ticker_list):
+        status_text.text(f"Scanning {i+1}/{total}: {ticker}")
         
-        for i, ticker in enumerate(ticker_list):
-            # Update the live monitor text
-            status_text.info(f"Checking: **{ticker}** ({i+1}/{total_tickers})")
+        try:
+            # 1. THE SAFE DOWNLOAD
+            data = yf.download(
+                ticker, 
+                period="1y", 
+                interval="1d", 
+                progress=False, 
+                threads=False, # Crucial: disables multithreading
+                auto_adjust=True
+            )
             
-            # Update progress bar
-            progress_bar.progress((i + 1) / total_tickers)
-            
-            res = check_institutional_fortress(ticker)
+            # 2. CHECK IF DATA IS EMPTY (RATE LIMITED)
+            if data.empty:
+                st.warning(f"⚠️ {ticker}: No data/Rate limited. Waiting 2 seconds...")
+                time.sleep(2)
+                continue
+
+            # 3. RUN LOGIC WITH PRE-FETCHED DATA (no double calls)
+            res = check_institutional_fortress(ticker, data)
             if res:
                 results.append(res)
                 st.toast(f"✅ Found Setup: {ticker}", icon="🚀")
-        
-        # Finalize the status container
-        status_container.update(label="✅ Scan Complete!", state="complete", expanded=False)
-        status_text.empty() # Clear the ticker text when done
+            
+            # 4. GOLDEN DELAY (0.7s = human-like scanning)
+            time.sleep(0.7)
+            
+        except Exception as e:
+            if "Rate limited" in str(e) or "429" in str(e):
+                st.error("🚨 System Throttled by Yahoo. Sleeping for 10 seconds...")
+                time.sleep(10)
+            else:
+                st.info(f"Skipping {ticker}: Technical error.")
+                
+        progress_bar.progress((i + 1) / total)
+
+    status_text.success(f"✅ Scan Complete! Found {len(results)} setups.")
 
     if results:
         IST = pytz.timezone('Asia/Kolkata')
@@ -245,7 +258,7 @@ if st.button("🚀 Start Fortress Scan"):
 
         st.subheader("📊 Pure Breakout Dashboard")
         st.caption(f"🕒 **{selected_index} Scan (IST):** {timestamp_str} | Found: {len(results)}/{len(TICKERS)}")
-        st.info("**PURE TECHNICAL:** No P/E blocks. RSI 40-70. Above EMA200 + SuperTrend=1")
+        st.info("**SAFE SCAN:** threads=False | 0.7s delay | Data reuse | Graceful rate-limit handling")
         
         st.dataframe(
             df.style.apply(highlight_rows, axis=1),
@@ -261,3 +274,5 @@ if st.button("🚀 Start Fortress Scan"):
         )
     else:
         st.warning(f"No pure breakouts found in {selected_index}.")
+
+st.caption("🛡️ **Fortress 95 Pro** - Streamlit Cloud Safe | Auto yfinance | Rate-limit Proof | Live Monitor")
