@@ -51,11 +51,10 @@ TICKERS = [
     "MGL.NS", "PVRINOX.NS", "MCX.NS"
 ]
 
-# 3. Enhanced Logic Engine (STABILIZED & RELIABLE)
-@st.cache_data(ttl=600) # Cache results for 10 mins to prevent flickering
+# 3. Enhanced Logic Engine (STABILIZED with Entry Age)
+@st.cache_data(ttl=900)
 def check_institutional_fortress(ticker):
     try:
-        # Download data (Auto-adjust for splits/dividends to keep EMA stable)
         data = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
         ticker_obj = yf.Ticker(ticker)
         
@@ -74,57 +73,60 @@ def check_institutional_fortress(ticker):
         rsi = data['RSI'].iloc[-1]
         ema = data['EMA200'].iloc[-1]
         trend = st_df.iloc[:, 1].iloc[-1]
-        sl_price = round(price * 0.96, 2) # 4% Stop Loss
 
-        # --- STABILITY LOGIC (The "Reliability" Fix) ---
-        # 1. Check if the stock was ALREADY in a trend yesterday (Prevents 15-min jumps)
-        prev_rsi = data['RSI'].iloc[-2]
-        prev_trend = st_df.iloc[:, 1].iloc[-2]
+        # --- ENTRY AGE LOGIC (Looking back 5 days) ---
+        # We calculate how many consecutive days the stock was above EMA, Green Trend, and RSI < 70
+        days_in_trend = 0
+        for i in range(1, 6):
+            check_price = data['Close'].iloc[-i]
+            check_ema = data['EMA200'].iloc[-i]
+            check_rsi = data['RSI'].iloc[-i]
+            check_trend = st_df.iloc[:, 1].iloc[-i]
+            
+            if (check_price > check_ema) and (45 <= check_rsi <= 70) and (check_trend == 1):
+                days_in_trend += 1
+            else:
+                break # Sequence broken
 
-        # 2. Define "Buffer Zones" for Status
-        # HARD ENTRY: Must meet all strict rules to enter the list
+        # --- RELIABILITY STATUS ---
         is_fresh_buy = (price > ema) and (45 <= rsi <= 65) and (trend == 1)
-        
-        # SOFT HOLD: Once it's in, it stays until RSI hits 75 or Trend breaks
         is_trending_hold = (price > ema) and (65 < rsi < 75) and (trend == 1)
 
         if is_fresh_buy:
             status = "🚀 BUY"
         elif is_trending_hold:
-            status = "📈 TRENDING / HOLD"
+            status = "📈 TRENDING"
         elif rsi >= 75:
-            status = "✋ OVERBOUGHT (BOOK PROFIT)"
+            status = "✋ OVERBOUGHT"
         else:
             status = "🚫 AVOID"
 
-        # --- CONVICTION SCORE (Focus on 95% Tagline) ---
+        # --- CONVICTION SCORE ---
         score = 0
         if trend == 1: score += 30
         if price > ema: score += 20
-        if 48 <= rsi <= 58: score += 30 # Perfect "Fortress" entry zone
+        if 48 <= rsi <= 58: score += 30
         elif 45 <= rsi <= 65: score += 15
         
-        # Add 'Maturity' points if it was also a buy yesterday (Stability Bonus)
-        if prev_trend == 1 and (45 <= prev_rsi <= 65):
-            score += 10 
+        # Stability Bonus: If it's been a buy for 2-3 days, it's more reliable than a 15-min spike
+        if days_in_trend >= 2: score += 10
 
-        # Analyst Data
         info = ticker_obj.info
-        analyst_count = info.get('numberOfAnalystOpinions', 0)
+        analysts = info.get('numberOfAnalystOpinions', 0)
         expert_target = info.get('targetMeanPrice', 0)
-        if expert_target and expert_target > price:
-            score += 10
+        if expert_target and expert_target > price: score += 10
 
         return {
             "Symbol": ticker,
+            "Age": f"{days_in_trend} Days",
             "Conviction Score": score,
-            "Price": round(price, 2),
             "Status": status,
+            "Price": round(price, 2),
             "2-Week (ATR) Target": round(price + (data['ATR'].iloc[-1] * 2.5), 2),
-            "Analysts 👤": analyst_count,
+            "Analysts 👤": analysts,
             "Expert Target": round(expert_target, 2) if expert_target else "N/A",
             "RSI": round(rsi, 2),
-            "SL": sl_price
+            "SL": round(price * 0.96, 2)
         }
     except:
         return None
