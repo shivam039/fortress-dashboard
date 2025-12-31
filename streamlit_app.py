@@ -3,6 +3,8 @@ import pandas_ta as ta
 import yfinance as yf
 import pandas as pd
 import numpy as np
+from datetime import datetime
+import pytz
 
 # 1. Page Config
 st.set_page_config(page_title="Fortress 95 Scanner", layout="wide")
@@ -132,6 +134,10 @@ if st.button("🚀 Run Institutional Scan"):
 
     # --- 5. Execution & Display ---
     if results:
+        # --- ADDED: Timestamp Logic ---
+    IST = pytz.timezone('Asia/Kolkata')
+    timestamp_str = datetime.now(IST).strftime("%d-%b-%Y | %I:%M:%S %p")
+    
         df = pd.DataFrame(results)
         
         # Sort so the highest conviction stocks appear first
@@ -145,6 +151,8 @@ if st.button("🚀 Run Institutional Scan"):
             return [''] * len(row)
 
         st.subheader("📊 Fortress 95 Intelligence Dashboard")
+# --- ADDED: Display Timestamp ---
+    st.caption(f"🕒 **Last Market Scan (IST):** {timestamp_str}")
         st.write("Stocks highlighted in **Gold** represent the highest probability (95%) setups.")
 
         # 2. Apply the style and display the Dataframe
