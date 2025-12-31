@@ -75,3 +75,5 @@ SECTOR_MAP = {
 }
 
 INDEX_BENCHMARKS = {"Nifty 50": "^NSEI", "Nifty Next 50": "^NIFTYJR", "Nifty Midcap 150": "^NSMIDCP"}
+
+NIFTY_SYMBOL = "^NSEI"
