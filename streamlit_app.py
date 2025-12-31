@@ -73,7 +73,7 @@ def check_fortress(ticker):
             return {"Price": round(float(price), 2), "RSI": round(float(rsi), 2)}
         return None
     except:
-        return NoneÏ
+        return None
 
 # 3. Main Execution
 if st.button("🚀 Start Scan"):
