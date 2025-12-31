@@ -1,91 +1,114 @@
 import streamlit as st
-import pandas as pd
 import pandas_ta as ta
 import yfinance as yf
-import os
+import pandas as pd
 
-# 1. Page Setup
-st.set_page_config(page_title="Fortress 300 Scanner", layout="wide")
-st.title("🛡️ Fortress 95: Nifty 300 Scanner")
+# 1. Page Configuration
+st.set_page_config(page_title="Fortress 95 Scanner", layout="wide")
+st.title("🛡️ Fortress 95: High-Probability Scanner")
 
-# 2. Updated Vertical CSV Loader
-@st.cache_data
-def load_nifty_300():
-    file_path = "nifty300.csv"
-    
-    if not os.path.exists(file_path):
-        st.error(f"❌ File dorakaledhu: '{file_path}' mee GitHub lo ledhu.")
-        return ["RELIANCE.NS", "TCS.NS", "INFY.NS"]
-    
-    try:
-        # Vertical list ni chadavataniki simple logic
-        df = pd.read_csv(file_path, header=None, encoding='utf-8-sig')
-        
-        tickers = []
-        for s in df.values.flatten():
-            if pd.notna(s):
-                clean_s = str(s).strip().replace(" ", "")
-                if clean_s and clean_s.upper() != "SYMBOL":
-                    tickers.append(clean_s.upper() + ".NS")
-        
-        final_list = list(dict.fromkeys(tickers))
-        return final_list
-    except Exception as e:
-        st.error(f"🚨 Error: {e}")
-        return ["RELIANCE.NS", "TCS.NS", "INFY.NS"]
+# 2. Hardcoded Ticker List (Bypasses CSV errors)
+TICKERS = [
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "BHARTIARTL.NS", 
+    "SBIN.NS", "LICI.NS", "ITC.NS", "HINDUNILVR.NS", "LT.NS", "BAJFINANCE.NS",
+    "MARUTI.NS", "SUNPHARMA.NS", "ADANIENT.NS", "KOTAKBANK.NS", "TITAN.NS", 
+    "ULTRACEMCO.NS", "AXISBANK.NS", "NTPC.NS", "ONGC.NS", "ADANIPORTS.NS",
+    "ASIANPAINT.NS", "COALINDIA.NS", "JSWSTEEL.NS", "BAJAJ-AUTO.NS", "NESTLEIND.NS", 
+    "GRASIM.NS", "HINDALCO.NS", "POWERGRID.NS", "ADANIPOWER.NS", "WIPRO.NS",
+    "EICHERMOT.NS", "SBILIFE.NS", "TATAMOTORS.NS", "BPCL.NS", "DRREDDY.NS", 
+    "HINDZINC.NS", "JIOFIN.NS", "TECHM.NS", "BRITANNIA.NS", "TATAPOWER.NS",
+    "BAJAJFINSV.NS", "INDUSINDBK.NS", "ADANIGREEN.NS", "SHRIRAMFIN.NS", "LTIM.NS", 
+    "TVSMOTOR.NS", "DLF.NS", "HAL.NS", "BEL.NS", "VEDL.NS", "VBL.NS", "PNB.NS", 
+    "CANBK.NS", "IRFC.NS", "SIEMENS.NS", "UNITDSPR.NS", "PIDILITIND.NS", "TRENT.NS", 
+    "GAIL.NS", "INDIGO.NS", "ABB.NS", "UNIONBANK.NS", "BANKBARODA.NS", "IOC.NS", 
+    "CHOLAFIN.NS", "HEROMOTOCO.NS", "HAVELLS.NS", "GODREJCP.NS", "DABUR.NS", 
+    "OBEROIRLTY.NS", "MANKIND.NS", "SHREECEM.NS", "ICICIPRU.NS", "PERSISTENT.NS", 
+    "LUPIN.NS", "TATASTEEL.NS", "JINDALSTEL.NS", "TATACONSUM.NS", "AWL.NS", 
+    "NYKAA.NS", "ZOMATO.NS", "TIINDIA.NS", "POLYCAB.NS", "AUBANK.NS", "MAXHEALTH.NS", 
+    "SRF.NS", "MPHASIS.NS", "COFORGE.NS", "DIXON.NS", "ASTRAL.NS", "AMBUJACEM.NS", 
+    "MUTHOOTFIN.NS", "PEL.NS", "OFSS.NS", "IDEA.NS", "YESBANK.NS", "SUZLON.NS", 
+    "COLPAL.NS", "HDFCLIFE.NS", "ABCAPITAL.NS", "UPL.NS", "PAGEIND.NS", "CONCOR.NS", 
+    "TATACOMM.NS", "PETRONET.NS", "TORNTPHARM.NS", "CUMMINSIND.NS", "TATAELXSI.NS", 
+    "MRF.NS", "ASHOKLEY.NS", "DALBHARAT.NS", "PIIND.NS", "MAXFSL.NS", "RECLTD.NS", 
+    "PFC.NS", "AUROPHARMA.NS", "COROMANDEL.NS", "LTTS.NS", "MFSL.NS", "DEEPAKNTR.NS", 
+    "M&M.NS", "JKCEMENT.NS", "TATACHEM.NS", "VOLTAS.NS", "JUBLFOOD.NS", "SYNGENE.NS", 
+    "GLAND.NS", "FORTIS.NS", "BATAINDIA.NS", "METROPOLIS.NS", "AARTIIND.NS", 
+    "NAVINFLUOR.NS", "LAURUSLABS.NS", "INDIAMART.NS", "ATGL.NS", "ESCORTS.NS", 
+    "CROMPTON.NS", "ZEEL.NS", "GLENMARK.NS", "GODREJPROP.NS", "SUNTV.NS", 
+    "BALKRISIND.NS", "IPCALAB.NS", "IGL.NS", "LICHSGFIN.NS", "GUJGASLTD.NS", 
+    "IDFCFIRSTB.NS", "IDFC.NS", "NAM-INDIA.NS", "BANDHANBNK.NS", "GMRINFRA.NS", 
+    "NMDC.NS", "SAIL.NS", "NATIONALUM.NS", "ZYDUSLIFE.NS", "BIOCON.NS", 
+    "CHAMBLFERT.NS", "INDIACEM.NS", "IBULHSGFIN.NS", "BHEL.NS", "RAIN.NS", 
+    "RBLBANK.NS", "CANFINHOME.NS", "GRANULES.NS", "MANAPPURAM.NS", "IEX.NS", 
+    "MGL.NS", "PVRINOX.NS", "MCX.NS"
+]
 
-# 3. Fortress Logic
+# 3. Fortress Logic Engine
 def check_fortress(ticker):
     try:
+        # Fetching 1 year of data for EMA200
         data = yf.download(ticker, period="1y", interval="1d", progress=False)
+        
+        # Fixing yfinance Multi-index bug
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
+            
         data.dropna(inplace=True)
         if len(data) < 200: return None
 
+        # Technical Indicators
         data['EMA200'] = ta.ema(data['Close'], length=200)
         data['RSI'] = ta.rsi(data['Close'], length=14)
-        st_df = ta.supertrend(data['High'], data['Low'], data['Close'], 10, 3)
+        st_df = ta.supertrend(data['High'], data['Low'], data['Close'], length=10, multiplier=3)
 
         if st_df is None or st_df.empty: return None
 
+        # Logic Variables
         price = data['Close'].iloc[-1]
         rsi = data['RSI'].iloc[-1]
         ema = data['EMA200'].iloc[-1]
-        trend_dir = st_df.iloc[:, 1].iloc[-1]
+        # Supertrend direction: 1 = Bullish, -1 = Bearish
+        trend_dir = st_df.iloc[:, 1].iloc[-1] 
 
-        if (price > ema) and (45 < rsi < 65) and (trend_dir == 1):
+        # Fortress 95 Rule: Price > EMA, RSI 45-65, Trend is Green
+        is_fortress = (price > ema) and (45 < rsi < 65) and (trend_dir == 1)
+
+        if is_fortress:
             return {"Price": round(float(price), 2), "RSI": round(float(rsi), 2)}
         return None
     except:
         return None
 
-# 4. User Interface & Counter
-tickers = load_nifty_300()
+# 4. Sidebar Metric
+st.sidebar.metric("Database", f"{len(TICKERS)} Stocks")
+st.sidebar.info("Strategy: Price > EMA200 + RSI(45-65) + Supertrend(Green)")
 
-# Ikada counter kanipisthundi
-st.sidebar.metric("Total Stocks Loaded", len(tickers))
-st.sidebar.write("Mee CSV nundi inni stocks scan ki ready ga unnayi.")
-
-if st.button(f"🚀 {len(tickers)} Stocks Scan Start Cheyandi"):
-    results = []
+# 5. Execution Interface
+if st.button(f"🚀 Start Scan ({len(TICKERS)} Heavyweights)"):
+    st.write("🔍 Scanning market data... please wait.")
     progress_bar = st.progress(0)
-    status = st.empty()
+    found_signals = []
+    status_msg = st.empty()
+
+    for i, s in enumerate(TICKERS):
+        status_msg.text(f"Checking {s} ({i+1}/{len(TICKERS)})")
+        result = check_fortress(s)
+        if result:
+            found_signals.append({"Symbol": s, "Price": result['Price'], "RSI": result['RSI']})
+        
+        # Visual Progress update
+        progress_bar.progress((i + 1) / len(TICKERS))
+
+    status_msg.text("✅ Scan Completed!")
     
-    for i, ticker in enumerate(tickers):
-        status.text(f"Scanning: {ticker} ({i+1}/{len(tickers)})")
-        res = check_fortress(ticker)
-        if res:
-            results.append({"Symbol": ticker, "Price": res['Price'], "RSI": res['RSI']})
-        progress_bar.progress((i + 1) / len(tickers))
-    
-    status.text("Scan Poorthi Ayindhi!")
-    
-    if results:
-        st.success(f"Mothaniki {len(results)} Buy Signals Dorikayi!")
-        st.table(pd.DataFrame(results))
-        for item in results:
-            dhan_url = f"https://dhan.co/basket/?symbol={item['Symbol']}&qty=1&side=BUY"
-            st.link_button(f"⚡ Buy {item['Symbol']} on Dhan", dhan_url, key=item['Symbol'])
+    if found_signals:
+        st.success(f"Found {len(found_signals)} stocks matching Fortress 95 criteria!")
+        df_results = pd.DataFrame(found_signals)
+        st.table(df_results)
+        
+        # Dhan Order Placement Buttons
+        for stock in found_signals:
+            dhan_url = f"https://dhan.co/basket/?symbol={stock['Symbol']}&qty=1&side=BUY"
+            st.link_button(f"⚡ Buy {stock['Symbol']} on Dhan", dhan_url, key=stock['Symbol'])
     else:
-        st.warning("Eeroju Fortress logic ki thaggattu stock edi ledhu. Wait cheyandi.")
+        st.warning("No matches found. Market conditions may be overextended or bearish.")
