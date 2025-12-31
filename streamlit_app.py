@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import pandas_ta as ta
 import yfinance as yf
+import os
 
 # 1. Page Config
 st.set_page_config(page_title="Fortress 300 Scanner", layout="wide")
@@ -10,21 +11,44 @@ st.title("🛡️ Fortress 95: Nifty 300 Scanner")
 # 2. Correctly Load the CSV (Handles any format)
 @st.cache_data
 def load_nifty_300():
+    file_path = "nifty300.csv"
+    
+    # 1. Check if file exists in the folder
+    if not os.path.exists(file_path):
+        st.error(f"❌ File NOT FOUND: '{file_path}' is missing from your GitHub root folder.")
+        return ["RELIANCE.NS", "TCS.NS", "INFY.NS"]
+    
     try:
-        # Load the CSV without assuming a header structure
-        df = pd.read_csv("nifty300.csv", header=None)
-        # Flatten all cells, clean them, and add .NS
+        # 2. Try reading with 'utf-8-sig' to handle any hidden Excel/Notepad characters
+        df = pd.read_csv(file_path, header=None, encoding='utf-8-sig', on_bad_lines='skip')
+        
+        # 3. Clean and flatten
         raw_list = df.values.flatten()
         tickers = []
         for s in raw_list:
             if pd.notna(s):
-                clean_s = str(s).strip().replace(" ", "")
-                if clean_s and clean_s.upper() != "SYMBOL":
+                # Remove quotes, spaces, and commas that might be inside cells
+                clean_s = str(s).strip().replace(" ", "").replace('"', '').replace("'", "")
+                # Handle cases where multiple symbols are in one cell (comma separated)
+                if "," in clean_s:
+                    sub_symbols = clean_s.split(",")
+                    for sub in sub_symbols:
+                        if sub and sub.upper() != "SYMBOL":
+                            tickers.append(sub.upper() + ".NS")
+                elif clean_s and clean_s.upper() != "SYMBOL":
                     tickers.append(clean_s.upper() + ".NS")
-        return list(dict.fromkeys(tickers)) # Remove duplicates
+        
+        unique_tickers = list(dict.fromkeys(tickers))
+        
+        if not unique_tickers:
+            st.warning("⚠️ CSV was loaded but no symbols were found inside.")
+            return ["RELIANCE.NS", "TCS.NS", "INFY.NS"]
+            
+        return unique_tickers
+
     except Exception as e:
-        st.error(f"Error loading CSV: {e}")
-        return ["RELIANCE.NS", "TCS.NS", "INFY.NS"]
+        st.error(f"🚨 Logic Error: {e}")
+        return ["RELIANCE.NS", "TCS.NS", "INFY.NS"]Ï
 
 # 3. Defensive Logic Function
 def check_fortress(ticker):
