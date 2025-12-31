@@ -2,17 +2,12 @@ import streamlit as st
 import pandas_ta as ta
 import yfinance as yf
 import pandas as pd
-import uuid
 
 # 1. Page Config
 st.set_page_config(page_title="Fortress 95 Scanner", layout="wide")
 st.title("🛡️ Fortress 95: High-Probability Scanner")
 
-# 2. Initialize a unique ID for this specific session run
-if 'run_id' not in st.session_state:
-    st.session_state.run_id = str(uuid.uuid4())[:8]
-
-# 3. Hardcoded Ticker List
+# 2. Hardcoded Ticker List
 TICKERS = [
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "BHARTIARTL.NS", 
     "SBIN.NS", "LICI.NS", "ITC.NS", "HINDUNILVR.NS", "LT.NS", "BAJFINANCE.NS",
@@ -48,7 +43,7 @@ TICKERS = [
     "MGL.NS", "PVRINOX.NS", "MCX.NS"
 ]
 
-# 4. Logic Engine
+# 3. Logic Engine
 def check_fortress(ticker):
     try:
         data = yf.download(ticker, period="1y", interval="1d", progress=False)
@@ -74,11 +69,8 @@ def check_fortress(ticker):
     except:
         return None
 
-# 5. Main Execution
-if st.button("🚀 Start Scan"):
-    # Every time the button is clicked, we change the run_id
-    st.session_state.run_id = str(uuid.uuid4())[:8]
-    
+# 4. Main Execution
+if st.button("🚀 Start Full Market Scan"):
     found_signals = []
     
     with st.status("Scanning Nifty Heavyweights...", expanded=True) as status:
@@ -90,22 +82,22 @@ if st.button("🚀 Start Scan"):
             progress_bar.progress((i + 1) / len(TICKERS))
         status.update(label="Scan Complete!", state="complete")
 
-    # 6. Displaying Results
+    # 5. Displaying Results using clean Markdown (No Buttons)
     if found_signals:
         st.success(f"Found {len(found_signals)} Fortress Signals!")
         
-        for idx, stock in enumerate(found_signals):
-            unique_btn_key = f"{stock['Symbol']}_{idx}_{st.session_state.run_id}"
+        for stock in found_signals:
+            dhan_url = f"https://dhan.co/basket/?symbol={stock['Symbol']}&qty=1&side=BUY"
             
             with st.container(border=True):
                 c1, c2, c3 = st.columns([2, 2, 2])
                 with c1:
-                    st.write(f"### {stock['Symbol']}")
+                    st.markdown(f"### {stock['Symbol']}")
                 with c2:
-                    st.metric("Price", stock['Price'])
+                    st.metric("Price", f"₹{stock['Price']}")
                     st.metric("RSI", stock['RSI'])
                 with c3:
-                    dhan_url = f"https://dhan.co/basket/?symbol={stock['Symbol']}&qty=1&side=BUY"
-                    st.link_button("⚡ Buy on Dhan", dhan_url, key=unique_btn_key)
+                    # Clean link instead of button to avoid TypeError
+                    st.markdown(f"### [🔗 Buy on Dhan]({dhan_url})")
     else:
-        st.warning("No matches found. Market is currently sideways.")
+        st.warning("No matches found today.")
