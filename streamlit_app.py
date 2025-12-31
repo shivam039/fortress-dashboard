@@ -2,12 +2,13 @@ import streamlit as st
 import pandas_ta as ta
 import yfinance as yf
 import pandas as pd
+import time
 
 # 1. Page Configuration
 st.set_page_config(page_title="Fortress 95 Scanner", layout="wide")
 st.title("🛡️ Fortress 95: High-Probability Scanner")
 
-# 2. Hardcoded Ticker List (Bypasses CSV errors)
+# 2. Hardcoded Ticker List
 TICKERS = [
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "BHARTIARTL.NS", 
     "SBIN.NS", "LICI.NS", "ITC.NS", "HINDUNILVR.NS", "LT.NS", "BAJFINANCE.NS",
@@ -46,31 +47,24 @@ TICKERS = [
 # 3. Fortress Logic Engine
 def check_fortress(ticker):
     try:
-        # Fetching 1 year of data for EMA200
         data = yf.download(ticker, period="1y", interval="1d", progress=False)
-        
-        # Fixing yfinance Multi-index bug
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
-            
         data.dropna(inplace=True)
         if len(data) < 200: return None
 
-        # Technical Indicators
         data['EMA200'] = ta.ema(data['Close'], length=200)
         data['RSI'] = ta.rsi(data['Close'], length=14)
         st_df = ta.supertrend(data['High'], data['Low'], data['Close'], length=10, multiplier=3)
 
         if st_df is None or st_df.empty: return None
 
-        # Logic Variables
         price = data['Close'].iloc[-1]
         rsi = data['RSI'].iloc[-1]
         ema = data['EMA200'].iloc[-1]
-        # Supertrend direction: 1 = Bullish, -1 = Bearish
         trend_dir = st_df.iloc[:, 1].iloc[-1] 
 
-        # Fortress 95 Rule: Price > EMA, RSI 45-65, Trend is Green
+        # Fortress 95 Rules
         is_fortress = (price > ema) and (45 < rsi < 65) and (trend_dir == 1)
 
         if is_fortress:
@@ -79,42 +73,40 @@ def check_fortress(ticker):
     except:
         return None
 
-# 4. Sidebar Metric
+# 4. Sidebar info
 st.sidebar.metric("Database", f"{len(TICKERS)} Stocks")
-st.sidebar.info("Strategy: Price > EMA200 + RSI(45-65) + Supertrend(Green)")
 
-# 5. Execution Interface
-if st.button(f"🚀 Start Scan ({len(TICKERS)} Heavyweights)"):
-    st.write("🔍 Scanning market data... please wait.")
-    progress_bar = st.progress(0)
-    found_signals = []
-    status_msg = st.empty()
-
-    for i, s in enumerate(TICKERS):
-        status_msg.text(f"Checking {s} ({i+1}/{len(TICKERS)})")
-        result = check_fortress(s)
-        if result:
-            found_signals.append({"Symbol": s, "Price": result['Price'], "RSI": result['RSI']})
-        
-        # Visual Progress update
-        progress_bar.progress((i + 1) / len(TICKERS))
-
-    status_msg.text("✅ Scan Completed!")
+# 5. Main Execution Loop
+if st.button(f"🚀 Start Scan"):
+    # This empty container ensures old results are wiped before new ones appear
+    results_area = st.container()
     
-    if found_signals:
-        st.success(f"Found {len(found_signals)} stocks matching Fortress 95 criteria!")
-        df_results = pd.DataFrame(found_signals)
-        st.table(df_results)
+    with st.status("Scanning Markets...", expanded=True) as status:
+        found_signals = []
+        progress_bar = st.progress(0)
         
-        # Dhan Order Placement Buttons
-        for i, stock in enumerate(found_signals):
-            dhan_url = f"https://dhan.co/basket/?symbol={stock['Symbol']}&qty=1&side=BUY"
+        for i, s in enumerate(TICKERS):
+            result = check_fortress(s)
+            if result:
+                found_signals.append({"Symbol": s, "Price": result['Price'], "RSI": result['RSI']})
+            progress_bar.progress((i + 1) / len(TICKERS))
+        
+        status.update(label="Scan Complete!", state="complete", expanded=False)
+
+    # 6. Display Results inside the clean container
+    with results_area:
+        if found_signals:
+            st.success(f"Found {len(found_signals)} Fortress Signals!")
+            # Use a unique timestamp to prevent button key collisions
+            ts = int(time.time())
             
-            # FIXED: Added 'i' to the key to make it unique every time
-            st.link_button(
-                f"⚡ Buy {stock['Symbol']} on Dhan", 
-                dhan_url, 
-                key=f"btn_{stock['Symbol']}_{i}"
-            )
-    else:
-        st.warning("No matches found. Market conditions may be overextended or bearish.")
+            for idx, stock in enumerate(found_signals):
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.write(f"**{stock['Symbol']}** | Price: {stock['Price']} | RSI: {stock['RSI']}")
+                with col2:
+                    dhan_url = f"https://dhan.co/basket/?symbol={stock['Symbol']}&qty=1&side=BUY"
+                    # KEY FIX: Symbol + Index + Timestamp makes it impossible to duplicate
+                    st.link_button(f"⚡ Buy", dhan_url, key=f"{stock['Symbol']}_{idx}_{ts}")
+        else:
+            st.warning("No matches found today.")
