@@ -16,7 +16,7 @@ except ImportError:
 
 # --- SYSTEM INITIALIZATION ---
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
-st.title("🛡️ Fortress 95 Pro: Institutional Breakout AI")
+st.title("🛡️ Fortress 95 Pro: Dual Target Institutional Scanner")
 
 # --- MASTER TICKER LISTS (250+ Tickers) ---
 TICKER_GROUPS = {
@@ -43,7 +43,7 @@ SECTOR_MAP = {
     "TRENT.NS": "Retail", "ZOMATO.NS": "Retail", "NYKAA.NS": "Retail"
 }
 
-# --- ULTIMATE ANALYTIC ENGINE (ALL LOGIC COMBINED) ---
+# --- ULTIMATE DUAL-TARGET ENGINE ---
 def check_institutional_fortress(ticker, data, ticker_obj):
     try:
         if len(data) < 200: return None
@@ -53,7 +53,7 @@ def check_institutional_fortress(ticker, data, ticker_obj):
             data.columns = data.columns.get_level_values(0)
         data.dropna(inplace=True)
         
-        # A. Technical Analysis (EMA200, RSI, Supertrend, ATR)
+        # A. Technical Analysis
         price = data['Close'].iloc[-1]
         data['EMA200'] = ta.ema(data['Close'], length=200)
         data['RSI'] = ta.rsi(data['Close'], length=14)
@@ -69,7 +69,7 @@ def check_institutional_fortress(ticker, data, ticker_obj):
         if not (price > ema and 40 <= rsi <= 70 and trend == 1):
             return None
 
-        # B. Black Swan News Sentinel (EXPANDED)
+        # B. Black Swan News Sentinel
         news_sentiment = "✅ Neutral"
         danger_keys = ['fraud', 'investigation', 'default', 'raid', 'resigns', 'scam', 'bankruptcy', 'legal']
         positive_keys = ['growth', 'order', 'win', 'expansion', 'profit', 'deal']
@@ -99,10 +99,10 @@ def check_institutional_fortress(ticker, data, ticker_obj):
         except:
             pass
 
-        # D. Analyst Consensus & Targets
+        # D. Analyst Consensus & Targets (CRITICAL FIX)
         info = ticker_obj.info
-        target = info.get('targetMeanPrice', 0)
-        a_count = info.get('numberOfAnalystOpinions', 0)
+        target = info.get('targetMeanPrice', 0)  # ANALYST TARGET PRICE
+        a_count = info.get('numberOfAnalystOpinions', 0)  # NUMBER OF ANALYSTS
         pe = info.get('trailingPE', "N/A")
         pb = info.get('priceToBook', "N/A")
         upside = ((target - price) / price * 100) if target > 0 else 0
@@ -115,14 +115,14 @@ def check_institutional_fortress(ticker, data, ticker_obj):
             else: 
                 break
 
-        # F. ULTIMATE SCORING (ALL FACTORS)
+        # F. ULTIMATE SCORING
         score = 80
-        if 48 <= rsi <= 58: score += 10  # Golden RSI
+        if 48 <= rsi <= 58: score += 10
         if news_sentiment == "🔥 Positive": score += 5
         if upside > 10: score += 5
         if a_count >= 10: score += 5
-        if news_sentiment == "🚨 BLACK SWAN": score = 10  # Immediate fail
-        if age <= 5: score += 5  # Fresh breakout
+        if news_sentiment == "🚨 BLACK SWAN": score = 10
+        if age <= 5: score += 5
 
         return {
             "Symbol": ticker,
@@ -131,13 +131,14 @@ def check_institutional_fortress(ticker, data, ticker_obj):
             "Age": f"{age}d",
             "News": news_sentiment,
             "Event": event_risk,
+            "Target Price": round(target, 2) if target > 0 else "N/A",  # ANALYST TARGET
             "Upside": f"{upside:.1f}%" if upside > 0 else "N/A",
             "Analysts": a_count,
             "Price": round(price, 2),
             "RSI": round(rsi, 2),
             "PE": pe if pe == "N/A" else round(pe, 1),
             "PB": pb if pb == "N/A" else round(pb, 1),
-            "Target": round(price + (atr * 2.5), 2),
+            "Technical Target": round(price + (atr * 2.5), 2),  # SWING TARGET
             "SL": round(price * 0.96, 2)
         }
     except Exception as e:
@@ -175,7 +176,7 @@ else:
 st.sidebar.title("🔍 Fortress Controls")
 selected_index = st.sidebar.selectbox("Universe", list(TICKER_GROUPS.keys()), key="universe")
 TICKERS = TICKER_GROUPS[selected_index]
-st.sidebar.info(f"📊 **{len(TICKERS)} stocks** | ⏱️ **~{len(TICKERS)*0.7/60:.1f}min scan**")
+st.sidebar.info(f"📊 **{len(TICKERS)} stocks** | ⏱️ **~{len(TICKERS)*0.7/60:.1f}min scan** | **0.7s delay = RATE-LIMIT SAFE**")
 
 if st.sidebar.button("🧹 Clear Cache"):
     st.cache_data.clear()
@@ -195,7 +196,6 @@ if st.button("🚀 START FULL FORTRESS SCAN", type="primary", use_container_widt
         status_text.text(f"🔍 [{i+1}/{total}] Scanning {ticker}...")
         
         try:
-            # SAFE DATA FETCH
             ticker_obj = yf.Ticker(ticker)
             data = yf.download(ticker, period="1y", interval="1d", progress=False, 
                              threads=False, auto_adjust=True)
@@ -205,14 +205,12 @@ if st.button("🚀 START FULL FORTRESS SCAN", type="primary", use_container_widt
                 time.sleep(2)
                 continue
             
-            # RUN FULL ANALYSIS
             result = check_institutional_fortress(ticker, data, ticker_obj)
             if result:
                 results.append(result)
                 st.toast(f"✅ FORTRESS HIT: {ticker} (Score: {result['Score']})", icon="🚀")
             
-            # GOLDEN DELAY (Rate-limit proof)
-            time.sleep(0.7)
+            time.sleep(0.7)  # CRITICAL: 0.7s for analyst data calls
             
         except Exception as e:
             if "429" in str(e) or "rate limit" in str(e).lower():
@@ -241,7 +239,7 @@ if st.button("🚀 START FULL FORTRESS SCAN", type="primary", use_container_widt
             st.subheader("📊 Ultimate Fortress Dashboard")
             st.caption(f"**{selected_index}** | {timestamp} | {len(results)}/{total} hits | {bullish_count}/3 indices bullish")
         
-        # ADVANCED STYLING
+        # ADVANCED STYLING + FIXED COLUMN CONFIG
         def highlight_fortress(row):
             if row['Score'] >= 95:
                 return ['background-color: #FFD700; color: black; font-weight: bold'] * len(row)
@@ -257,19 +255,18 @@ if st.button("🚀 START FULL FORTRESS SCAN", type="primary", use_container_widt
             column_config={
                 "Score": st.column_config.ProgressColumn("Fortress Score", min_value=0, max_value=100, format="%d%%"),
                 "Age": st.column_config.TextColumn("Trend Age", help="Days above EMA200+SuperTrend"),
-                "News": st.column_config.TextColumn("News AI", help="Black Swan detection"),
-                "Event": st.column_config.TextColumn("Earnings Risk"),
-                "Upside": st.column_config.NumberColumn("Analyst Target %"),
-                "Analysts": st.column_config.NumberColumn("Coverage"),
-                "Target": st.column_config.NumberColumn("Price Target", format="₹%.0f"),
+                "Target Price": st.column_config.NumberColumn("Analyst Target", format="₹%.2f"),  # STANDALONE ANALYST TARGET
+                "Upside": st.column_config.TextColumn("Analyst Upside"),
+                "Analysts": st.column_config.NumberColumn("Institutional Coverage", help="Number of analysts backing this stock"),
+                "Technical Target": st.column_config.NumberColumn("Swing Target", format="₹%.0f"),  # ATR BASED
                 "SL": st.column_config.NumberColumn("Stop Loss", format="₹%.0f")
             },
             height=600
         )
         
-        st.info("**🛡️ Fortress Logic:** Price>EMA200 + RSI(40-70) + SuperTrend=1 + No Black Swan + Fresh trend + Analyst support")
+        st.info("**🛡️ Dual Targets:** `Target Price` = Analyst Fair Value | `Technical Target` = ATR Swing (2.5x) | **0.7s delay = Rate-limit safe**")
         
     else:
-        st.warning("🏰 **Fortress Walls Are Up.** No institutional setups found. Try another universe or wait for rotation.")
+        st.warning("🏰 **Fortress Walls Are Up.** No institutional setups found. Try another universe.")
 
-st.caption("🛡️ **Fortress 95 Pro v2.0** - 250+ Tickers | News AI | Black Swan | Earnings | Rate-Limit Proof | Production Ready")
+st.caption("🛡️ **Fortress 95 Pro v3.0** - DUAL TARGETS | Analyst Visibility | 250+ Tickers | Production Ready")
