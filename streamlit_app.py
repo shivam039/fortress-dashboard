@@ -1,4 +1,4 @@
-# fortress_app.py - v6.0 WEIGHTED CONVICTION (ARROW FIXED)
+# fortress_app.py - v7.0 INSTITUTIONAL SIGNAL ENGINE
 import subprocess
 import sys
 import time
@@ -7,118 +7,116 @@ import pandas_ta as ta
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import pytz
 
-# Import config
-from fortress_config import TICKER_GROUPS, SECTOR_MAP, INDEX_BENCHMARKS
+# ---------------- CONFIG ----------------
+from fortress_config import (
+    TICKER_GROUPS,
+    SECTOR_MAP,
+    INDEX_BENCHMARKS,
+    NIFTY_SYMBOL
+)
 
-# Auto-install dependencies
+# ---------------- DEPENDENCIES ----------------
 try:
     import yfinance as yf
 except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "yfinance"])
+    import yfinance as yf
 
-# --- SYSTEM CONFIG ---
+# ---------------- UI ----------------
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
-st.title("🛡️ Fortress 95 Pro v6.0 - WEIGHTED CONVICTION ENGINE")
+st.title("🛡️ Fortress 95 Pro v7.0 — Institutional Swing Signals")
 
-# --- UPDATED FORTRESS ENGINE (WEIGHTED LOGIC) ---
-def check_institutional_fortress(ticker, data, ticker_obj):
+# =========================================================
+# 🔥 CORE INSTITUTIONAL ENGINE (SIGNAL-ONLY)
+# =========================================================
+def check_institutional_fortress(
+    ticker: str,
+    data: pd.DataFrame,
+    nifty_data: pd.DataFrame,
+    sector_data: pd.DataFrame | None = None
+):
     try:
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
 
-        if len(data) < 210:
-            return {"Symbol": ticker, "Sector": SECTOR_MAP.get(ticker, "General"),
-                    "Verdict": "⚠️ DATA", "Score": 0, "Price": 0.0,
-                    "RSI": 0.0, "News": "⚠️", "Events": "⚠️", "Target_Analyst": 0.0}
+        if len(data) < 210 or len(nifty_data) < 60:
+            return None
 
-        close = data['Close']
-        high = data['High']
-        low = data['Low']
-
-        # --- SAFE INDICATORS ---
-        ema200 = ta.ema(close, length=200)
-        rsi_series = ta.rsi(close, length=14)
-
-        if ema200.isna().iloc[-1] or rsi_series.isna().iloc[-1]:
-            return {"Symbol": ticker, "Sector": SECTOR_MAP.get(ticker, "General"),
-                    "Verdict": "⚠️ INDICATOR", "Score": 0,
-                    "Price": float(close.iloc[-1]), "RSI": 0.0,
-                    "News": "⚠️", "Events": "⚠️", "Target_Analyst": 0.0}
+        close = data["Close"]
+        high = data["High"]
+        low = data["Low"]
 
         price = float(close.iloc[-1])
-        ema200_val = float(ema200.iloc[-1])
-        rsi = float(rsi_series.iloc[-1])
 
-        # --- SUPER TREND (DIRECTION ONLY) ---
-        st_df = ta.supertrend(high, low, close, length=10, multiplier=3)
-        trend_dir_col = [c for c in st_df.columns if c.startswith("SUPERTd")][0]
-        trend_dir = int(st_df[trend_dir_col].iloc[-1])  # +1 bullish, -1 bearish
+        # -------- INDICATORS --------
+        ema200 = ta.ema(close, 200).iloc[-1]
+        rsi = ta.rsi(close, 14).iloc[-1]
+        atr = ta.atr(high, low, close, 14).iloc[-1]
 
-        # --- BASE TECH FILTER ---
-        tech_base = price > ema200_val and trend_dir == 1
+        if np.isnan(ema200) or np.isnan(rsi) or np.isnan(atr):
+            return None
 
-        conviction = 0
-        score_mod = 0
-        news_sentiment = "Neutral"
-        event_status = "✅ Safe"
-        target = 0
+        # -------- SUPERTREND DIRECTION --------
+        st_df = ta.supertrend(high, low, close, 10, 3)
+        trend_dir = int(
+            st_df[[c for c in st_df.columns if c.startswith("SUPERTd")][0]].iloc[-1]
+        )
 
-        # --- NEWS (SAFE) ---
-        try:
-            news = ticker_obj.news or []
-            danger_keys = ['fraud', 'investigation', 'default', 'scam', 'bankruptcy', 'legal']
-            titles = " ".join(n.get('title', '').lower() for n in news[:5])
-            if any(k in titles for k in danger_keys):
-                news_sentiment = "🚨 BLACK SWAN"
-                score_mod -= 40
-        except:
-            pass
+        # -------- BASE TREND FILTER --------
+        if not (price > ema200 and trend_dir == 1):
+            return None
 
-        # --- EARNINGS (SAFE) ---
-        try:
-            cal = ticker_obj.calendar
-            if isinstance(cal, pd.DataFrame) and not cal.empty:
-                next_date = pd.to_datetime(cal.iloc[0, 0]).date()
-                days_to = (next_date - datetime.now().date()).days
-                if 0 <= days_to <= 7:
-                    event_status = f"🚨 EARNINGS ({next_date.strftime('%d-%b')})"
-                    score_mod -= 20
-        except:
-            pass
+        conviction = 60
 
-        # --- ANALYST TARGET (OPTIONAL BOOST) ---
-        try:
-            info = ticker_obj.info or {}
-            target = info.get('targetMeanPrice', 0) or 0
-        except:
-            pass
+        # -------- RSI QUALITY --------
+        if 48 <= rsi <= 62:
+            conviction += 20
+        elif 40 <= rsi < 48 or 62 < rsi <= 72:
+            conviction += 10
 
-        # --- SCORING ---
-        if tech_base:
-            conviction += 60
+        # =====================================================
+        # 🔥 RELATIVE STRENGTH vs NIFTY (50-DAY)
+        # =====================================================
+        stock_ret = (close.iloc[-1] / close.iloc[-50]) - 1
+        nifty_ret = (
+            nifty_data["Close"].iloc[-1] / nifty_data["Close"].iloc[-50]
+        ) - 1
 
-            if 48 <= rsi <= 62:
-                conviction += 20
-            elif 40 <= rsi < 48 or 62 < rsi <= 72:
+        rs_alpha = stock_ret - nifty_ret
+
+        if rs_alpha > 0.05:
+            conviction += 15
+        elif rs_alpha > 0:
+            conviction += 10
+
+        # =====================================================
+        # 🏭 SECTOR ROTATION WEIGHTING
+        # =====================================================
+        if sector_data is not None and len(sector_data) > 60:
+            s_close = sector_data["Close"]
+            s_ema50 = ta.ema(s_close, 50).iloc[-1]
+            s_ret = (s_close.iloc[-1] / s_close.iloc[-50]) - 1
+
+            if s_close.iloc[-1] > s_ema50 and s_ret > nifty_ret:
                 conviction += 10
 
-            if target > price * 1.10:
-                conviction += 10
+        conviction = min(conviction, 100)
 
-            conviction += score_mod
+        # =====================================================
+        # 🎯 10-DAY PROJECTED TARGET
+        # =====================================================
+        target_10d = price + (atr * 1.8)
 
-        conviction = max(0, min(100, conviction))
-
+        # =====================================================
+        # 🚨 SIGNAL-ONLY MODE
+        # =====================================================
         if conviction >= 85:
             verdict = "🔥 HIGH CONVICTION"
-        elif conviction >= 60:
+        elif conviction >= 70:
             verdict = "🚀 PASS"
-        elif tech_base:
-            verdict = "🟡 WATCH"
         else:
-            verdict = "❌ FAIL"
+            return None
 
         return {
             "Symbol": ticker,
@@ -127,93 +125,106 @@ def check_institutional_fortress(ticker, data, ticker_obj):
             "Score": conviction,
             "Price": round(price, 2),
             "RSI": round(rsi, 1),
-            "News": news_sentiment,
-            "Events": event_status,
-            "Target_Analyst": round(target, 0)
+            "ATR": round(atr, 2),
+            "Target_10D": round(target_10d, 2),
+            "RS_vs_NIFTY_%": round(rs_alpha * 100, 1)
         }
 
-    except Exception as e:
-        return {"Symbol": ticker, "Verdict": "⚠️ ERROR", "Score": 0,
-                "Price": 0.0, "RSI": 0.0, "Target_Analyst": 0.0}
+    except Exception:
+        return None
 
-# --- FIXED MARKET PULSE ---
-st.subheader("🌐 Market Pulse")
+
+# =========================================================
+# 🌐 MARKET REGIME (FILTER ONLY)
+# =========================================================
+st.subheader("🌐 Market Regime")
 cols = st.columns(3)
 bullish_count = 0
+
 for i, (name, symbol) in enumerate(INDEX_BENCHMARKS.items()):
     try:
-        data = yf.download(symbol, period="1y", progress=False)
-        if not data.empty:
-            price = data['Close'].iloc[-1]
-            ema = ta.ema(data['Close'], 200).iloc[-1]
-            status = "🟢 BULLISH" if price > ema else "🔴 BEARISH"
-            if price > ema: bullish_count += 1
-            cols[i].metric(name, f"₹{price:,.0f}", status)
-    except: pass
+        idx = yf.download(symbol, period="1y", progress=False)
+        if not idx.empty:
+            p = idx["Close"].iloc[-1]
+            e = ta.ema(idx["Close"], 200).iloc[-1]
+            status = "🟢 BULLISH" if p > e else "🔴 BEARISH"
+            if p > e:
+                bullish_count += 1
+            cols[i].metric(name, f"{p:,.0f}", status)
+    except:
+        pass
 
-market_status = "✅ BULL MARKET" if bullish_count >= 2 else "⚠️ MIXED" if bullish_count == 1 else "🛑 BEAR"
-st.success(f"**{market_status}** - {bullish_count}/3 indices bullish")
+market_state = (
+    "✅ BULL MARKET" if bullish_count >= 2
+    else "⚠️ MIXED"
+    if bullish_count == 1
+    else "🛑 BEAR"
+)
+st.success(f"{market_state} — {bullish_count}/3 indices bullish")
 
-# --- CONTROLS ---
+# =========================================================
+# 🎛 CONTROLS
+# =========================================================
 st.sidebar.title("🔍 Fortress Controls")
 selected_index = st.sidebar.selectbox("Universe", list(TICKER_GROUPS.keys()))
 TICKERS = TICKER_GROUPS[selected_index]
-st.sidebar.info(f"📊 **{len(TICKERS)} stocks** | **Weighted Conviction Active**")
+st.sidebar.info(f"📊 {len(TICKERS)} stocks | Signal-Only Mode")
 
-if st.sidebar.button("🧹 Clear Cache"):
-    st.cache_data.clear()
-    st.rerun()
+# =========================================================
+# 🚀 MAIN SCAN
+# =========================================================
+if st.button("🚀 START SIGNAL SCAN", type="primary", use_container_width=True):
 
-# --- MAIN SCAN ---
-if st.button("🚀 START WEIGHTED SCAN", type="primary", use_container_width=True):
-    results = []
+    nifty_data = yf.download(NIFTY_SYMBOL, period="1y", progress=False)
+
+    signals = []
     total = len(TICKERS)
     progress = st.progress(0)
     status = st.empty()
-    high_conviction = 0
-    
+
     for i, ticker in enumerate(TICKERS):
         status.text(f"🔍 [{i+1}/{total}] {ticker}")
-        try:
-            ticker_obj = yf.Ticker(ticker)
-            data = yf.download(ticker, period="1y", progress=False)
-            if not data.empty:
-                result = check_institutional_fortress(ticker, data, ticker_obj)
-                results.append(result)
-                if result['Verdict'] == "🔥 HIGH CONVICTION":
-                    high_conviction += 1
-                    st.toast(f"🔥 HIGH CONVICTION: {ticker}", icon="🔥")
-                elif result['Verdict'] == "🚀 PASS":
-                    st.toast(f"✅ PASS: {ticker}", icon="🚀")
-            time.sleep(0.7)
-        except: continue
-        progress.progress((i+1)/total)
-    
-    status.success(f"✅ SCAN COMPLETE! {high_conviction} High Conviction found.")
 
-    if results:
-        # ARROW-SAFE DataFrame
-        df = pd.DataFrame(results).sort_values('Score', ascending=False)
-        
-        # Force numeric columns
-        numeric_cols = ['Price', 'RSI', 'Target_Analyst', 'Score']
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        
-        # SUMMARY METRICS
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("🔥 HIGH CONV", high_conviction)
-        c2.metric("🚀 PASSES", len(df[df['Verdict'] == '🚀 PASS']))
-        c3.metric("📈 Top Score", int(df['Score'].max()))
-        c4.metric("🏦 Max Target", f"₹{int(df['Target_Analyst'].max()):,}")
-        c5.metric("📊 Scanned", len(results))
-        
-        # ✅ ARROW-SAFE TABLE (NO styling/ProgressColumn)
-        st.subheader("📊 CONVICTION DASHBOARD")
-        st.info("**🔥 HIGH CONVICTION** (85+) = Trade Now | **🚀 PASS** (60+) = Strong | **🟡 WATCH** = Monitor")
-        
+        try:
+            data = yf.download(ticker, period="1y", progress=False)
+            if data.empty:
+                continue
+
+            sector_symbol = SECTOR_MAP.get(ticker)
+            sector_data = None
+            if sector_symbol:
+                sector_data = yf.download(sector_symbol, period="1y", progress=False)
+
+            signal = check_institutional_fortress(
+                ticker,
+                data,
+                nifty_data,
+                sector_data
+            )
+
+            if signal:
+                signals.append(signal)
+                st.toast(f"{signal['Verdict']}: {ticker}", icon="🔥")
+
+            time.sleep(0.4)
+
+        except:
+            pass
+
+        progress.progress((i + 1) / total)
+
+    # =====================================================
+    # 📊 OUTPUT — SIGNALS ONLY
+    # =====================================================
+    if signals:
+        df = pd.DataFrame(signals).sort_values("Score", ascending=False)
+
+        st.subheader("🎯 INSTITUTIONAL SWING SIGNALS (10-Day Horizon)")
+        st.info("Only stocks with **institutional alignment + alpha + sector support**")
+
         st.dataframe(df, use_container_width=True, height=600)
+    else:
+        st.warning("No institutional-grade signals today.")
 
 st.markdown("---")
-st.caption("🛡️ **Fortress 95 Pro v6.0** - Weighted Scoring | No Errors | Production Ready")
+st.caption("🛡️ Fortress 95 Pro v7.0 — Institutional Logic | Signal-Only | No Noise")
