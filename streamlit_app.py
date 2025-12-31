@@ -22,7 +22,7 @@ def reset_filters():
 
 # 1. Page Config
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
-st.title("🛡️ Fortress 95: Professional Scanner")
+st.title("🛡️ Fortress 95: Pure Breakout Scanner")
 
 # 2. Multi-Index Ticker Lists
 TICKER_GROUPS = {
@@ -95,16 +95,6 @@ if st.sidebar.button("🗑️ Reset All Filters"):
     st.rerun()
 
 st.sidebar.divider()
-use_analyst_filter = st.sidebar.checkbox("Filter by Analyst Support", value=False, key="use_analyst_filter")
-min_analysts = st.sidebar.slider("Min Analysts Required", 0, 50, 10, key="min_analysts") if use_analyst_filter else 0
-st.sidebar.divider()
-st.sidebar.subheader("🕒 Entry Freshness")
-max_age = st.sidebar.slider("Max Trend Age (Days)", 1, 10, 5, key="max_age")
-st.sidebar.divider()
-st.sidebar.subheader("💰 Capital Management")
-total_capital = st.sidebar.number_input("Trading Capital (₹)", value=100000, key="total_capital")
-risk_per_trade = st.sidebar.slider("Risk Per Trade (%)", 0.5, 3.0, 1.0, key="risk_per_trade")
-st.sidebar.divider()
 st.sidebar.subheader("⚙️ Maintenance")
 if st.sidebar.button("🧹 Clear All Cache"):
     clear_full_cache()
@@ -113,7 +103,6 @@ if st.sidebar.button("🧹 Clear All Cache"):
 # --- ENHANCED MARKET PULSE (STABLE VERSION WITH FALLBACKS) ---
 st.subheader("🌐 Global Market Benchmarks")
 
-# Using the most stable Yahoo Tickers for Indian Indices (Dec 2025)
 index_benchmarks = {
     "Nifty 50": ["^NSEI", "NIFTY50.NS"],
     "Nifty Next 50": ["^NIFTYJR", "NIFTYNEXT50.NS"],
@@ -125,7 +114,6 @@ market_health = []
 
 for i, (name, tickers) in enumerate(index_benchmarks.items()):
     idx_data = None
-    # Try each ticker until one works
     for ticker in tickers:
         try:
             idx_data = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
@@ -135,7 +123,6 @@ for i, (name, tickers) in enumerate(index_benchmarks.items()):
             continue
     
     if idx_data is not None and not idx_data.empty:
-        # Standardize columns (yfinance MultiIndex fix)
         if isinstance(idx_data.columns, pd.MultiIndex):
             idx_data.columns = idx_data.columns.get_level_values(0)
             
@@ -155,27 +142,29 @@ for i, (name, tickers) in enumerate(index_benchmarks.items()):
     else:
         pulse_cols[i].error(f"⚠️ {name} Link Broken")
 
-# --- FINAL SYSTEM ALERT ---
+# FINAL SYSTEM ALERT
 bullish_count = sum(market_health)
 if bullish_count >= 2:
-    st.success("✅ **Market Support:** Broad trend is BULLISH. Perfect for 'Fortress' setups.")
+    st.success("✅ **Market Support:** Broad trend is BULLISH. Perfect for breakouts.")
 elif bullish_count == 1:
-    st.warning("⚖️ **Mixed Market:** Divergence found. Trade only Nifty 50 'Gold' stocks.")
+    st.warning("⚖️ **Mixed Market:** Trade only Nifty 50 breakouts.")
 else:
-    st.error("🛑 **System Alert:** Full Market BEARISH. High risk of failure for new longs.")
+    st.error("🛑 **System Alert:** Full Market BEARISH. High risk for longs.")
 
-# Logic Engine (unchanged)
+# 3. Enhanced Logic Engine (PURE TECHNICAL BREAKOUT)
 @st.cache_data(ttl=600)
-def check_institutional_fortress(ticker, total_capital, risk_per_trade, use_analyst_filter, min_analysts, max_age):
+def check_institutional_fortress(ticker):
     try:
-        ticker_obj = yf.Ticker(ticker)
+        # 1. Technical Data Fetch
         data = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
+        if len(data) < 200: return None
         
+        # Standardize columns
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
         data.dropna(inplace=True)
-        if len(data) < 200: return None
 
+        # --- CORE TECHNICALS ---
         price = data['Close'].iloc[-1]
         data['EMA200'] = ta.ema(data['Close'], length=200)
         data['RSI'] = ta.rsi(data['Close'], length=14)
@@ -185,127 +174,79 @@ def check_institutional_fortress(ticker, total_capital, risk_per_trade, use_anal
         rsi = data['RSI'].iloc[-1]
         ema = data['EMA200'].iloc[-1]
         trend = st_df.iloc[:, 1].iloc[-1]
-        sl_price = round(price * 0.96, 2)
-        target_price = round(price + (data['ATR'].iloc[-1] * 2.5), 2)
 
-        days_in_trend = 0
-        for i in range(1, 11):
-            if data['Close'].iloc[-i] > data['EMA200'].iloc[-i] and st_df.iloc[:, 1].iloc[-i] == 1:
-                days_in_trend += 1
-            else: break
+        # --- PURE BREAKOUT LOGIC (NO FUNDAMENTAL BLOCKERS) ---
+        is_buy_setup = (price > ema) and (40 <= rsi <= 70) and (trend == 1)
         
-        if days_in_trend > max_age: return None
+        if not is_buy_setup:
+            return None
 
+        # --- METADATA (INFORMATIONAL ONLY) ---
+        ticker_obj = yf.Ticker(ticker)
         info = ticker_obj.info
-        pe = info.get('trailingPE', 0)
-        valuation_label = "💎 Value" if (pe > 0 and pe < 25) else "🚀 Premium" if pe > 60 else "📊 Fair"
+        pe = info.get('trailingPE', "N/A")
+        pb = info.get('priceToBook', "N/A")
         
-        calendar = ticker_obj.calendar
-        event_warning = "✅ Clear"
-        score = 0
-        
-        if calendar is not None and not calendar.empty:
-            upcoming_date = calendar.iloc[0, 0]
-            days_to_event = (upcoming_date.date() - datetime.now().date()).days
-            if 0 <= days_to_event <= 2: return None
-            elif 3 <= days_to_event <= 7:
-                event_warning = f"⚠️ Results ({upcoming_date.strftime('%d-%b')})"
-                score -= 20
-
-        analyst_count = info.get('numberOfAnalystOpinions', 0)
-        if use_analyst_filter and analyst_count < min_analysts: return None
-        expert_target = info.get('targetMeanPrice', 0)
-
-        news_data = ticker_obj.news
-        news_alert = "✅ Neutral"
-        danger_keywords = ['fraud', 'investigation', 'default', 'bankruptcy', 'raid', 'resigns', 'scam', 'penalty', 'legal']
-        
-        if news_data:
-            recent_titles = [n['title'].lower() for n in news_data[:5]]
-            for title in recent_titles:
-                if any(k in title for k in danger_keywords):
-                    news_alert = "🚨 BLACK SWAN"
-                    break
-                elif any(k in title for k in ['growth', 'order', 'win', 'expansion', 'profit']):
-                    news_alert = "🔥 Positive"
-
-        news_link = f"https://www.google.com/search?q={ticker}+stock+news&tbm=nws"
-
-        if trend == 1: score += 30
-        if price > ema: score += 20
-        if 48 <= rsi <= 58: score += 30
-        elif 45 <= rsi <= 65: score += 15
-        if days_in_trend >= 2: score += 10
-        if expert_target and expert_target > price: score += 10
-        if news_alert == "🔥 Positive": score += 10
-        if news_alert == "🚨 BLACK SWAN": score -= 60
-        if valuation_label == "💎 Value": score += 15
-
-        prev_rsi = data['RSI'].iloc[-2]
-        momentum_icon = "🔼 Increasing" if rsi > prev_rsi else "🔽 Slowing" if rsi < prev_rsi else "➡️ Stable"
-
-        risk = price - sl_price
-        reward = target_price - price
-        rr_ratio = round(reward / risk, 2) if risk > 0 else 0
-        rupees_at_risk = total_capital * (risk_per_trade / 100)
-        per_share_risk = price - sl_price
-        suggested_qty = int(rupees_at_risk / per_share_risk) if per_share_risk > 0 else 0
-        total_investment = suggested_qty * price
-
-        status = "🚀 BUY" if (price > ema and 45 <= rsi <= 65 and trend == 1) else "📈 TRENDING" if (price > ema and 65 < rsi < 75 and trend == 1) else "✋ OVERBOUGHT" if rsi >= 75 else "🚫 AVOID"
+        # Trend Age Logic (Essential for "Freshness")
+        age = 0
+        for i in range(1, 15):
+            if data['Close'].iloc[-i] > data['EMA200'].iloc[-i] and st_df.iloc[:, 1].iloc[-i] == 1:
+                age += 1
+            else: break
 
         return {
-            "Symbol": ticker, "News Status": news_alert, "Read News": news_link,
-            "Sector": SECTOR_MAP.get(ticker, "General"), "Valuation": valuation_label,
-            "Event Risk": event_warning, "Age": f"{days_in_trend} Days",
-            "Momentum": momentum_icon, "RR Ratio": rr_ratio, "Qty": suggested_qty,
-            "Invest": round(total_investment, 0), "Conviction Score": score,
-            "Status": status, "Price": round(price, 2), "2-Week (ATR) Target": target_price,
-            "Analysts 👤": analyst_count, "Expert Target": round(expert_target, 2) if expert_target else "N/A",
-            "RSI": round(rsi, 2), "P/E": round(pe, 1) if pe else "N/A", "SL": sl_price
+            "Symbol": ticker,
+            "Sector": SECTOR_MAP.get(ticker, "General"),
+            "Age": f"{age}d",
+            "Score": 95 if (48 <= rsi <= 58) else 80,
+            "Price": round(price, 2),
+            "RSI": round(rsi, 2),
+            "PE": pe if pe == "N/A" else round(pe, 1),
+            "PB": pb if pb == "N/A" else round(pb, 1),
+            "Target": round(price + (data['ATR'].iloc[-1] * 2.5), 2),
+            "SL": round(price * 0.96, 2)
         }
-    except: return None
+    except Exception as e:
+        return None
 
 # Execution
-if st.button("🚀 Start Fortress Scan"):
+if st.button("🚀 Start Pure Breakout Scan"):
     results = []
     with st.status(f"Scanning {selected_index}...", expanded=True):
         bar = st.progress(0)
         for i, t in enumerate(TICKERS):
-            res = check_institutional_fortress(t, total_capital, risk_per_trade, use_analyst_filter, min_analysts, max_age)
+            res = check_institutional_fortress(t)
             if res: results.append(res)
             bar.progress((i + 1) / len(TICKERS))
 
     if results:
         IST = pytz.timezone('Asia/Kolkata')
         timestamp_str = datetime.now(IST).strftime("%d-%b-%Y | %I:%M:%S %p")
-        df = pd.DataFrame(results).sort_values(by="Conviction Score", ascending=False)
+        df = pd.DataFrame(results).sort_values(by="Score", ascending=False)
 
         st.subheader("🏦 Sector Distribution")
-        st.bar_chart(df.groupby('Sector')['Invest'].sum())
+        st.bar_chart(df.groupby('Sector').size(), height=400)
 
         def highlight_rows(row):
-            if row['News Status'] == "🚨 BLACK SWAN":
-                return ['background-color: #9b1c1c; color: white; font-weight: bold'] * len(row)
-            elif row['Conviction Score'] >= 90 and row['RR Ratio'] >= 1.5:
+            if row['Score'] == 95:
                 return ['background-color: #FFD700; color: black; font-weight: bold'] * len(row)
             return [''] * len(row)
 
-        st.subheader("📊 Fortress 95 Dashboard")
+        st.subheader("📊 Pure Breakout Dashboard")
         st.caption(f"🕒 **{selected_index} Scan (IST):** {timestamp_str} | Found: {len(results)}/{len(TICKERS)}")
+        st.info("**PURE TECHNICAL:** No P/E blocks. RSI 40-70. Above EMA200 + SuperTrend=1")
         
         st.dataframe(
             df.style.apply(highlight_rows, axis=1),
             use_container_width=True,
             column_config={
-                "News Status": st.column_config.TextColumn("Sentiment"),
-                "Read News": st.column_config.LinkColumn("Verify News 🔗"),
-                "Valuation": st.column_config.TextColumn("Type"),
-                "Event Risk": st.column_config.TextColumn("Events"),
-                "Conviction Score": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=100, format="%d%%"),
-                "RR Ratio": st.column_config.NumberColumn("Risk:Reward", format="%.2fx"),
-                "Invest": st.column_config.NumberColumn("Investment", format="₹%d")
+                "Score": st.column_config.ProgressColumn("Strength", min_value=0, max_value=100, format="%d"),
+                "Age": st.column_config.TextColumn("Freshness", help="Days above EMA200+SuperTrend"),
+                "PE": st.column_config.NumberColumn("P/E", format="%.1f"),
+                "PB": st.column_config.NumberColumn("P/B", format="%.1f"),
+                "Target": st.column_config.NumberColumn("Target", format="₹%.0f"),
+                "SL": st.column_config.NumberColumn("Stop Loss", format="₹%.0f")
             }
         )
     else:
-        st.warning(f"No setups found in {selected_index}.")
+        st.warning(f"No pure breakouts found in {selected_index}.")
