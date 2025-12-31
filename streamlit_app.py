@@ -133,45 +133,48 @@ if st.button("🚀 Run Institutional Scan"):
             bar.progress((i + 1) / len(TICKERS))
 
     # --- 5. Execution & Display ---
-    if results:
-        # --- ADDED: Timestamp Logic ---
+  if results:
+    # Everything below this line MUST be indented by 4 spaces
     IST = pytz.timezone('Asia/Kolkata')
     timestamp_str = datetime.now(IST).strftime("%d-%b-%Y | %I:%M:%S %p")
     
-        df = pd.DataFrame(results)
-        
-        # Sort so the highest conviction stocks appear first
-        df = df.sort_values(by="Conviction Score", ascending=False)
+    df = pd.DataFrame(results)
+    
+    # Sort so the highest conviction stocks appear first
+    df = df.sort_values(by="Conviction Score", ascending=False)
 
-        # 1. Define the Highlighting Logic
-        def highlight_top_setups(row):
-            # If the score is 90 or above, highlight the whole row GOLD
-            if row['Conviction Score'] >= 90:
-                return ['background-color: #FFD700; color: black; font-weight: bold'] * len(row)
-            return [''] * len(row)
+    # 1. Define the Highlighting Logic
+    def highlight_top_setups(row):
+        # If the score is 90 or above, highlight the whole row GOLD
+        if row['Conviction Score'] >= 90:
+            return ['background-color: #FFD700; color: black; font-weight: bold'] * len(row)
+        return [''] * len(row)
 
-        st.subheader("📊 Fortress 95 Intelligence Dashboard")
-# --- ADDED: Display Timestamp ---
+    st.subheader("📊 Fortress 95 Intelligence Dashboard")
+    
+    # Display Timestamp
     st.caption(f"🕒 **Last Market Scan (IST):** {timestamp_str}")
-        st.write("Stocks highlighted in **Gold** represent the highest probability (95%) setups.")
+    
+    st.write("Stocks highlighted in **Gold** represent the highest probability (95%) setups.")
 
-        # 2. Apply the style and display the Dataframe
-        st.dataframe(
-            df.style.apply(highlight_top_setups, axis=1), 
-            use_container_width=True,
-            column_config={
-                "Conviction Score": st.column_config.ProgressColumn(
-                    "Probability",
-                    help="Calculated based on Trend, RSI Sweet-spot, and Institutional backing",
-                    min_value=0,
-                    max_value=100,
-                    format="%d%%",
-                ),
-                "Price": st.column_config.NumberColumn(format="₹%.2f"),
-                "2-Week (ATR) Target": st.column_config.NumberColumn(format="₹%.2f"),
-                "Expert Target": st.column_config.NumberColumn(format="₹%.2f"),
-                "SL": st.column_config.NumberColumn("Stop Loss", format="₹%.2f")
-            }
-        )
-    else:
-        st.warning("No matches found today. Wait for the market to setup.")
+    # 2. Apply the style and display the Dataframe
+    st.dataframe(
+        df.style.apply(highlight_top_setups, axis=1), 
+        use_container_width=True,
+        column_config={
+            "Conviction Score": st.column_config.ProgressColumn(
+                "Probability",
+                help="Calculated based on Trend, RSI Sweet-spot, and Institutional backing",
+                min_value=0,
+                max_value=100,
+                format="%d%%",
+            ),
+            "Price": st.column_config.NumberColumn(format="₹%.2f"),
+            "2-Week (ATR) Target": st.column_config.NumberColumn(format="₹%.2f"),
+            "Expert Target": st.column_config.NumberColumn(format="₹%.2f"),
+            "SL": st.column_config.NumberColumn("Stop Loss", format="₹%.2f")
+        }
+    )
+else:
+    # This 'else' belongs to the 'if results:'
+    st.warning("No matches found today. Wait for the market to setup.")
