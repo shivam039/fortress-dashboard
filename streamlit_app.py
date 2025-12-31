@@ -61,12 +61,12 @@ TICKER_GROUPS = {
     ]
 }
 
-# Sector Mapping (expanded)
+# Sector Mapping
 SECTOR_MAP = {
     "HDFCBANK.NS": "Banking", "ICICIBANK.NS": "Banking", "SBIN.NS": "Banking", 
     "KOTAKBANK.NS": "Banking", "AXISBANK.NS": "Banking", "INDUSINDBK.NS": "Banking",
     "BANKBARODA.NS": "Banking", "CANBK.NS": "Banking", "PNB.NS": "Banking",
-    "BAJFINANCE.NS": "NBFC", "BAJAJFINSv.NS": "NBFC", "CHOLAFIN.NS": "NBFC",
+    "BAJFINANCE.NS": "NBFC", "BAJAJFINSV.NS": "NBFC", "CHOLAFIN.NS": "NBFC",
     "SHRIRAMFIN.NS": "NBFC", "MUTHOOTFIN.NS": "NBFC", "IDFCFIRSTB.NS": "Banking",
     "TCS.NS": "IT", "INFY.NS": "IT", "WIPRO.NS": "IT", "HCLTECH.NS": "IT", 
     "TECHM.NS": "IT", "LTIM.NS": "IT", "MPHASIS.NS": "IT", "PERSISTENT.NS": "IT",
@@ -84,16 +84,9 @@ SECTOR_MAP = {
     "TRENT.NS": "Retail", "ZOMATO.NS": "Retail"
 }
 
-# Sidebar with Index Selection
+# Sidebar
 st.sidebar.title("🔍 Strategy Filters")
-
-selected_index = st.sidebar.selectbox(
-    "Select Universe", 
-    options=list(TICKER_GROUPS.keys()), 
-    index=0,
-    key="selected_index"
-)
-
+selected_index = st.sidebar.selectbox("Select Universe", options=list(TICKER_GROUPS.keys()), index=0, key="selected_index")
 TICKERS = TICKER_GROUPS[selected_index]
 st.sidebar.write(f"📊 Total Stocks: **{len(TICKERS)}**")
 
@@ -117,46 +110,59 @@ if st.sidebar.button("🧹 Clear All Cache"):
     clear_full_cache()
     st.rerun()
 
-# --- ENHANCED MARKET PULSE (3-Index Benchmarking) ---
+# --- ENHANCED MARKET PULSE (STABLE VERSION WITH FALLBACKS) ---
 st.subheader("🌐 Global Market Benchmarks")
+
+# Using the most stable Yahoo Tickers for Indian Indices (Dec 2025)
 index_benchmarks = {
-    "Nifty 50": "^NSEI",
-    "Nifty Next 50": "NIFTY_NEXT_50.NS", 
-    "Nifty Midcap 150": "^NSMIDCP"
+    "Nifty 50": ["^NSEI", "NIFTY50.NS"],
+    "Nifty Next 50": ["^NIFTYJR", "NIFTYNEXT50.NS"],
+    "Nifty Midcap 150": ["^NSMIDCP", "NIFTYMIDCAP150.NS"]
 }
 
 pulse_cols = st.columns(len(index_benchmarks))
-bullish_count = 0
+market_health = []
 
-for i, (name, ticker) in enumerate(index_benchmarks.items()):
-    try:
-        idx_data = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
+for i, (name, tickers) in enumerate(index_benchmarks.items()):
+    idx_data = None
+    # Try each ticker until one works
+    for ticker in tickers:
+        try:
+            idx_data = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
+            if not idx_data.empty:
+                break
+        except:
+            continue
+    
+    if idx_data is not None and not idx_data.empty:
+        # Standardize columns (yfinance MultiIndex fix)
+        if isinstance(idx_data.columns, pd.MultiIndex):
+            idx_data.columns = idx_data.columns.get_level_values(0)
+            
         idx_price = idx_data['Close'].iloc[-1]
         idx_ema = ta.ema(idx_data['Close'], length=200).iloc[-1]
         idx_rsi = ta.rsi(idx_data['Close'], length=14).iloc[-1]
         
         status = "BULLISH" if idx_price > idx_ema else "BEARISH"
-        if status == "BULLISH": bullish_count += 1
-        color = "normal" if status == "BULLISH" else "inverse"
+        market_health.append(status == "BULLISH")
         
         pulse_cols[i].metric(
-            label=f"{name} Pulse",
-            value=f"{idx_price:,.0f}",
+            label=f"{name}",
+            value=f"{idx_price:,.1f}",
             delta=f"{status} (RSI: {idx_rsi:.1f})",
-            delta_color=color
+            delta_color="normal" if status == "BULLISH" else "inverse"
         )
-    except:
-        pulse_cols[i].warning(f"Data error for {name}")
+    else:
+        pulse_cols[i].error(f"⚠️ {name} Link Broken")
 
-# Global Guidance
-if bullish_count == 3:
-    st.success("🚀 **All Systems Go:** Broad market strength across Large + Midcaps. Aggressive trading OK.")
-elif bullish_count == 0:
-    st.error("🛑 **System Alert:** Full market Bearish. Avoid new entries. Protect capital.")
-elif bullish_count >= 2:
-    st.success("✅ **Strong Support:** 2/3 indices Bullish. Focus on selected universe.")
+# --- FINAL SYSTEM ALERT ---
+bullish_count = sum(market_health)
+if bullish_count >= 2:
+    st.success("✅ **Market Support:** Broad trend is BULLISH. Perfect for 'Fortress' setups.")
+elif bullish_count == 1:
+    st.warning("⚖️ **Mixed Market:** Divergence found. Trade only Nifty 50 'Gold' stocks.")
 else:
-    st.warning("⚖️ **Mixed Signals:** 1/3 Bullish. Be selective, prefer Large Caps.")
+    st.error("🛑 **System Alert:** Full Market BEARISH. High risk of failure for new longs.")
 
 # Logic Engine (unchanged)
 @st.cache_data(ttl=600)
