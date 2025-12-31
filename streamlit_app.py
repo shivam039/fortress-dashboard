@@ -9,15 +9,24 @@ st.title("🛡️ Fortress 95: Static 300 Scanner")
 @st.cache_data
 def load_static_tickers():
     try:
-        df = pd.read_csv("nifty300.csv")
+        # Step 1: Read the CSV
+        df = pd.read_csv("nifty300.csv", header=None) 
+        
+        # Step 2: Flatten every single cell into one long list
+        all_elements = df.values.flatten()
+        
         tickers = []
-        # Support both single-column and multi-row formats
-        for symbol in df.values.flatten():
-            if pd.notna(symbol):
-                tickers.append(str(symbol).strip() + ".NS")
-        return list(dict.fromkeys(tickers)) # Remove duplicates
+        for item in all_elements:
+            if pd.notna(item): # Skip empty cells
+                # Clean the text and add .NS for Yahoo Finance
+                symbol = str(item).strip().replace('"', '').replace("'", "")
+                if symbol and symbol != "Symbol": # Skip the header word if present
+                    tickers.append(symbol + ".NS")
+        
+        # Step 3: Remove duplicates to stay efficient
+        return list(dict.fromkeys(tickers)) 
     except Exception as e:
-        st.error(f"Error loading nifty300.csv: {e}")
+        st.error(f"Error reading CSV: {e}")
         return ["RELIANCE.NS", "TCS.NS", "INFY.NS"]
 
 def check_fortress(ticker):
