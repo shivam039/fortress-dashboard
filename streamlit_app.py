@@ -1,3 +1,4 @@
+# fortress_app.py - v9.4 MASTER TERMINAL (Dynamic Columns + Heatmap Safety)
 import subprocess, sys, time, sqlite3
 from datetime import datetime
 import streamlit as st
@@ -19,292 +20,218 @@ except ImportError:
 def init_db():
     conn = sqlite3.connect("fortress_history.db")
     cursor = conn.cursor()
-
-    cursor.execute('''CREATE TABLE IF NOT EXISTS scan_history
-    (date TEXT, symbol TEXT, score REAL, verdict TEXT, price REAL,
-     target_10d REAL, rsi REAL, analysts INTEGER, dispersion TEXT,
-     hit_target INTEGER DEFAULT 0, hit_sl INTEGER DEFAULT 0)''')
-
+    cursor.execute('''CREATE TABLE IF NOT EXISTS scan_history 
+                      (date TEXT, symbol TEXT, score REAL, verdict TEXT, price REAL, 
+                       target_10d REAL, rsi REAL, analysts INTEGER, dispersion TEXT)''')
     conn.commit()
     conn.close()
 
 def log_scan_results(df):
     conn = sqlite3.connect("fortress_history.db")
     today = datetime.now().strftime("%Y-%m-%d")
-
     for _, row in df.iterrows():
-        hit_t, hit_s = evaluate_trade(
-            row["Symbol"], row["Price"],
-            row["Stop_Loss"], row["Target_10D"]
-        )
-
-        conn.execute("INSERT INTO scan_history VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (today, row['Symbol'], row['Score'], row['Verdict'], row['Price'],
-         row['Target_10D'], row['RSI'], row['Analysts'],
-         row['Dispersion_Alert'], hit_t, hit_s))
-
+        conn.execute("INSERT INTO scan_history VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     (today, row['Symbol'], row['Score'], row['Verdict'], row['Price'], 
+                      row['Target_10D'], row['RSI'], row['Analysts'], row['Dispersion_Alert']))
     conn.commit()
     conn.close()
 
 init_db()
 
-# ---------------- BACKTEST ENGINE ----------------
-def evaluate_trade(symbol, entry, sl, target):
-    try:
-        hist = yf.download(symbol, period="15d", progress=False)
-        for price in hist["Close"]:
-            if price >= target:
-                return 1, 0
-            if price <= sl:
-                return 0, 1
-    except:
-        pass
-    return 0, 0
-
-def backtest_symbol(symbol, lookback=60):
-    conn = sqlite3.connect("fortress_history.db")
-    df = pd.read_sql(
-        "SELECT * FROM scan_history WHERE symbol=? ORDER BY date DESC LIMIT ?",
-        conn, params=(symbol, lookback)
-    )
-    conn.close()
-
-    if df.empty:
-        return 0
-
-    wins = df["hit_target"].sum()
-    losses = df["hit_sl"].sum()
-    total = wins + losses
-
-    if total == 0:
-        return 0
-
-    return round((wins / total) * 100, 1)
-
-# -------- EXTENDED BACKTEST STATS (NEW) --------
-def backtest_extended(symbol):
-    conn = sqlite3.connect("fortress_history.db")
-    df = pd.read_sql(
-        "SELECT * FROM scan_history WHERE symbol=?",
-        conn, params=(symbol,)
-    )
-    conn.close()
-
-    if len(df) < 5:
-        return "NA","NA","NA"
-
-    moves=[]
-    drawdowns=[]
-    recent_total=0
-    recent_wins=0
-
-    for _, r in df.iterrows():
-        start = pd.to_datetime(r["date"])
-        hist = yf.download(symbol, start=start,
-                           end=start+pd.Timedelta(days=12),
-                           progress=False)
-        if hist.empty:
-            continue
-
-        entry=r["price"]
-        high=hist["High"].max()
-        low=hist["Low"].min()
-
-        moves.append(((high-entry)/entry)*100)
-        drawdowns.append(((low-entry)/entry)*100)
-
-        if start>=datetime.now()-pd.Timedelta(days=30):
-            recent_total+=1
-            if high>=r["target_10d"]:
-                recent_wins+=1
-
-    avg_move = round(np.mean(moves),1)
-    max_dd = round(min(drawdowns),1)
-    wr30 = round((recent_wins/recent_total)*100,1) if recent_total>0 else "NA"
-
-    return f"{avg_move}%",f"{max_dd}%",f"{wr30}%"
-
 # ---------------- UI ----------------
-st.set_page_config(page_title="Fortress HP", layout="wide")
-st.title("🛡️ Fortress HP v9.6 — High Probability Terminal")
+st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
+st.title("🛡️ Fortress 95 Pro v9.4 — Dynamic Columns Terminal")
 
-st.info("⚠️ Important: No trading system can guarantee accuracy.")
-
-# Sidebar
+# Sidebar Controls
 st.sidebar.title("💰 Portfolio & Risk")
 portfolio_val = st.sidebar.number_input("Portfolio Value (₹)", value=1000000, step=50000)
 risk_pct = st.sidebar.slider("Risk Per Trade (%)", 0.5, 3.0, 1.0, 0.1)/100
-selected_universe = st.sidebar.selectbox("Select Index/Universe", list(TICKER_GROUPS.keys()))
-min_score_filter = st.sidebar.slider("Minimum Conviction Score", 0, 100, 70, 5)
+selected_universe = st.sidebar.selectbox("Select Index", list(TICKER_GROUPS.keys()))
 
 # ---------------- COLUMN CONFIG ----------------
 ALL_COLUMNS = {
-    "Symbol":{"label":"Symbol"},
-    "Verdict":{"label":"Verdict"},
-    "Score":{"label":"Conviction","type":"progress","min":0,"max":100},
-    "Backtested_WinRate":{"label":"Win %","format":"%.1f"},
-    "BT_AvgMove_%":{"label":"Avg Move"},
-    "BT_MaxDD_%":{"label":"Max DD"},
-    "BT_30D_Win_%":{"label":"30D Win"},
-    "Price":{"label":"Price ₹","format":"₹%.2f"},
-    "RSI":{"label":"RSI","format":"%.1f"},
-    "ADX":{"label":"ADX","format":"%.1f"},
-    "Volume_Ratio":{"label":"Vol Ratio","format":"%.2f"},
-    "RS_6M":{"label":"6M RS","format":"%.2f"},
-    "News":{"label":"News"},
-    "Events":{"label":"Events"},
-    "Sector":{"label":"Sector"},
-    "Position_Qty":{"label":"Qty","format":"%d"},
-    "Stop_Loss":{"label":"SL","format":"₹%.2f"},
-    "Target_10D":{"label":"Target","format":"₹%.2f"},
-    "Analysts":{"label":"Analysts"},
-    "Dispersion_Alert":{"label":"Dispersion"}
+    "Symbol": {"label":"Symbol"},
+    "Verdict": {"label":"Verdict"},
+    "Score": {"label":"Conviction", "type":"progress", "min":0, "max":100},
+    "Price": {"label":"Price ₹", "format":"₹%.2f"},
+    "RSI": {"label":"RSI", "format":"%.1f"},
+    "News": {"label":"News"},
+    "Events": {"label":"Events"},
+    "Sector": {"label":"Sector"},
+    "Position_Qty": {"label":"Qty", "format":"%d"},
+    "Stop_Loss": {"label":"SL Price", "format":"₹%.2f"},
+    "Target_10D": {"label":"10D Target", "format":"₹%.2f"},
+    "Analysts": {"label":"Analyst Count", "format":"%d"},
+    "Tgt_High": {"label":"High Target", "format":"₹%d"},
+    "Tgt_Median": {"label":"Median Target", "format":"₹%d"},
+    "Tgt_Low": {"label":"Low Target", "format":"₹%d"},
+    "Tgt_Mean": {"label":"Mean Target", "format":"₹%d"},
+    "Dispersion_Alert": {"label":"Dispersion"}
 }
 
+# Sidebar Multiselect for Dynamic Columns
 selected_columns = st.sidebar.multiselect(
-    "Select Columns",
-    options=list(ALL_COLUMNS.keys()),
-    default=list(ALL_COLUMNS.keys())
+    "Select Columns to Display", options=list(ALL_COLUMNS.keys()), default=list(ALL_COLUMNS.keys())
 )
 
 # ---------------- CORE ENGINE ----------------
-def check_institutional_fortress(ticker, data, ticker_obj,
-                                 portfolio_value, risk_per_trade, bench_hist):
+def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk_per_trade):
     try:
-        if isinstance(data.columns,pd.MultiIndex):
-            data.columns=data.columns.get_level_values(0)
-        if len(data)<250: return None
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        if len(data)<210: return None
 
-        close,high,low,volume=data["Close"],data["High"],data["Low"],data["Volume"]
-        price=float(close.iloc[-1])
+        close, high, low = data["Close"], data["High"], data["Low"]
 
-        ema50=ta.ema(close,50).iloc[-1]
-        ema200=ta.ema(close,200).iloc[-1]
-        rsi=ta.rsi(close,14).iloc[-1]
-        atr=ta.atr(high,low,close,14).iloc[-1]
+        ema200 = ta.ema(close,200).iloc[-1]
+        rsi = ta.rsi(close,14).iloc[-1]
+        atr = ta.atr(high,low,close,14).iloc[-1]
 
-        st_df=ta.supertrend(high,low,close,10,3)
-        trend_dir=int(st_df[[c for c in st_df.columns if c.startswith("SUPERTd")][0]].iloc[-1])
+        st_df = ta.supertrend(high,low,close,10,3)
+        trend_col = [c for c in st_df.columns if c.startswith("SUPERTd")][0]
+        trend_dir = int(st_df[trend_col].iloc[-1])
+        price = float(close.iloc[-1])
+        tech_base = price>ema200 and trend_dir==1
 
-        adx_df=ta.adx(high,low,close,14)
-        adx=adx_df["ADX_14"].iloc[-1]
-        plus_di=adx_df["DMP_14"].iloc[-1]
-        minus_di=adx_df["DMN_14"].iloc[-1]
+        sl_distance = atr*1.5
+        sl_price = round(price-sl_distance,2)
+        target_10d = round(price + atr*1.8,2)
+        risk_amount = portfolio_value*risk_per_trade
+        pos_size = int(risk_amount / sl_distance) if sl_distance>0 else 0
 
-        macd_df=ta.macd(close)
-        macd_line=macd_df["MACD_12_26_9"].iloc[-1]
-        macd_sig=macd_df["MACDs_12_26_9"].iloc[-1]
+        conviction = 0
+        score_mod = 0
+        news_sentiment = "Neutral"
+        event_status = "✅ Safe"
 
-        vol_ma20=ta.sma(volume,20).iloc[-1]
-        vol_ratio=volume.iloc[-1]/vol_ma20 if vol_ma20>0 else 0
+        try:
+            news = ticker_obj.news or []
+            titles = " ".join(n.get("title","").lower() for n in news[:5])
+            if any(k in titles for k in ["fraud","investigation","default","bankruptcy","scam","legal"]):
+                news_sentiment = "🚨 BLACK SWAN"
+                score_mod -= 40
+        except: pass
+        try:
+            cal = ticker_obj.calendar
+            if isinstance(cal,pd.DataFrame) and not cal.empty:
+                next_date = pd.to_datetime(cal.iloc[0,0]).date()
+                days_to = (next_date - datetime.now().date()).days
+                if 0<=days_to<=7:
+                    event_status = f"🚨 EARNINGS ({next_date.strftime('%d-%b')})"
+                    score_mod -= 20
+        except: pass
 
-        rs_6m=1
-        if len(close)>=126:
-            rs_6m=(price/close.iloc[-126])
+        analyst_count = target_high = target_low = target_median = target_mean = 0
+        try:
+            info = ticker_obj.info or {}
+            analyst_count = info.get("numberOfAnalystOpinions",0)
+            target_high = info.get("targetHighPrice",0)
+            target_low = info.get("targetLowPrice",0)
+            target_median = info.get("targetMedianPrice",0)
+            target_mean = info.get("targetMeanPrice",0)
+        except: pass
 
-        conviction=0
-        if price>ema200: conviction+=20
-        if price>ema50 and ema50>ema200: conviction+=20
-        if trend_dir==1: conviction+=20
-        if adx>25: conviction+=15
-        if plus_di>minus_di: conviction+=10
-        if macd_line>macd_sig: conviction+=10
-        if vol_ratio>1.2: conviction+=15
-        if 45<=rsi<=65: conviction+=15
+        if tech_base:
+            conviction += 60
+            if 48<=rsi<=62: conviction+=20
+            elif 40<=rsi<=72: conviction+=10
+            conviction += score_mod
 
-        conviction=max(0,min(100,conviction))
+        dispersion_pct = ((target_high-target_low)/price)*100 if price>0 else 0
+        dispersion_alert = "⚠️ High Dispersion" if dispersion_pct>30 else "✅"
+        if dispersion_pct>30: conviction -= 10
 
-        verdict=("🔥🔥 ULTRA" if conviction>=95 else
-                 "🔥 HIGH" if conviction>=85 else
-                 "🚀 PASS" if conviction>=70 else
-                 "🟡 WATCH" if conviction>=50 else
-                 "❌ FAIL")
-
-        sl_distance=atr*1.5
-        sl_price=round(price-sl_distance,2)
-        target_10d=round(price+atr*1.5,2)
-        pos_size=int((portfolio_value*risk_per_trade)/sl_distance) if sl_distance>0 else 0
-
-        win_rate=backtest_symbol(ticker)
-        avg_move,max_dd,wr30=backtest_extended(ticker)
+        conviction = max(0,min(100,conviction))
+        verdict = "🔥 HIGH" if conviction>=85 else "🚀 PASS" if conviction>=60 else "🟡 WATCH" if tech_base else "❌ FAIL"
 
         return {
-            "Symbol":ticker,
-            "Verdict":verdict,
-            "Score":conviction,
-            "Backtested_WinRate":win_rate,
-            "BT_AvgMove_%":avg_move,
-            "BT_MaxDD_%":max_dd,
-            "BT_30D_Win_%":wr30,
-            "Price":round(price,2),
-            "RSI":round(rsi,1),
-            "ADX":round(adx,1),
-            "Volume_Ratio":round(vol_ratio,2),
-            "RS_6M":round(rs_6m,2),
-            "News":"Neutral",
-            "Events":"✅ Safe",
-            "Sector":SECTOR_MAP.get(ticker,"General"),
-            "Position_Qty":pos_size,
-            "Stop_Loss":sl_price,
-            "Target_10D":target_10d,
-            "Analysts":0,
-            "Dispersion_Alert":""
+            "Symbol": ticker,
+            "Verdict": verdict,
+            "Score": conviction,
+            "Price": round(price,2),
+            "RSI": round(rsi,1),
+            "News": news_sentiment,
+            "Events": event_status,
+            "Sector": SECTOR_MAP.get(ticker,"General"),
+            "Position_Qty": pos_size,
+            "Stop_Loss": sl_price,
+            "Target_10D": target_10d,
+            "Analysts": analyst_count,
+            "Tgt_High": target_high,
+            "Tgt_Median": target_median,
+            "Tgt_Low": target_low,
+            "Tgt_Mean": target_mean,
+            "Dispersion_Alert": dispersion_alert
         }
-    except:
-        return None
+    except: return None
+
+# ---------------- MARKET PULSE ----------------
+st.subheader("🌐 Market Pulse")
+pulse_cols = st.columns(len(INDEX_BENCHMARKS))
+for i,(name,symbol) in enumerate(INDEX_BENCHMARKS.items()):
+    try:
+        idx_data = yf.download(symbol, period="1y", progress=False)
+        p_close = idx_data["Close"].iloc[-1]
+        p_ema = ta.ema(idx_data["Close"],200).iloc[-1]
+        p_status = "🟢 BULL" if p_close>p_ema else "🔴 BEAR"
+        pulse_cols[i].metric(name,f"{p_close:,.0f}",p_status)
+    except: pass
 
 # ---------------- MAIN SCAN ----------------
-if st.button("🚀 EXECUTE HIGH PROBABILITY SCAN",use_container_width=True):
-
-    tickers=TICKER_GROUPS[selected_universe]
-    bench_hist=yf.download(INDEX_BENCHMARKS[selected_universe],period="2y")
-
-    results=[]
-    pb=st.progress(0)
-
-    for i,t in enumerate(tickers):
-        hist=yf.download(t,period="2y",progress=False)
-        if not hist.empty:
-            r=check_institutional_fortress(
-                t,hist,yf.Ticker(t),
-                portfolio_val,risk_pct,bench_hist)
-
-            if r and r["Score"]>=min_score_filter:
-                results.append(r)
-
-        pb.progress((i+1)/len(tickers))
-        time.sleep(0.5)
+if st.button("🚀 EXECUTE SYSTEM SCAN",type="primary",use_container_width=True):
+    tickers = TICKER_GROUPS[selected_universe]
+    results = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    for i,ticker in enumerate(tickers):
+        status_text.text(f"Scanning {ticker} ({i+1}/{len(tickers)})")
+        try:
+            tkr = yf.Ticker(ticker)
+            hist = yf.download(ticker, period="2y", progress=False)
+            if not hist.empty:
+                res = check_institutional_fortress(ticker,hist,tkr,portfolio_val,risk_pct)
+                if res: results.append(res)
+            time.sleep(0.7)
+        except: pass
+        progress_bar.progress((i+1)/len(tickers))
 
     if results:
-        df=pd.DataFrame(results).sort_values("Score",ascending=False)
+        df = pd.DataFrame(results).sort_values("Score",ascending=False)
+        status_text.success(f"Scan Complete: {len(df[df['Score']>=60])} actionable setups.")
         log_scan_results(df)
 
-        display_df=df[selected_columns]
+        display_df = df[selected_columns]
 
-        cfg={}
-        for c in selected_columns:
-            d=ALL_COLUMNS[c]
-           if d.get("type")=="progress":
-                cfg[c] = st.column_config.ProgressColumn(
-                    label=d["label"],
-                    min_value=0,
-                    max_value=100
-                )
-            elif d.get("format"):
-                cfg[c]=st.column_config.NumberColumn(
-                    d["label"],format=d["format"])
+        st_column_config = {}
+        for col in selected_columns:
+            cfg = ALL_COLUMNS[col]
+            fmt = cfg.get("format")
+            if cfg.get("type")=="progress":
+                st_column_config[col] = st.column_config.ProgressColumn(cfg["label"],min_value=cfg["min"],max_value=cfg["max"])
+            elif fmt:
+                st_column_config[col] = st.column_config.NumberColumn(cfg["label"],format=fmt)
             else:
-                cfg[c]=st.column_config.TextColumn(d["label"])
+                st_column_config[col] = st.column_config.TextColumn(cfg["label"])
 
-        st.dataframe(display_df,column_config=cfg,use_container_width=True)
+        st.dataframe(display_df,use_container_width=True,height=600,column_config=st_column_config)
 
-        st.download_button(
-            "📥 Export",
-            display_df.to_csv(index=False),
-            file_name="Fortress_Backtested.csv"
-        )
+        csv = display_df.to_csv(index=False).encode("utf-8")
+        st.download_button("📥 Export Trades to CSV",data=csv,
+                           file_name=f"Fortress_Trades_{datetime.now().strftime('%Y%m%d')}.csv",
+                           mime="text/csv",use_container_width=True)
+
+        # ---------------- HEATMAP ----------------
+        if not df.empty and "Score" in df.columns:
+            st.subheader("📊 Conviction Heatmap")
+            plt.figure(figsize=(12,len(df)/2))
+            df["Conviction_Band"] = df["Score"].apply(lambda x: "🔥 High (85+)" if x>=85 else "🚀 Pass (60-85)" if x>=60 else "🟡 Watch (<60)")
+            heatmap_data = df.pivot_table(index="Symbol", columns="Conviction_Band", values="Score", fill_value=0)
+            sns.heatmap(heatmap_data, annot=True, cmap="Greens", cbar=False, linewidths=0.5, linecolor='grey')
+            st.pyplot(plt)
+        else:
+            st.info("Insufficient data for heatmap generation.")
 
     else:
-        st.warning("No valid setups.")
+        st.warning("No data retrieved. Check internet or ticker config.")
 
-st.caption("🛡️ Fortress v9.6 | Full Backtest Suite Added")
+st.caption("🛡️ Fortress 95 Pro v9.4 — Dynamic Columns | ATR SL | Analyst Dispersion | Full Logic")
