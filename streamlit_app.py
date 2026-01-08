@@ -48,7 +48,7 @@ def log_scan_results(df):
 
 init_db()
 
-# ---------------- BACKTEST ENGINE (NEW) ----------------
+# ---------------- BACKTEST ENGINE ----------------
 def evaluate_trade(symbol, entry, sl, target):
     try:
         hist = yf.download(symbol, period="15d", progress=False)
@@ -81,14 +81,56 @@ def backtest_symbol(symbol, lookback=60):
 
     return round((wins / total) * 100, 1)
 
+# -------- EXTENDED BACKTEST STATS (NEW) --------
+def backtest_extended(symbol):
+    conn = sqlite3.connect("fortress_history.db")
+    df = pd.read_sql(
+        "SELECT * FROM scan_history WHERE symbol=?",
+        conn, params=(symbol,)
+    )
+    conn.close()
+
+    if len(df) < 5:
+        return "NA","NA","NA"
+
+    moves=[]
+    drawdowns=[]
+    recent_total=0
+    recent_wins=0
+
+    for _, r in df.iterrows():
+        start = pd.to_datetime(r["date"])
+        hist = yf.download(symbol, start=start,
+                           end=start+pd.Timedelta(days=12),
+                           progress=False)
+        if hist.empty:
+            continue
+
+        entry=r["price"]
+        high=hist["High"].max()
+        low=hist["Low"].min()
+
+        moves.append(((high-entry)/entry)*100)
+        drawdowns.append(((low-entry)/entry)*100)
+
+        if start>=datetime.now()-pd.Timedelta(days=30):
+            recent_total+=1
+            if high>=r["target_10d"]:
+                recent_wins+=1
+
+    avg_move = round(np.mean(moves),1)
+    max_dd = round(min(drawdowns),1)
+    wr30 = round((recent_wins/recent_total)*100,1) if recent_total>0 else "NA"
+
+    return f"{avg_move}%",f"{max_dd}%",f"{wr30}%"
+
 # ---------------- UI ----------------
 st.set_page_config(page_title="Fortress HP", layout="wide")
 st.title("🛡️ Fortress HP v9.6 — High Probability Terminal")
 
-st.info("⚠️ Important: No trading system can guarantee 95% accuracy — markets are inherently unpredictable. "
-        "This version uses stricter multi-factor alignment.")
+st.info("⚠️ Important: No trading system can guarantee accuracy.")
 
-# Sidebar Controls
+# Sidebar
 st.sidebar.title("💰 Portfolio & Risk")
 portfolio_val = st.sidebar.number_input("Portfolio Value (₹)", value=1000000, step=50000)
 risk_pct = st.sidebar.slider("Risk Per Trade (%)", 0.5, 3.0, 1.0, 0.1)/100
@@ -97,76 +139,70 @@ min_score_filter = st.sidebar.slider("Minimum Conviction Score", 0, 100, 70, 5)
 
 # ---------------- COLUMN CONFIG ----------------
 ALL_COLUMNS = {
-    "Symbol": {"label":"Symbol"},
-    "Verdict": {"label":"Verdict"},
-    "Score": {"label":"Conviction", "type":"progress", "min":0, "max":100},
-    "Backtested_WinRate":{"label":"Win %", "format":"%.1f"},
-    "Price": {"label":"Price ₹", "format":"₹%.2f"},
-    "RSI": {"label":"RSI", "format":"%.1f"},
-    "ADX": {"label":"ADX Strength", "format":"%.1f"},
-    "Volume_Ratio": {"label":"Vol Ratio", "format":"%.2f"},
-    "RS_6M": {"label":"6M Rel Strength", "format":"%.2f"},
-    "News": {"label":"News"},
-    "Events": {"label":"Events"},
-    "Sector": {"label":"Sector"},
-    "Position_Qty": {"label":"Qty", "format":"%d"},
-    "Stop_Loss": {"label":"SL Price", "format":"₹%.2f"},
-    "Target_10D": {"label":"10D Target", "format":"₹%.2f"},
-    "Analysts": {"label":"Analyst Count", "format":"%d"},
-    "Tgt_High": {"label":"High Target", "format":"₹%d"},
-    "Tgt_Median": {"label":"Median Target", "format":"₹%d"},
-    "Tgt_Low": {"label":"Low Target", "format":"₹%d"},
-    "Tgt_Mean": {"label":"Mean Target", "format":"₹%d"},
-    "Dispersion_Alert": {"label":"Dispersion"}
+    "Symbol":{"label":"Symbol"},
+    "Verdict":{"label":"Verdict"},
+    "Score":{"label":"Conviction","type":"progress","min":0,"max":100},
+    "Backtested_WinRate":{"label":"Win %","format":"%.1f"},
+    "BT_AvgMove_%":{"label":"Avg Move"},
+    "BT_MaxDD_%":{"label":"Max DD"},
+    "BT_30D_Win_%":{"label":"30D Win"},
+    "Price":{"label":"Price ₹","format":"₹%.2f"},
+    "RSI":{"label":"RSI","format":"%.1f"},
+    "ADX":{"label":"ADX","format":"%.1f"},
+    "Volume_Ratio":{"label":"Vol Ratio","format":"%.2f"},
+    "RS_6M":{"label":"6M RS","format":"%.2f"},
+    "News":{"label":"News"},
+    "Events":{"label":"Events"},
+    "Sector":{"label":"Sector"},
+    "Position_Qty":{"label":"Qty","format":"%d"},
+    "Stop_Loss":{"label":"SL","format":"₹%.2f"},
+    "Target_10D":{"label":"Target","format":"₹%.2f"},
+    "Analysts":{"label":"Analysts"},
+    "Dispersion_Alert":{"label":"Dispersion"}
 }
 
 selected_columns = st.sidebar.multiselect(
     "Select Columns",
     options=list(ALL_COLUMNS.keys()),
-    default=["Symbol","Verdict","Score","Backtested_WinRate",
-             "Price","RSI","ADX","Volume_Ratio","RS_6M",
-             "Target_10D","Stop_Loss","Position_Qty",
-             "News","Events","Analysts","Dispersion_Alert"]
+    default=list(ALL_COLUMNS.keys())
 )
 
 # ---------------- CORE ENGINE ----------------
 def check_institutional_fortress(ticker, data, ticker_obj,
                                  portfolio_value, risk_per_trade, bench_hist):
     try:
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
-        if len(data) < 250: return None
+        if isinstance(data.columns,pd.MultiIndex):
+            data.columns=data.columns.get_level_values(0)
+        if len(data)<250: return None
 
-        close, high, low, volume = data["Close"], data["High"], data["Low"], data["Volume"]
-        price = float(close.iloc[-1])
+        close,high,low,volume=data["Close"],data["High"],data["Low"],data["Volume"]
+        price=float(close.iloc[-1])
 
-        ema50 = ta.ema(close,50).iloc[-1]
-        ema200 = ta.ema(close,200).iloc[-1]
-        rsi = ta.rsi(close,14).iloc[-1]
-        atr = ta.atr(high,low,close,14).iloc[-1]
+        ema50=ta.ema(close,50).iloc[-1]
+        ema200=ta.ema(close,200).iloc[-1]
+        rsi=ta.rsi(close,14).iloc[-1]
+        atr=ta.atr(high,low,close,14).iloc[-1]
 
-        st_df = ta.supertrend(high,low,close,10,3)
-        trend_dir = int(st_df[[c for c in st_df.columns if c.startswith("SUPERTd")][0]].iloc[-1])
+        st_df=ta.supertrend(high,low,close,10,3)
+        trend_dir=int(st_df[[c for c in st_df.columns if c.startswith("SUPERTd")][0]].iloc[-1])
 
-        adx_df = ta.adx(high,low,close,14)
-        adx = adx_df["ADX_14"].iloc[-1]
-        plus_di = adx_df["DMP_14"].iloc[-1]
-        minus_di = adx_df["DMN_14"].iloc[-1]
+        adx_df=ta.adx(high,low,close,14)
+        adx=adx_df["ADX_14"].iloc[-1]
+        plus_di=adx_df["DMP_14"].iloc[-1]
+        minus_di=adx_df["DMN_14"].iloc[-1]
 
-        macd_df = ta.macd(close)
-        macd_line = macd_df["MACD_12_26_9"].iloc[-1]
-        macd_sig = macd_df["MACDs_12_26_9"].iloc[-1]
+        macd_df=ta.macd(close)
+        macd_line=macd_df["MACD_12_26_9"].iloc[-1]
+        macd_sig=macd_df["MACDs_12_26_9"].iloc[-1]
 
-        vol_ma20 = ta.sma(volume,20).iloc[-1]
-        vol_ratio = volume.iloc[-1]/vol_ma20 if vol_ma20>0 else 0
+        vol_ma20=ta.sma(volume,20).iloc[-1]
+        vol_ratio=volume.iloc[-1]/vol_ma20 if vol_ma20>0 else 0
 
-        rs_6m = 1
-        if len(close)>=126 and len(bench_hist)>=126:
-            rs_6m = (price/close.iloc[-126]) / \
-                    (bench_hist["Close"].iloc[-1]/bench_hist["Close"].iloc[-126])
+        rs_6m=1
+        if len(close)>=126:
+            rs_6m=(price/close.iloc[-126])
 
-        conviction = 0
-
+        conviction=0
         if price>ema200: conviction+=20
         if price>ema50 and ema50>ema200: conviction+=20
         if trend_dir==1: conviction+=20
@@ -175,30 +211,31 @@ def check_institutional_fortress(ticker, data, ticker_obj,
         if macd_line>macd_sig: conviction+=10
         if vol_ratio>1.2: conviction+=15
         if 45<=rsi<=65: conviction+=15
-        if rsi>70: conviction-=20
-        if rs_6m>1.1: conviction+=15
-        if rs_6m<0.9: conviction-=15
 
         conviction=max(0,min(100,conviction))
 
-        verdict = ("🔥🔥 ULTRA" if conviction>=95 else
-                   "🔥 HIGH" if conviction>=85 else
-                   "🚀 PASS" if conviction>=70 else
-                   "🟡 WATCH" if conviction>=50 else
-                   "❌ FAIL")
+        verdict=("🔥🔥 ULTRA" if conviction>=95 else
+                 "🔥 HIGH" if conviction>=85 else
+                 "🚀 PASS" if conviction>=70 else
+                 "🟡 WATCH" if conviction>=50 else
+                 "❌ FAIL")
 
-        sl_distance = atr*1.5
-        sl_price = round(price-sl_distance,2)
-        target_10d = round(price+atr*1.5,2)
-        pos_size = int((portfolio_value*risk_per_trade)/sl_distance) if sl_distance>0 else 0
+        sl_distance=atr*1.5
+        sl_price=round(price-sl_distance,2)
+        target_10d=round(price+atr*1.5,2)
+        pos_size=int((portfolio_value*risk_per_trade)/sl_distance) if sl_distance>0 else 0
 
-        win_rate = backtest_symbol(ticker)
+        win_rate=backtest_symbol(ticker)
+        avg_move,max_dd,wr30=backtest_extended(ticker)
 
         return {
             "Symbol":ticker,
             "Verdict":verdict,
             "Score":conviction,
             "Backtested_WinRate":win_rate,
+            "BT_AvgMove_%":avg_move,
+            "BT_MaxDD_%":max_dd,
+            "BT_30D_Win_%":wr30,
             "Price":round(price,2),
             "RSI":round(rsi,1),
             "ADX":round(adx,1),
@@ -219,8 +256,8 @@ def check_institutional_fortress(ticker, data, ticker_obj,
 # ---------------- MAIN SCAN ----------------
 if st.button("🚀 EXECUTE HIGH PROBABILITY SCAN",use_container_width=True):
 
-    tickers = TICKER_GROUPS[selected_universe]
-    bench_hist = yf.download(INDEX_BENCHMARKS[selected_universe],period="2y")
+    tickers=TICKER_GROUPS[selected_universe]
+    bench_hist=yf.download(INDEX_BENCHMARKS[selected_universe],period="2y")
 
     results=[]
     pb=st.progress(0)
@@ -228,10 +265,13 @@ if st.button("🚀 EXECUTE HIGH PROBABILITY SCAN",use_container_width=True):
     for i,t in enumerate(tickers):
         hist=yf.download(t,period="2y",progress=False)
         if not hist.empty:
-            r=check_institutional_fortress(t,hist,yf.Ticker(t),
-                                           portfolio_val,risk_pct,bench_hist)
+            r=check_institutional_fortress(
+                t,hist,yf.Ticker(t),
+                portfolio_val,risk_pct,bench_hist)
+
             if r and r["Score"]>=min_score_filter:
                 results.append(r)
+
         pb.progress((i+1)/len(tickers))
         time.sleep(0.5)
 
@@ -246,19 +286,22 @@ if st.button("🚀 EXECUTE HIGH PROBABILITY SCAN",use_container_width=True):
             d=ALL_COLUMNS[c]
             if d.get("type")=="progress":
                 cfg[c]=st.column_config.ProgressColumn(
-                    d["label"],min_value=0,max_value=100)
+                    d["label"],0,100)
             elif d.get("format"):
-                cfg[c]=st.column_config.NumberColumn(d["label"],format=d["format"])
+                cfg[c]=st.column_config.NumberColumn(
+                    d["label"],format=d["format"])
             else:
                 cfg[c]=st.column_config.TextColumn(d["label"])
 
         st.dataframe(display_df,column_config=cfg,use_container_width=True)
 
-        st.download_button("📥 Export",
-                           display_df.to_csv(index=False),
-                           file_name="Fortress_Backtested.csv")
+        st.download_button(
+            "📥 Export",
+            display_df.to_csv(index=False),
+            file_name="Fortress_Backtested.csv"
+        )
 
     else:
         st.warning("No valid setups.")
 
-st.caption("🛡️ Fortress v9.6 | Backtested Win % Added")
+st.caption("🛡️ Fortress v9.6 | Full Backtest Suite Added")
