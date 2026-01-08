@@ -19,10 +19,12 @@ except ImportError:
 def init_db():
     conn = sqlite3.connect("fortress_history.db")
     cursor = conn.cursor()
+
     cursor.execute('''CREATE TABLE IF NOT EXISTS scan_history
-                      (date TEXT, symbol TEXT, score REAL, verdict TEXT, price REAL,
-                       target_10d REAL, rsi REAL, analysts INTEGER, dispersion TEXT,
-                       hit_target INTEGER, hit_sl INTEGER)''')
+    (date TEXT, symbol TEXT, score REAL, verdict TEXT, price REAL,
+     target_10d REAL, rsi REAL, analysts INTEGER, dispersion TEXT,
+     hit_target INTEGER DEFAULT 0, hit_sl INTEGER DEFAULT 0)''')
+
     conn.commit()
     conn.close()
 
@@ -37,15 +39,16 @@ def log_scan_results(df):
         )
 
         conn.execute("INSERT INTO scan_history VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                     (today, row['Symbol'], row['Score'], row['Verdict'], row['Price'],
-                      row['Target_10D'], row['RSI'], row['Analysts'],
-                      row['Dispersion_Alert'], hit_t, hit_s))
+        (today, row['Symbol'], row['Score'], row['Verdict'], row['Price'],
+         row['Target_10D'], row['RSI'], row['Analysts'],
+         row['Dispersion_Alert'], hit_t, hit_s))
+
     conn.commit()
     conn.close()
 
 init_db()
 
-# ---------------- BACKTEST ENGINE ----------------
+# ---------------- BACKTEST ENGINE (NEW) ----------------
 def evaluate_trade(symbol, entry, sl, target):
     try:
         hist = yf.download(symbol, period="15d", progress=False)
@@ -82,7 +85,10 @@ def backtest_symbol(symbol, lookback=60):
 st.set_page_config(page_title="Fortress HP", layout="wide")
 st.title("🛡️ Fortress HP v9.6 — High Probability Terminal")
 
-# Sidebar
+st.info("⚠️ Important: No trading system can guarantee 95% accuracy — markets are inherently unpredictable. "
+        "This version uses stricter multi-factor alignment.")
+
+# Sidebar Controls
 st.sidebar.title("💰 Portfolio & Risk")
 portfolio_val = st.sidebar.number_input("Portfolio Value (₹)", value=1000000, step=50000)
 risk_pct = st.sidebar.slider("Risk Per Trade (%)", 0.5, 3.0, 1.0, 0.1)/100
@@ -107,11 +113,16 @@ ALL_COLUMNS = {
     "Stop_Loss": {"label":"SL Price", "format":"₹%.2f"},
     "Target_10D": {"label":"10D Target", "format":"₹%.2f"},
     "Analysts": {"label":"Analyst Count", "format":"%d"},
+    "Tgt_High": {"label":"High Target", "format":"₹%d"},
+    "Tgt_Median": {"label":"Median Target", "format":"₹%d"},
+    "Tgt_Low": {"label":"Low Target", "format":"₹%d"},
+    "Tgt_Mean": {"label":"Mean Target", "format":"₹%d"},
     "Dispersion_Alert": {"label":"Dispersion"}
 }
 
 selected_columns = st.sidebar.multiselect(
-    "Select Columns", options=list(ALL_COLUMNS.keys()),
+    "Select Columns",
+    options=list(ALL_COLUMNS.keys()),
     default=["Symbol","Verdict","Score","Backtested_WinRate",
              "Price","RSI","ADX","Volume_Ratio","RS_6M",
              "Target_10D","Stop_Loss","Position_Qty",
@@ -124,8 +135,7 @@ def check_institutional_fortress(ticker, data, ticker_obj,
     try:
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
-        if len(data) < 250:
-            return None
+        if len(data) < 250: return None
 
         close, high, low, volume = data["Close"], data["High"], data["Low"], data["Volume"]
         price = float(close.iloc[-1])
@@ -150,7 +160,6 @@ def check_institutional_fortress(ticker, data, ticker_obj,
         vol_ma20 = ta.sma(volume,20).iloc[-1]
         vol_ratio = volume.iloc[-1]/vol_ma20 if vol_ma20>0 else 0
 
-        # Relative Strength
         rs_6m = 1
         if len(close)>=126 and len(bench_hist)>=126:
             rs_6m = (price/close.iloc[-126]) / \
