@@ -284,9 +284,12 @@ if st.button("🚀 EXECUTE HIGH PROBABILITY SCAN",use_container_width=True):
         cfg={}
         for c in selected_columns:
             d=ALL_COLUMNS[c]
-            if d.get("type")=="progress":
-                cfg[c]=st.column_config.ProgressColumn(
-                    d["label"],0,100)
+           if d.get("type")=="progress":
+                cfg[c] = st.column_config.ProgressColumn(
+                    label=d["label"],
+                    min_value=0,
+                    max_value=100
+                )
             elif d.get("format"):
                 cfg[c]=st.column_config.NumberColumn(
                     d["label"],format=d["format"])
