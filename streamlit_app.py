@@ -31,6 +31,30 @@ def log_scan_results(df):
     try:
         conn = sqlite3.connect('fortress_history.db')
         df['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Check and update schema
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(scan_results)")
+        existing_cols = {row[1] for row in cursor.fetchall()}
+
+        for col in df.columns:
+            if col not in existing_cols:
+                # Determine type
+                dtype = df[col].dtype
+                if pd.api.types.is_integer_dtype(dtype):
+                    sql_type = "INTEGER"
+                elif pd.api.types.is_float_dtype(dtype):
+                    sql_type = "REAL"
+                else:
+                    sql_type = "TEXT"
+
+                try:
+                    cursor.execute(f'ALTER TABLE scan_results ADD COLUMN "{col}" {sql_type}')
+                except Exception as alter_err:
+                     print(f"Error adding column {col}: {alter_err}")
+
+        conn.commit()
+
         # Log all columns to the database
         df.to_sql('scan_results', conn, if_exists='append', index=False)
         conn.close()
