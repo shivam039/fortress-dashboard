@@ -12,7 +12,30 @@ import seaborn as sns
 # ---------------- CONFIG ----------------
 try:
     from fortress_config import TICKER_GROUPS, SECTOR_MAP, INDEX_BENCHMARKS
-	@@ -38,53 +40,156 @@ def log_scan_results(df):
+except ImportError:
+    st.error("Configuration file 'fortress_config.py' not found.")
+    st.stop()
+
+def init_db():
+    try:
+        conn = sqlite3.connect('fortress_history.db')
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS scan_results
+                     (timestamp TEXT, symbol TEXT, score REAL, price REAL, verdict TEXT)''')
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        st.error(f"Database error: {e}")
+
+def log_scan_results(df):
+    try:
+        conn = sqlite3.connect('fortress_history.db')
+        df['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Log all columns to the database
+        df.to_sql('scan_results', conn, if_exists='append', index=False)
+        conn.close()
+    except Exception as e:
+        st.error(f"Database error: {e}")
 
 init_db()
 
@@ -66,7 +89,7 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
 
         ema200 = ta.ema(close,200).iloc[-1]
         rsi = ta.rsi(close,14).iloc[-1]
-	@@ -93,165 +198,136 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
+        atr = ta.atr(high,low,close,14).iloc[-1]
         st_df = ta.supertrend(high,low,close,10,3)
         trend_col = [c for c in st_df.columns if c.startswith("SUPERTd")][0]
         trend_dir = int(st_df[trend_col].iloc[-1])
