@@ -40,7 +40,7 @@ The application relies on `fortress_config.py` for defining the universe of stoc
 
 1.  **Run the application:**
     ```bash
-    streamlit run fortress_app.py
+    streamlit run streamlit_app.py
     ```
 
 2.  **Dashboard Controls (Sidebar):**
