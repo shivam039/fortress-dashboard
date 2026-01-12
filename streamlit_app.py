@@ -66,7 +66,10 @@ ALL_COLUMNS = {
     "Tgt_Median": {"label":"Median Target", "format":"₹%d"},
     "Tgt_Low": {"label":"Low Target", "format":"₹%d"},
     "Tgt_Mean": {"label":"Mean Target", "format":"₹%d"},
-    "Dispersion_Alert": {"label":"Dispersion"}
+    "Dispersion_Alert": {"label":"Dispersion"},
+    "Ret_30D": {"label":"30D Backtest", "format":"%.2f%%"},
+    "Ret_60D": {"label":"60D Backtest", "format":"%.2f%%"},
+    "Ret_90D": {"label":"90D Backtest", "format":"%.2f%%"}
 }
 
 # Sidebar Multiselect for Dynamic Columns
@@ -144,6 +147,20 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         conviction = max(0,min(100,conviction))
         verdict = "🔥 HIGH" if conviction>=85 else "🚀 PASS" if conviction>=60 else "🟡 WATCH" if tech_base else "❌ FAIL"
 
+        # Backtest returns (30, 60, 90 days)
+        current_date = close.index[-1]
+        returns = {}
+        for days in [30, 60, 90]:
+            try:
+                target_date = current_date - pd.Timedelta(days=days)
+                # Find nearest index
+                idx = close.index.get_indexer([target_date], method='nearest')[0]
+                past_price = float(close.iloc[idx])
+                pct_change = ((price - past_price) / past_price) * 100
+                returns[f"Ret_{days}D"] = pct_change
+            except:
+                returns[f"Ret_{days}D"] = None
+
         return {
             "Symbol": ticker,
             "Verdict": verdict,
@@ -161,7 +178,10 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             "Tgt_Median": target_median,
             "Tgt_Low": target_low,
             "Tgt_Mean": target_mean,
-            "Dispersion_Alert": dispersion_alert
+            "Dispersion_Alert": dispersion_alert,
+            "Ret_30D": returns.get("Ret_30D"),
+            "Ret_60D": returns.get("Ret_60D"),
+            "Ret_90D": returns.get("Ret_90D")
         }
     except: return None
 
