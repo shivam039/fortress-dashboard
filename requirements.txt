@@ -1,6 +1,6 @@
 streamlit
 pandas-ta
-yfinance>=0.2.50
+nsepython
 pandas
 numpy
 pytz
