@@ -77,3 +77,11 @@ SECTOR_MAP = {
 INDEX_BENCHMARKS = {"Nifty 50": "^NSEI", "Nifty Next 50": "^NIFTYJR", "Nifty Midcap 150": "^NSMIDCP"}
 
 NIFTY_SYMBOL = "^NSEI"
+
+# Telegram Bot Configuration
+TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+TELEGRAM_CHAT_ID = "YOUR_CHAT_ID_HERE"
+
+# Bot Trading Configuration
+BOT_PORTFOLIO_VALUE = 1000000
+BOT_RISK_PER_TRADE = 0.01  # 1%

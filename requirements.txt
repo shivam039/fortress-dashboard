@@ -7,3 +7,5 @@ pytz
 dhanhq
 seaborn
 matplotlib
+schedule
+requests
