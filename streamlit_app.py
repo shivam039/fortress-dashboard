@@ -1,4 +1,4 @@
-# fortress_app.py - v9.4 MASTER TERMINAL (Dynamic Columns + Heatmap Safety)
+# streamlit_app.py - v9.4 MASTER TERMINAL (Dynamic Columns + Heatmap Safety)
 import subprocess, sys, time, sqlite3
 from datetime import datetime
 import streamlit as st
