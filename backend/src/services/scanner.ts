@@ -115,7 +115,7 @@ export async function fetchAndScanTicker(ticker: string, universe: string, portf
         // That is slow.
 
         try {
-           const summary = await yahooFinance.quoteSummary(ticker, { modules: ['financialData', 'defaultKeyStatistics'] }) as any;
+           const summary: any = await yahooFinance.quoteSummary(ticker, { modules: ['financialData', 'defaultKeyStatistics'] });
            if (summary.financialData) {
                analystCount = summary.financialData.numberOfAnalystOpinions || 0;
                targetHigh = summary.financialData.targetHighPrice || 0;

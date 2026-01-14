@@ -8,7 +8,7 @@ export function getSectorAnalysis(universe: string): Promise<any[]> {
         // The requirement says "Highlight top performing sectors based on conviction trend".
         // Let's get the latest scan results and average score by sector.
 
-        db.all(`SELECT timestamp FROM ${table} ORDER BY timestamp DESC LIMIT 1`, (err, rows: any[]) => {
+        db.all(`SELECT timestamp FROM ${table} ORDER BY timestamp DESC LIMIT 1`, (err: any, rows: any[]) => {
             if (err) {
                  if (err.message.includes('no such table')) resolve([]);
                  else reject(err);
@@ -21,7 +21,7 @@ export function getSectorAnalysis(universe: string): Promise<any[]> {
             const latestTs = rows[0].timestamp;
 
             db.all(`SELECT Sector, AVG(Score) as AvgScore, COUNT(*) as Count FROM ${table} WHERE timestamp = ? GROUP BY Sector ORDER BY AvgScore DESC`,
-                [latestTs], (err2, secRows) => {
+                [latestTs], (err2: any, secRows: any[]) => {
                 if (err2) reject(err2);
                 else resolve(secRows);
             });
@@ -32,9 +32,13 @@ export function getSectorAnalysis(universe: string): Promise<any[]> {
 export function getTickerHistory(universe: string, symbol: string): Promise<any[]> {
     return new Promise((resolve, reject) => {
         const table = getTableForUniverse(universe);
-        db.all(`SELECT * FROM ${table} WHERE Symbol = ? ORDER BY timestamp DESC`, [symbol], (err, rows) => {
-            if (err) reject(err);
-            else resolve(rows);
+        db.all(`SELECT * FROM ${table} WHERE Symbol = ? ORDER BY timestamp DESC`, [symbol], (err: any, rows: any[]) => {
+            if (err) {
+                 if (err.message.includes('no such table')) resolve([]);
+                 else reject(err);
+                 return;
+            }
+            resolve(rows);
         });
     });
 }
