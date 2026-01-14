@@ -1,3 +1,5 @@
+import { db, getTableForUniverse } from '../db/db';
+
 export function getSectorAnalysis(universe: string): Promise<any[]> {
     return new Promise((resolve, reject) => {
         const table = getTableForUniverse(universe);
@@ -23,6 +25,16 @@ export function getSectorAnalysis(universe: string): Promise<any[]> {
                 if (err2) reject(err2);
                 else resolve(secRows);
             });
+        });
+    });
+}
+
+export function getTickerHistory(universe: string, symbol: string): Promise<any[]> {
+    return new Promise((resolve, reject) => {
+        const table = getTableForUniverse(universe);
+        db.all(`SELECT * FROM ${table} WHERE Symbol = ? ORDER BY timestamp DESC`, [symbol], (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows);
         });
     });
 }
