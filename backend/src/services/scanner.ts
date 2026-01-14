@@ -36,15 +36,15 @@ export async function fetchAndScanTicker(ticker: string, universe: string, portf
         twoYearsAgo.setFullYear(today.getFullYear() - 2);
 
         const queryOptions = { period1: twoYearsAgo, period2: today }; // yahoo-finance2 format
-        const historical = await yahooFinance.historical(ticker, queryOptions);
+        const historical = await yahooFinance.historical(ticker, queryOptions) as any[];
         const quote = await yahooFinance.quote(ticker);
-        const search = await yahooFinance.search(ticker, { newsCount: 5 });
+        const search = await yahooFinance.search(ticker, { newsCount: 5 }) as any;
 
         if (!historical || historical.length < 210) return null;
 
-        const close = historical.map(d => d.close);
-        const high = historical.map(d => d.high);
-        const low = historical.map(d => d.low);
+        const close = historical.map((d: any) => d.close);
+        const high = historical.map((d: any) => d.high);
+        const low = historical.map((d: any) => d.low);
 
         // Indicators
         const ema200Arr = calculateEMA(close, 200);
@@ -77,7 +77,7 @@ export async function fetchAndScanTicker(ticker: string, universe: string, portf
 
         if (search && search.news) {
             const newsTitles = search.news.map((n: any) => n.title.toLowerCase()).join(' ');
-            if (['fraud', 'investigation', 'default', 'bankruptcy', 'scam', 'legal'].some(k => newsTitles.includes(k))) {
+            if (['fraud', 'investigation', 'default', 'bankruptcy', 'scam', 'legal'].some((k: string) => newsTitles.includes(k))) {
                 newsSentiment = "🚨 BLACK SWAN";
                 scoreMod -= 40;
             }
@@ -115,7 +115,7 @@ export async function fetchAndScanTicker(ticker: string, universe: string, portf
         // That is slow.
 
         try {
-           const summary = await yahooFinance.quoteSummary(ticker, { modules: ['financialData', 'defaultKeyStatistics'] });
+           const summary = await yahooFinance.quoteSummary(ticker, { modules: ['financialData', 'defaultKeyStatistics'] }) as any;
            if (summary.financialData) {
                analystCount = summary.financialData.numberOfAnalystOpinions || 0;
                targetHigh = summary.financialData.targetHighPrice || 0;
@@ -154,7 +154,7 @@ export async function fetchAndScanTicker(ticker: string, universe: string, portf
             // Find closest date in history
             // History is ordered by date? Yes usually.
             // efficient search or find
-            const past = historical.find(d => d.date.getTime() >= targetTime); // simple approx since sorted ascending
+            const past = historical.find((d: any) => d.date.getTime() >= targetTime); // simple approx since sorted ascending
             if (past) {
                 const pastPrice = past.close;
                 const pctChange = ((price - pastPrice) / pastPrice) * 100;

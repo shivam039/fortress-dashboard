@@ -1,3 +1,8 @@
+import express from 'express';
+import { getSectorAnalysis, getTickerHistory } from './services/history';
+
+const router = express.Router();
+
 router.get('/ticker/history', async (req, res) => {
     const { universe, symbol } = req.query;
     try {
