@@ -1,10 +1,11 @@
-# Fortress 95 Pro (v9.4)
+# Fortress 95 Pro
 
-Fortress 95 Pro is a powerful Streamlit-based technical analysis dashboard designed for the Indian stock market (NSE). It provides traders and investors with institutional-grade insights by combining technical indicators, fundamental checks, sentiment analysis, and analyst consensus data into a unified scoring system.
+Fortress 95 Pro is a powerful technical analysis dashboard designed for the Indian stock market (NSE). It provides traders and investors with institutional-grade insights by combining technical indicators, fundamental checks, sentiment analysis, and analyst consensus data into a unified scoring system.
+
+The application has been migrated from a Python Streamlit app to a full-stack architecture using Node.js (Backend) and React (Frontend).
 
 ## 🛡️ Key Features
 
-- **Dynamic Columns Terminal**: Customize your view by selecting relevant data points (Price, RSI, Analyst Count, Targets, etc.).
 - **Institutional Scoring Algorithm**:
   - **Technical**: EMA200, RSI (Optimal zone 40-72), SuperTrend, ATR.
   - **Fundamental**: Analyst consensus targets, dispersion analysis.
@@ -14,45 +15,90 @@ Fortress 95 Pro is a powerful Streamlit-based technical analysis dashboard desig
 - **Conviction Heatmap**: Visual representation of "High Conviction" vs. "Watch" candidates.
 - **Historical Logging**: Automatically saves scan results to a local SQLite database (`fortress_history.db`).
 - **Export Capabilities**: Download scan results as CSV for further analysis.
+- **Comparison Tool**: Compare new scans with previous ones to identify new entries, dropped stocks, and score changes.
 
-## 📦 Installation
+## 🚀 Architecture
 
-1.  **Clone the repository:**
+The project is split into two main directories:
+- **`backend/`**: Node.js + Express server handling scanning logic, database operations, and API.
+- **`frontend/`**: React + Vite application providing the interactive dashboard.
+
+### Tech Stack
+- **Backend**: Node.js, Express, Socket.IO, SQLite, Yahoo Finance API, Technical Indicators.
+- **Frontend**: React, TypeScript, Tailwind CSS, Recharts, Lucide React.
+
+## 📦 Installation & Usage
+
+### Prerequisites
+- Node.js (v18+)
+- NPM
+
+### 1. Backend Setup
+
+The backend handles the core logic, scanning, and database interactions.
+
+1.  Navigate to the `backend` directory:
     ```bash
-    git clone <repository_url>
-    cd <repository_directory>
+    cd backend
     ```
 
-2.  **Install dependencies:**
-    It is recommended to use a virtual environment.
+2.  Install dependencies:
     ```bash
-    pip install -r requirements.txt
+    npm install
     ```
+
+3.  Start the server:
+    - **Development (with hot-reload):**
+      ```bash
+      npm run dev
+      ```
+    - **Production:**
+      ```bash
+      npm run build
+      npm start
+      ```
+
+    The backend server runs on `http://localhost:3001`.
+
+    *Note: The SQLite database `fortress_history.db` will be created in the `backend/` directory automatically upon the first run.*
+
+### 2. Frontend Setup
+
+The frontend provides the user interface.
+
+1.  Navigate to the `frontend` directory:
+    ```bash
+    cd frontend
+    ```
+
+2.  Install dependencies:
+    ```bash
+    npm install
+    ```
+
+3.  Start the development server:
+    ```bash
+    npm run dev
+    ```
+
+    The application will be accessible at `http://localhost:5173`.
 
 ## ⚙️ Configuration
 
-The application relies on `fortress_config.py` for defining the universe of stocks and benchmarks.
+The scan universe and sector mappings are configured in `backend/src/config.ts`.
 - **TICKER_GROUPS**: Define lists of stock symbols (e.g., Nifty 50, Midcap 150).
-- **SECTOR_MAP**: Map tickers to their respective sectors for analysis.
-- **INDEX_BENCHMARKS**: Define benchmark indices for Market Pulse.
+- **SECTOR_MAP**: Map tickers to their respective sectors.
+- **INDEX_BENCHMARKS**: Define benchmark indices.
 
-## 🚀 Usage
+## ☁️ Deployment (Railway)
 
-1.  **Run the application:**
-    ```bash
-    streamlit run streamlit_app.py
-    ```
+To deploy the backend to Railway:
 
-2.  **Dashboard Controls (Sidebar):**
-    - **Portfolio Value (₹)**: Enter your total capital.
-    - **Risk Per Trade (%)**: Set your risk tolerance per trade (0.5% - 3.0%).
-    - **Select Index**: Choose the universe to scan (e.g., Nifty 50).
-    - **Select Columns**: Toggle which data columns appear in the results table.
-
-3.  **Execute Scan:**
-    - Click **🚀 EXECUTE SYSTEM SCAN** to start processing.
-    - The system will fetch data, compute scores, and display actionable setups sorted by conviction score.
-    - View the **Conviction Heatmap** for a visual summary.
+1.  **Repo Structure**: Point Railway to the `backend/` directory as the root of the service.
+2.  **Build Command**: `npm run build` (Railway usually detects this automatically).
+3.  **Start Command**: `npm start`.
+4.  **Database**: The SQLite database (`fortress_history.db`) is file-based. On Railway, the filesystem is ephemeral, meaning data will be lost on redeployments unless you use a persistent volume.
+    - *Recommendation*: For persistent history in production, consider mounting a Railway Volume to `/app` (or where the DB resides) or migrating to a hosted database service (PostgreSQL/MySQL).
 
 ## ⚠️ Disclaimer
 
