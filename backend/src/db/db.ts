@@ -1,7 +1,8 @@
 import sqlite3 from 'sqlite3';
 import path from 'path';
 
-const DB_PATH = path.resolve(__dirname, '../../../fortress_history.db');
+// Use process.cwd() to locate DB in the root of the running application (backend/ or /app)
+const DB_PATH = path.resolve(process.cwd(), 'fortress_history.db');
 
 export const db = new sqlite3.Database(DB_PATH, (err) => {
     if (err) {
