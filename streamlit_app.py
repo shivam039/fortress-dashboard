@@ -1,5 +1,5 @@
 # streamlit_app.py - v9.4 MASTER TERMINAL (Dynamic Columns + Heatmap Safety)
-import subprocess, sys, time, sqlite3
+import subprocess, sys, time, sqlite3, requests
 from datetime import datetime
 import streamlit as st
 import pandas_ta as ta
@@ -8,6 +8,8 @@ import numpy as np
 import yfinance as yf
 import matplotlib.pyplot as plt
 import seaborn as sns
+import plotly.express as px
+from mftool import Mftool
 
 # Optional Dependency for PDF
 try:
@@ -23,6 +25,68 @@ except ImportError:
     st.error("Configuration file 'fortress_config.py' not found.")
     st.stop()
 
+# ---------------- MF LOGIC ----------------
+@st.cache_data(ttl="1d")
+def get_benchmark_data(ticker="^NSEI"):
+    """Fetches Benchmark data to calculate true Alpha"""
+    try:
+        nifty = yf.download(ticker, period="5y", interval="1d", progress=False)
+        if isinstance(nifty.columns, pd.MultiIndex):
+            nifty.columns = nifty.columns.get_level_values(0)
+        nifty['ret'] = nifty['Close'].pct_change()
+        return nifty.dropna()
+    except Exception as e:
+        print(f"Benchmark Fetch Error: {e}")
+        return pd.DataFrame()
+
+def detect_integrity_issues(fund_df, benchmark_df, category):
+    """
+    Calculates Alpha, Beta, Tracking Error, and Style Drift.
+    Tracking Error = Std Dev of (Fund Return - Benchmark Return)
+    """
+    try:
+        # Align dates for precise comparison
+        combined = pd.merge(fund_df[['date', 'ret']], benchmark_df[['ret']],
+                             left_on='date', right_index=True, suffixes=('_f', '_b'))
+
+        if len(combined) < 100: return None
+
+        # Ratios
+        f_ret = combined['ret_f']
+        b_ret = combined['ret_b']
+
+        # Beta calculation
+        covariance = np.cov(f_ret, b_ret)[0][1]
+        variance = np.var(b_ret)
+        beta = covariance / variance if variance != 0 else 0
+
+        # Tracking Error & Alpha
+        tracking_diff = f_ret - b_ret
+        tracking_error = tracking_diff.std() * np.sqrt(252) * 100
+        alpha = (f_ret.mean() - b_ret.mean()) * 252 * 100
+
+        # Drift Detection
+        drift = "✅ Stable"
+        if category == "Large Cap" and beta > 1.15: drift = "🚨 Beta Drift (Aggressive)"
+        if tracking_error > 8.0: drift = "🚨 Tracking Drift (Ghost Fund?)"
+
+        return {"alpha": alpha, "beta": beta, "te": tracking_error, "drift": drift}
+    except: return None
+
+@st.cache_data(ttl="7d")
+def discover_funds(limit=250):
+    try:
+        url = "https://api.mfapi.in/mf"
+        schemes = requests.get(url).json()
+        keywords = ["flexi", "large", "mid", "small", "focused", "growth", "direct"]
+
+        # Filter for Direct Growth Equity
+        candidates = [s for s in schemes if all(k in s['schemeName'].lower() for k in ["direct", "growth"])
+                      and any(k in s['schemeName'].lower() for k in keywords)]
+        return candidates[:limit]
+    except: return []
+
+# ---------------- DB LOGIC ----------------
 def init_db():
     try:
         conn = sqlite3.connect('fortress_history.db')
@@ -42,6 +106,7 @@ def init_db():
         print(f"Database error: {e}")
 
 def get_table_name_from_universe(u):
+    if "Mutual Funds" == u: return "scan_mf"
     if "Nifty 50" == u: return "scan_nifty50"
     if "Nifty Next 50" == u: return "scan_niftynext50"
     if "Nifty Midcap" in u: return "scan_midcap"
@@ -280,7 +345,7 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
     except: return None
 
 # ---------------- TABS ----------------
-tab_scan, tab_hist = st.tabs(["🚀 Live Scanner", "📜 Scan History Intelligence"])
+tab_scan, tab_mf, tab_hist = st.tabs(["🚀 Live Scanner", "🛡️ MF Consistency Lab", "📜 Scan History Intelligence"])
 
 with tab_scan:
     # ---------------- MARKET PULSE ----------------
@@ -369,13 +434,99 @@ with tab_scan:
 
     st.caption("🛡️ Fortress 95 Pro v9.4 — Dynamic Columns | ATR SL | Analyst Dispersion | Full Logic")
 
+with tab_mf:
+    st.subheader("🛡️ Fortress MF Pro: Consistency Lab")
+
+    # MF Controls
+    col_mf1, col_mf2, col_mf3 = st.columns([2, 1, 1])
+    with col_mf1:
+        mf_limit = st.slider("Max Funds to Scan", 10, 100, 40)
+    with col_mf2:
+        mf_benchmark = st.text_input("Benchmark (Yahoo Ticker)", value="^NSEI")
+    with col_mf3:
+        st.write("")
+        st.write("")
+        start_mf_scan = st.button("🚀 EXECUTE AUDIT", type="primary", use_container_width=True)
+
+    if start_mf_scan:
+        bench = get_benchmark_data(mf_benchmark)
+        if bench.empty:
+            st.error("Failed to fetch benchmark data.")
+        else:
+            candidates = discover_funds(limit=mf_limit)
+            results = []
+
+            progress = st.progress(0)
+            status_text = st.empty()
+
+            for i, c in enumerate(candidates):
+                status_text.text(f"Auditing: {c['schemeName'][:30]}...")
+                try:
+                    url = f"https://api.mfapi.in/mf/{c['schemeCode']}"
+                    data = requests.get(url).json()
+                    df = pd.DataFrame(data['data'])
+                    df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
+                    df['nav'] = df['nav'].astype(float)
+                    df = df.sort_values('date')
+                    df['ret'] = df['nav'].pct_change()
+
+                    # Risk/Consistency Metrics
+                    metrics = detect_integrity_issues(df, bench, "Equity")
+                    if metrics:
+                        # Calculate Sortino
+                        neg_ret = df['ret'][df['ret'] < 0]
+                        sortino = (df['ret'].mean() * 252) / (neg_ret.std() * np.sqrt(252)) if neg_ret.std() > 0 else 0
+
+                        fortress_score = round((metrics['alpha'] * 4) + (sortino * 12), 1)
+                        # Normalize 0-100ish
+                        # fortress_score = max(0, min(100, fortress_score)) # Optional normalization, but logic provided was specific.
+
+                        results.append({
+                            "Symbol": c['schemeName'][:50], # Mapped to Symbol for DB compatibility
+                            "Alpha (True)": round(metrics['alpha'], 2),
+                            "Sortino": round(sortino, 2),
+                            "TE (Tracking Error)": round(metrics['te'], 2),
+                            "Beta": round(metrics['beta'], 2),
+                            "Verdict": metrics['drift'], # Mapped to Verdict
+                            "Score": fortress_score, # Mapped to Score
+                            "Price": df['nav'].iloc[-1] # Mapped to Price
+                        })
+                except Exception as e:
+                     # print(f"Error processing {c.get('schemeName')}: {e}")
+                     continue
+                progress.progress((i + 1) / len(candidates))
+
+            if results:
+                final_df = pd.DataFrame(results).sort_values("Score", ascending=False)
+
+                # Save to History
+                log_scan_results(final_df, "scan_mf")
+                fetch_timestamps.clear()
+                fetch_history_data.clear()
+                fetch_symbol_history.clear()
+                log_audit("MF Scan Completed", "Mutual Funds", f"Saved {len(final_df)} funds.")
+
+                st.success(f"Audit Complete. Found {len(final_df)} funds.")
+                st.dataframe(final_df.style.background_gradient(subset=['Score'], cmap='RdYlGn'), use_container_width=True)
+
+                # Visualization
+                st.subheader("📊 Consistency Map: Alpha vs Downside Protection")
+
+                fig = px.scatter(final_df, x="TE (Tracking Error)", y="Alpha (True)",
+                                 color="Verdict", size="Score", text="Symbol",
+                                 hover_data=["Sortino", "Beta"])
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.warning("No funds matched criteria or data fetch failed.")
+
 with tab_hist:
     st.subheader("📜 Scan History Intelligence")
 
     # 1. Setup & Controls
     col_u, col_t1, col_t2, col_btn = st.columns([2, 2, 2, 2])
     with col_u:
-        hist_uni = st.selectbox("Universe", list(TICKER_GROUPS.keys()), key="h_u")
+        # Added "Mutual Funds" to the options
+        hist_uni = st.selectbox("Universe", list(TICKER_GROUPS.keys()) + ["Mutual Funds"], key="h_u")
         hist_table = get_table_name_from_universe(hist_uni)
 
     # Fetch Timestamps with Cache
