@@ -1,0 +1,22 @@
+ALL_COLUMNS = {
+    "Symbol": {"label":"Symbol"},
+    "Verdict": {"label":"Verdict"},
+    "Score": {"label":"Conviction", "type":"progress", "min":0, "max":100},
+    "Price": {"label":"Price ₹", "format":"₹%.2f"},
+    "RSI": {"label":"RSI", "format":"%.1f"},
+    "News": {"label":"News"},
+    "Events": {"label":"Events"},
+    "Sector": {"label":"Sector"},
+    "Position_Qty": {"label":"Qty", "format":"%d"},
+    "Stop_Loss": {"label":"SL Price", "format":"₹%.2f"},
+    "Target_10D": {"label":"10D Target", "format":"₹%.2f"},
+    "Analysts": {"label":"Analyst Count", "format":"%d"},
+    "Tgt_High": {"label":"High Target", "format":"₹%d"},
+    "Tgt_Median": {"label":"Median Target", "format":"₹%d"},
+    "Tgt_Low": {"label":"Low Target", "format":"₹%d"},
+    "Tgt_Mean": {"label":"Mean Target", "format":"₹%d"},
+    "Dispersion_Alert": {"label":"Dispersion"},
+    "Ret_30D": {"label":"30D Backtest", "format":"%.2f%%"},
+    "Ret_60D": {"label":"60D Backtest", "format":"%.2f%%"},
+    "Ret_90D": {"label":"90D Backtest", "format":"%.2f%%"}
+}
