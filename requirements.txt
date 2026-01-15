@@ -7,3 +7,6 @@ pytz
 dhanhq
 seaborn
 matplotlib
+mftool
+plotly
+requests
