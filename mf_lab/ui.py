@@ -5,7 +5,7 @@ import subprocess
 import sys
 import os
 from utils.db import fetch_timestamps, fetch_history_data, fetch_symbol_history
-from mf_lab.logic import apply_drift_status
+from mf_lab.logic import apply_drift_status, get_category, calculate_fortress_score, generate_health_check_report
 
 def render():
     st.subheader("🛡️ Fortress MF Pro: Consistency Lab")
@@ -25,6 +25,23 @@ def render():
                     st.error(f"Script not found at {script_path}")
             except Exception as e:
                 st.error(f"Failed to start scan: {e}")
+
+        st.markdown("---")
+        if st.button("📋 Generate Health Check"):
+            with st.spinner("Analyzing Market Breadth & Sector Rotation..."):
+                timestamps = fetch_timestamps("scan_mf")
+                if timestamps:
+                    current_ts = timestamps[0]
+                    current_df = fetch_history_data("scan_mf", current_ts)
+
+                    previous_df = None
+                    if len(timestamps) > 1:
+                        previous_df = fetch_history_data("scan_mf", timestamps[1])
+
+                    report = generate_health_check_report(current_df, previous_df)
+                    st.code(report, language='markdown')
+                else:
+                    st.error("No scan data available. Please run a scan first.")
 
     # ---------------- VIEW RESULTS ----------------
     # 1. Fetch Latest Data
@@ -47,7 +64,6 @@ def render():
     # PATCH: Schema Evolution for Old Scans
     # If "Category" column is missing, infer it from Symbol using shared logic
     if 'Category' not in raw_df.columns and 'Symbol' in raw_df.columns:
-        from mf_lab.logic import get_category
         # Apply inference
         raw_df['Category'] = raw_df['Symbol'].apply(get_category)
         st.caption("ℹ️ Legacy Data Detected: Categories were inferred from fund names.")
@@ -87,7 +103,8 @@ def render():
     # 2. Category-Wise Normalization & Leaderboards
     # We recalculate the 0-100 Score here to ensure it's relative to the *current* peer group displayed
 
-    tab_list = ["Large Cap", "Mid Cap", "Small Cap", "Flexi/Other"]
+    # UPDATED: 7 Categories
+    tab_list = ["Large Cap", "Mid Cap", "Small Cap", "Flexi/Other", "Focused", "Value", "Contra", "ELSS"]
     tabs = st.tabs(tab_list)
 
     final_display_df = pd.DataFrame()
@@ -100,17 +117,8 @@ def render():
                 st.markdown(f"### 🏆 {cat} Consistency Leaderboard")
 
                 # Normalize Score 0-100 per category (Peer Normalization)
-                if len(cat_df) > 1:
-                    c_min, c_max = cat_df['Score'].min(), cat_df['Score'].max()
-                    if c_max != c_min:
-                        # Min-Max Scaling
-                        cat_df['Fortress Score'] = ((cat_df['Score'] - c_min) / (c_max - c_min)) * 100
-                    else:
-                        cat_df['Fortress Score'] = 50.0
-                else:
-                    cat_df['Fortress Score'] = 100.0
-
-                cat_df['Fortress Score'] = cat_df['Fortress Score'].round(1)
+                # Use shared logic now
+                cat_df = calculate_fortress_score(cat_df)
 
                 # Sort by Fortress Score
                 cat_df = cat_df.sort_values("Fortress Score", ascending=False)
