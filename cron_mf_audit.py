@@ -34,11 +34,37 @@ def run_audit(limit=None):
 
     # 1. Fetch Benchmarks
     print("Fetching Benchmarks...")
-    benchmarks = {
-        'Large Cap': fetch_benchmark_data_headless("^NSEI"),
-        'Mid Cap': fetch_benchmark_data_headless("^NSEMDCP50"),
-        'Small Cap': fetch_benchmark_data_headless("^CNXSC"),
-        'Flexi/Other': fetch_benchmark_data_headless("^NSEI")
+
+    # Benchmarks Map
+    # Standard Equity
+    nifty_50 = fetch_benchmark_data_headless("^NSEI")
+    mid_150 = fetch_benchmark_data_headless("^NSEMDCP50")
+    small_250 = fetch_benchmark_data_headless("^CNXSC")
+
+    # Specialty Equity (Broad Market)
+    nifty_500 = fetch_benchmark_data_headless("^CNX500")
+
+    # Debt (Liquid Proxy)
+    liquid_bees = fetch_benchmark_data_headless("LIQUIDBEES.NS")
+
+    # Map Categories to specific Benchmarks
+    benchmarks_map = {
+        # Standard Equity
+        'Large Cap': nifty_50,
+        'Mid Cap': mid_150,
+        'Small Cap': small_250,
+
+        # Specialty Equity -> Nifty 500
+        'Flexi/Multi Cap': nifty_500,
+        'Focused': nifty_500,
+        'Value/Contra': nifty_500,
+        'ELSS': nifty_500,
+
+        # Debt -> Liquid BeES
+        'Liquid/Overnight': liquid_bees,
+        'Ultra Short/Low Duration': liquid_bees,
+        'Corporate Bond': liquid_bees,
+        'Gilt/Dynamic Bond': liquid_bees
     }
 
     # 2. Discover Funds
@@ -79,7 +105,18 @@ def run_audit(limit=None):
                 continue
 
             cat = get_category(scheme_name)
-            bench = benchmarks.get(cat)
+            bench = benchmarks_map.get(cat)
+
+            # Fallback if specific cat not in map (should be covered by logic.py but safety check)
+            if bench is None or bench.empty:
+                # Fallback based on type?
+                # If it's a new debt category not mapped, default to liquid_bees
+                # If equity, default to nifty_500
+                if "Bond" in cat or "Liquid" in cat:
+                     bench = liquid_bees
+                else:
+                     bench = nifty_500
+
             if bench is None or bench.empty:
                 continue
 
@@ -107,7 +144,8 @@ def run_audit(limit=None):
                     "Verdict": metrics['drift'],
                     "Price": df['nav'].iloc[-1],
                     "Beta": metrics['beta'],
-                    "Tracking Error": metrics['te']
+                    "Tracking Error": metrics['te'],
+                    "cagr": metrics.get('cagr', 0.0) # Store raw CAGR for future audits
                 })
 
             if (i + 1) % 10 == 0:

@@ -79,11 +79,25 @@ def detect_integrity_issues(fund_df, benchmark_df, category):
 
         beta_drift = False
         if category == "Large Cap" and beta > 1.15: beta_drift = True
-        elif category == "Flexi/Other" and beta > 1.20: beta_drift = True
+        elif category == "Flexi/Multi Cap" and beta > 1.20: beta_drift = True
         elif category == "Mid Cap" and beta > 1.25: beta_drift = True
-        elif category == "Small Cap" and beta > 1.40: beta_drift = True
+        elif category == "Small Cap" and beta > 1.45: beta_drift = True # Updated to Source of Truth 1.45
 
         if beta_drift: drift_reasons.append("Beta Drift")
+
+        # Debt Drift check (handled in calculate_drift_status usually, but adding hook here if metric passed)
+        # For detect_integrity_issues, we return raw metrics. The Drift Status is calculated later/overlaid.
+        # But `drift` string is returned here. So we should update this logic to be consistent.
+        # However, this function might not have 'annual_return' easily accessible without recalc.
+        # 'cagr_f' is calculated above.
+
+        # Debt Check: Repo Rate 6.5%, Breach < 5.75%
+        is_debt = category in ["Liquid/Overnight", "Ultra Short/Low Duration", "Corporate Bond", "Gilt/Dynamic Bond"]
+        if is_debt:
+            # cagr_f is a decimal (e.g., 0.06 for 6%)
+            cagr_pct = cagr_f * 100
+            if cagr_pct < 5.75:
+                drift_reasons.append(f"Low Yield ({cagr_pct:.1f}%)")
 
         if not drift_reasons:
             drift = "✅ Stable"
@@ -93,7 +107,7 @@ def detect_integrity_issues(fund_df, benchmark_df, category):
         return {
             "alpha": alpha, "beta": beta, "te": tracking_error, "sortino": sortino,
             "max_dd": max_dd, "win_rate": win_rate, "drift": drift,
-            "upside": upside_cap, "downside": downside_cap
+            "upside": upside_cap, "downside": downside_cap, "cagr": cagr_f * 100
         }
     except Exception as e:
         # print(f"Error in detect_integrity_issues: {e}")
@@ -102,17 +116,22 @@ def detect_integrity_issues(fund_df, benchmark_df, category):
 @st.cache_data(ttl="7d")
 def discover_funds(limit=None):
     """
-    Auto-discovers Direct Growth Equity funds from mfapi.in.
-    Filters: Direct, Growth, Keywords (Flexi, Large, Mid, Small, Focused, Value, Contra).
-    Exclusions: Regular, IDCW, ETF.
-    Limit: Defaults to None (fetch all), can be set for testing.
+    Auto-discovers Direct Growth Funds from mfapi.in.
+    Filters: Direct, Growth.
+    Includes Debt Keywords and ETFs for Debt.
     """
     try:
         url = "https://api.mfapi.in/mf"
         schemes = requests.get(url).json()
-        keywords = ["flexi", "large", "mid", "small", "focused", "value", "contra"]
+
+        # Updated Keywords
+        equity_keywords = ["flexi", "multi", "large", "mid", "small", "focused", "value", "contra"]
+        debt_keywords = ["liquid", "gilt", "bond", "duration", "overnight", "corporate"]
+        all_keywords = equity_keywords + debt_keywords
+
         required = ["direct", "growth"]
-        exclusions = ["regular", "idcw", "etf"]
+        base_exclusions = ["regular", "idcw"]
+        # "etf" is conditionally excluded later
 
         candidates = []
         for s in schemes:
@@ -123,12 +142,21 @@ def discover_funds(limit=None):
                 continue
 
             # Must have AT LEAST ONE keyword
-            if not any(k in name for k in keywords):
+            if not any(k in name for k in all_keywords):
                 continue
 
-            # Must NOT have ANY exclusions
-            if any(ex in name for ex in exclusions):
+            # Base Exclusions
+            if any(ex in name for ex in base_exclusions):
                 continue
+
+            # ETF Logic: Exclude ETFs unless it matches Debt keywords
+            is_etf = "etf" in name
+            is_debt = any(k in name for k in debt_keywords)
+
+            if is_etf:
+                if not is_debt:
+                    continue # Skip Equity ETFs
+                # Else: Allow Debt ETFs (Liquid BeES etc)
 
             candidates.append(s)
 
@@ -140,21 +168,32 @@ def discover_funds(limit=None):
 def get_category(scheme_name):
     name = scheme_name.lower()
 
+    # --- DEBT CATEGORIES ---
+    if "liquid" in name or "overnight" in name: return "Liquid/Overnight"
+    if "ultra short" in name or "low duration" in name or "money market" in name: return "Ultra Short/Low Duration"
+    if "corporate bond" in name or "credit risk" in name: return "Corporate Bond"
+    if "gilt" in name or "dynamic bond" in name or "constant maturity" in name: return "Gilt/Dynamic Bond"
+    # General catch-all for bond/debt if not caught above but clearly debt?
+    if "bond" in name or "debt" in name: return "Gilt/Dynamic Bond" # Fallback mapping
+
+    # --- EQUITY CATEGORIES ---
     # Priority 1: Specific Styles
     if "focused" in name: return "Focused"
-    if "value" in name: return "Value"
-    if "contra" in name: return "Contra"
+    if "value" in name or "contra" in name: return "Value/Contra"
     if "elss" in name: return "ELSS"
 
-    # Priority 2: Market Cap (Handle exclusions)
-    if "mid" in name and "small" in name: return "Small Cap"
+    # Priority 2: Flexi/Multi (Merged)
+    if "flexi" in name or "multi" in name: return "Flexi/Multi Cap"
+
+    # Priority 3: Market Cap (Handle exclusions)
+    if "mid" in name and "small" in name: return "Small Cap" # Often Small & Mid -> Small Cap proxy
 
     if "small" in name: return "Small Cap"
     if "mid" in name: return "Mid Cap"
     if "large" in name: return "Large Cap"
 
-    # Priority 3: Flexi/Other (Fallback)
-    return "Flexi/Other"
+    # Priority 4: Fallback
+    return "Flexi/Multi Cap"
 
 def calculate_fortress_score(cat_df):
     """
@@ -185,16 +224,38 @@ def calculate_drift_status(row):
         # Defaults if columns missing
         beta = row.get('beta', row.get('Beta', 0))
         te = row.get('te', row.get('Tracking Error', 0))
-        cat = row.get('Category', 'Flexi/Other')
+        cat = row.get('Category', 'Flexi/Multi Cap')
 
-        # 1. Tiered Beta Thresholds
+        # We need CAGR for Debt check.
+        # If 'cagr' key exists (added in detect_integrity_issues), use it.
+        # Or try to infer from Price history if available?
+        # Usually row comes from DB which might not have 'cagr'.
+        # But 'Score' calculation used Alpha/Sortino.
+        # Let's assume we might lack CAGR in legacy DB rows.
+        # However, for Debt, we need it.
+        # If missing, we can't flag breach properly unless we have 'Alpha' and Benchmark return?
+        # Let's use Alpha + Benchmark Yield approximation if needed, or rely on rows having 'cagr' if freshly scanned.
+        # For legacy rows, if 'cagr' is missing, skip debt check or mark unknown.
+        cagr = row.get('cagr', None)
+
+        # 1. Debt Logic
+        is_debt = cat in ["Liquid/Overnight", "Ultra Short/Low Duration", "Corporate Bond", "Gilt/Dynamic Bond"]
+        if is_debt:
+            if cagr is not None:
+                if cagr < 5.75:
+                    return "🚨", "Critical", 100, f"Yield {cagr:.1f}% < 5.75% (Repo Breach)"
+            return "✅", "Stable", 0, "Stable"
+
+        # 2. Equity Logic
+        # Tiered Beta Thresholds
         beta_limit = 1.15
-        if cat == "Flexi/Other": beta_limit = 1.20
+        if cat == "Flexi/Multi Cap": beta_limit = 1.20
         elif cat == "Mid Cap": beta_limit = 1.25
-        elif cat == "Small Cap": beta_limit = 1.45 # Updated per requirements
+        elif cat == "Small Cap": beta_limit = 1.45 # Source of Truth
 
-        # 2. Tracking Error Threshold
-        te_limit = 8.0
+        # Tracking Error Threshold
+        # Large Cap > 6.0, Others > 9.0
+        te_limit = 6.0 if cat == "Large Cap" else 9.0
 
         # Scoring
         drift_score = 0
@@ -326,21 +387,14 @@ def generate_health_check_report(current_df, previous_df=None):
     if previous_df is not None and not previous_df.empty:
         if 'Category' not in previous_df.columns:
             previous_df['Category'] = previous_df['Symbol'].apply(get_category)
-        # We need raw Score to calculate Fortress Score correctly per category *at that time*?
-        # Actually, let's just assume we want to compare the final Fortress Score.
-        # But Fortress Score is relative. So we should recalculate it for the previous scan to be fair?
-        # Or just use raw Score delta? The prompt says "Delta in its Fortress Score".
-        # So I need to calculate Fortress Score for both datasets first.
-        pass
 
     # --- 2. CALCULATE SCORES ---
     # Categories to iterate
-    categories = ["Large Cap", "Mid Cap", "Small Cap", "Flexi/Other", "Focused", "Value", "Contra", "ELSS"]
-    # Wait, get_category produces: Focused, Value, Contra, ELSS, Small Cap, Mid Cap, Large Cap, Flexi/Other.
-    # I should use the unique values found or a fixed list.
+    # Use unique categories found in current data to be dynamic
+    categories = current_df['Category'].unique()
 
     current_scored = pd.DataFrame()
-    for cat in current_df['Category'].unique():
+    for cat in categories:
         sub = current_df[current_df['Category'] == cat]
         sub = calculate_fortress_score(sub)
         current_scored = pd.concat([current_scored, sub])
@@ -370,25 +424,27 @@ def generate_health_check_report(current_df, previous_df=None):
     # --- 4. CATEGORY LEADERBOARDS ---
     # We want Top Fund from each category
     leaderboard_md = ""
-    # Defined order for report
-    report_cats = ["Large Cap", "Mid Cap", "Small Cap", "Flexi/Other", "Value", "Contra", "Focused", "ELSS"]
+    # Defined order for report if present
+    priority_order = ["Large Cap", "Mid Cap", "Small Cap", "Flexi/Multi Cap", "Value/Contra", "Focused", "ELSS",
+                      "Liquid/Overnight", "Corporate Bond", "Gilt/Dynamic Bond"]
 
-    for cat in report_cats:
+    # Sort categories by priority then others
+    cats_sorted = sorted(current_scored['Category'].unique(), key=lambda x: priority_order.index(x) if x in priority_order else 999)
+
+    for cat in cats_sorted:
         cat_data = current_scored[current_scored['Category'] == cat]
         if not cat_data.empty:
             leader = cat_data.sort_values("Fortress Score", ascending=False).iloc[0]
             # Identify specific strength based on metrics?
-            # Random "Tag" based on logic:
             tag = "High Performance"
-            if leader['Sortino'] > 2: tag = "Consistency: High"
-            elif leader['Upside Cap'] > 110: tag = "Upside Potential: Elite"
-            elif leader['Downside Cap'] < 85: tag = "Downside Shield: Strong"
+            if leader.get('Sortino', 0) > 2: tag = "Consistency: High"
+            elif leader.get('Upside Cap', 0) > 110: tag = "Upside Potential: Elite"
+            elif leader.get('Downside Cap', 100) < 85: tag = "Downside Shield: Strong"
 
             leaderboard_md += f"🏆 **{cat} Leader**: {leader['Symbol']} (Score: {leader['Fortress Score']}) | {tag}\n\n"
 
     # --- 5. STRATEGY WATCHDOG ---
     stable_count = len(current_scored[current_scored['Drift Status'] == 'Stable'])
-    breach_count = len(current_scored[current_scored['Drift Status'] != 'Stable'])
     total_audited = len(current_scored)
 
     stable_pct = (stable_count / total_audited * 100) if total_audited > 0 else 0
