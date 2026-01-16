@@ -95,8 +95,13 @@ def render():
 
             # Normalization (Z-Score + Scaling)
             if len(final_df) > 1:
-                # Z-score normalization
-                final_df['Score'] = (final_df['Score'] - final_df['Score'].mean()) / final_df['Score'].std()
+                std_dev = final_df['Score'].std()
+                if std_dev > 0:
+                    # Z-score normalization
+                    final_df['Score'] = (final_df['Score'] - final_df['Score'].mean()) / std_dev
+                else:
+                    # All scores identical
+                    final_df['Score'] = 0.0
 
                 # Scale 0-100
                 min_s = final_df['Score'].min()
@@ -105,7 +110,12 @@ def render():
                     final_df['Score'] = ((final_df['Score'] - min_s) / (max_s - min_s)) * 100
                 else:
                     final_df['Score'] = 50.0 # Default if all scores are identical
+            else:
+                # Single result or empty, assign default
+                final_df['Score'] = 50.0
 
+            # Ensure Score is always positive for Plotly size
+            final_df['Score'] = final_df['Score'].clip(lower=1.0)
             final_df['Score'] = final_df['Score'].round(1)
             final_df = final_df.sort_values("Score", ascending=False)
 
