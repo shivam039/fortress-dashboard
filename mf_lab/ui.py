@@ -43,6 +43,14 @@ def render():
         st.error("No data found for selected timestamp.")
         return
 
+    # PATCH: Schema Evolution for Old Scans
+    # If "Category" column is missing, infer it from Symbol using shared logic
+    if 'Category' not in raw_df.columns and 'Symbol' in raw_df.columns:
+        from mf_lab.logic import get_category
+        # Apply inference
+        raw_df['Category'] = raw_df['Symbol'].apply(get_category)
+        st.caption("ℹ️ Legacy Data Detected: Categories were inferred from fund names.")
+
     st.success(f"Loaded {len(raw_df)} funds from audit on {selected_ts}")
 
     # 2. Category-Wise Normalization & Leaderboards

@@ -12,18 +12,8 @@ sys.path.append(os.getcwd())
 # Import Logic (Re-using existing logic to ensure consistency)
 # We will use the functions, but might need to bypass the @st.cache_data decorators if they cause issues
 # in a non-Streamlit environment. However, usually they just work or can be bypassed.
-from mf_lab.logic import detect_integrity_issues, discover_funds
+from mf_lab.logic import detect_integrity_issues, discover_funds, get_category
 from utils.db import log_scan_results
-
-def get_category(scheme_name):
-    name = scheme_name.lower()
-    # Exclusion Layer: If "Mid" and "Small" both appear, default to "Small Cap"
-    if "mid" in name and "small" in name: return "Small Cap"
-
-    if "large" in name: return "Large Cap"
-    if "mid" in name: return "Mid Cap"
-    if "small" in name: return "Small Cap"
-    return "Flexi/Other"
 
 def fetch_benchmark_data_headless(ticker):
     """Fetches Benchmark data without Streamlit caching for the background script"""
