@@ -35,6 +35,77 @@ def apply_drift_status_ui(df):
     from mf_lab.logic import apply_drift_status
     return apply_drift_status(df)
 
+# --- UX HELPER FUNCTIONS ---
+def get_action_label(score):
+    if score >= 80:
+        return "Strong Buy"
+    elif score >= 50:
+        return "Hold"
+    else:
+        return "Avoid"
+
+def get_risk_label(integrity):
+    # Integrity corresponds to Drift Status: Stable, Moderate, Critical
+    if integrity == "Stable":
+        return "Low Risk"
+    elif integrity == "Moderate":
+        return "Medium Risk"
+    elif integrity == "Critical":
+        return "High Risk"
+    else:
+        return "Unknown" # Fallback
+
+def generate_score_explanation(row):
+    # Expects a dict or Series with keys: 'Alpha (True)', 'Sortino', 'Downside Cap', 'Fortress Score'
+    # We need to handle potential missing keys gracefully
+    alpha = row.get('Alpha (True)', 0)
+    sortino = row.get('Sortino', 0)
+    downside = row.get('Downside Cap', 100) # Default to 100 (neutral/bad) if missing
+
+    positives = []
+    negatives = []
+
+    # Alpha Analysis
+    if alpha > 5:
+        positives.append(f"exceptional Alpha ({alpha:.2f})")
+    elif alpha > 0:
+        positives.append(f"positive Alpha ({alpha:.2f})")
+    else:
+        negatives.append(f"underperformance vs benchmark (Alpha {alpha:.2f})")
+
+    # Sortino Analysis (Risk-adjusted return)
+    if sortino > 2:
+        positives.append(f"superior risk-adjusted returns (Sortino {sortino:.2f})")
+    elif sortino > 1:
+        positives.append(f"solid risk-adjusted returns")
+    elif sortino < 0.5:
+        negatives.append(f"poor risk-adjusted returns")
+
+    # Downside Analysis (Lower is better)
+    # Assuming Downside Cap: <80 is good, >100 is bad
+    if downside < 80:
+        positives.append(f"excellent downside protection")
+    elif downside > 110:
+        negatives.append(f"high downside risk")
+
+    # Construct Sentence
+    # "High rating due to [Positive 1] and [Positive 2], despite [Negative 1]."
+
+    text = ""
+    if positives:
+        text += "Driven by " + " and ".join(positives[:2]) + "."
+
+    if negatives:
+        if text:
+            text += " However, it shows " + negatives[0] + "."
+        else:
+            text += "Dragged down by " + " and ".join(negatives[:2]) + "."
+
+    if not text:
+        text = "Performance is in line with category averages."
+
+    return text
+
 def render_blender_suite(aggregated_selection):
     """
     Renders the Portfolio Blender & Backtester suite.
@@ -168,6 +239,15 @@ def render():
         help="Switch between Equity Mutual Funds and Debt Instruments."
     )
 
+    # ---------------- VIEW MODE (SIDEBAR) ----------------
+    st.sidebar.markdown("---")
+    view_mode = st.sidebar.radio(
+        "View Mode:",
+        ["Simple", "Pro"],
+        index=0,
+        help="Switch between Beginner-friendly Summary and Advanced Pro Mode."
+    )
+
     # ---------------- VIEW RESULTS ----------------
     # 1. Fetch Latest Data
     timestamps = fetch_timestamps("scan_mf")
@@ -263,59 +343,172 @@ def render():
                     # Sort by Fortress Score
                     cat_df = cat_df.sort_values("Fortress Score", ascending=False)
 
-                    # Columns Config
-                    # Put Integrity First
-                    base_cols = ["Integrity", "Symbol", "Fortress Score", "Alpha (True)", "Sortino", "Win Rate", "Upside Cap", "Downside Cap"]
+                    # Compute Metadata for UI (Action & Risk)
+                    cat_df['Action'] = cat_df['Fortress Score'].apply(get_action_label)
+                    cat_df['Risk'] = cat_df['Integrity'].apply(get_risk_label)
 
-                    disp_cols = base_cols + ["Verdict"]
-                    valid_cols = [c for c in disp_cols if c in cat_df.columns]
+                    if view_mode == "Simple":
+                        # --- SIMPLE MODE: SUMMARY CARDS ---
 
-                    # Unique Key for Dataframe
-                    df_key = f"df_{asset_class}_{cat}"
+                        # Metrics Calculation
+                        top_pick = cat_df.iloc[0]
+                        buy_zone_count = len(cat_df[cat_df['Fortress Score'] >= 80])
+                        high_risk_count = len(cat_df[cat_df['Integrity'] == 'Critical'])
+                        avg_score = cat_df['Fortress Score'].mean()
 
-                    # Render Dataframe with Selection
-                    event = st.dataframe(
-                        cat_df[valid_cols].style.background_gradient(subset=['Fortress Score'], cmap='RdYlGn'),
-                        use_container_width=True,
-                        height=500,
-                        hide_index=True,
-                        key=df_key,
-                        on_select="rerun",
-                        selection_mode="multi-row"
-                    )
+                        s1, s2, s3, s4 = st.columns(4)
+                        s1.metric("⭐ Top Pick", top_pick['Symbol'])
+                        s2.metric("🟢 Buy Zone Funds", f"{buy_zone_count}")
+                        s3.metric("⚠️ High Risk Funds", f"{high_risk_count}")
+                        s4.metric("📊 Avg Score", f"{avg_score:.1f}")
 
-                    # Handle Selection
-                    if len(event.selection['rows']) > 0:
-                        selected_rows = cat_df.iloc[event.selection['rows']]
+                        st.markdown("---")
 
-                        # Add to CURRENT filter context
-                        current_tab_selection.extend(selected_rows['Symbol'].tolist())
+                        # --- SIMPLE MODE: LIST VIEW ---
+                        simple_cols = ["Symbol", "Action", "Risk", "Fortress Score", "Verdict"]
+                        valid_simple_cols = [c for c in simple_cols if c in cat_df.columns]
 
-                        # Add to Local BLENDER context
-                        for idx, row in selected_rows.iterrows():
-                            # Find scheme code from full row data if available (New Schema)
-                            if 'Scheme Code' in row:
-                                code = row['Scheme Code']
+                        # Unique Key for Dataframe
+                        df_key = f"df_{asset_class}_{cat}_simple"
+
+                        event = st.dataframe(
+                            cat_df[valid_simple_cols],
+                            column_config={
+                                "Action": st.column_config.TextColumn(
+                                    "Recommendation",
+                                    help="Buy/Hold/Avoid based on Score",
+                                    width="medium",
+                                ),
+                                "Risk": st.column_config.TextColumn(
+                                    "Risk Level",
+                                    help="Risk based on Drift Status",
+                                    width="medium",
+                                ),
+                                "Fortress Score": st.column_config.ProgressColumn(
+                                    "Score",
+                                    help="Fortress Score (0-100)",
+                                    format="%d",
+                                    min_value=0,
+                                    max_value=100,
+                                ),
+                            },
+                            use_container_width=True,
+                            height=400,
+                            hide_index=True,
+                            key=df_key,
+                            on_select="rerun",
+                            selection_mode="single-row" # Single select for deep dive clarity
+                        )
+
+                        # Handle Selection for "Why this score?"
+                        if len(event.selection['rows']) > 0:
+                            selected_row_idx = event.selection['rows'][0]
+                            selected_row = cat_df.iloc[selected_row_idx]
+
+                            st.info(f"💡 **Fund Insights: {selected_row['Symbol']}**")
+
+                            # Generate Explanation
+                            explanation = generate_score_explanation(selected_row)
+
+                            i1, i2 = st.columns([3, 1])
+                            with i1:
+                                st.markdown(f"**Why this score?**")
+                                st.write(explanation)
+                            with i2:
+                                st.caption("Action")
+                                if selected_row['Action'] == "Strong Buy":
+                                    st.success(selected_row['Action'])
+                                elif selected_row['Action'] == "Hold":
+                                    st.warning(selected_row['Action'])
+                                else:
+                                    st.error(selected_row['Action'])
+
+                                st.caption("Risk Profile")
+                                if selected_row['Risk'] == "Low Risk":
+                                    st.success(selected_row['Risk'])
+                                elif selected_row['Risk'] == "Medium Risk":
+                                    st.warning(selected_row['Risk'])
+                                else:
+                                    st.error(selected_row['Risk'])
+
+                            # Add to basket logic for Simple Mode too?
+                            # Logic below assumes multi-select, but simple mode is single select for insights.
+                            # We can still add to basket if we want.
+                            # Let's keep basket logic consistent:
+                            # Add to CURRENT filter context
+                            current_tab_selection.append(selected_row['Symbol'])
+
+                            # Add to Local BLENDER context
+                            if 'Scheme Code' in selected_row:
+                                code = selected_row['Scheme Code']
                             else:
-                                # Fallback: Try to find scheme code from raw_df using Symbol (Legacy support)
-                                # But row is a Series, so checking 'Scheme Code' key works.
-                                # If it's NaN or missing, we have an issue.
                                 code = None
-                                # Try look up in raw_df
                                 try:
-                                    match = raw_df[raw_df['Symbol'] == row['Symbol']]
+                                    match = raw_df[raw_df['Symbol'] == selected_row['Symbol']]
                                     if not match.empty and 'Scheme Code' in match.columns:
                                         code = match['Scheme Code'].values[0]
                                 except: pass
 
-                            # If we found a code, add to basket
                             if code:
-                                local_blender_basket[code] = row['Symbol']
-                            else:
-                                # Logic.py requires a code. If missing, we can't blend.
-                                # But maybe logic.py handles symbol if code is symbol? Unlikely.
-                                # For legacy rows (scan_mf), scheme code might be missing.
-                                pass
+                                local_blender_basket[code] = selected_row['Symbol']
+
+
+                    else:
+                        # --- PRO MODE: FULL TABLE (EXISTING) ---
+
+                        # Columns Config
+                        # Put Integrity First
+                        base_cols = ["Integrity", "Symbol", "Fortress Score", "Alpha (True)", "Sortino", "Win Rate", "Upside Cap", "Downside Cap"]
+
+                        disp_cols = base_cols + ["Verdict"]
+                        valid_cols = [c for c in disp_cols if c in cat_df.columns]
+
+                        # Unique Key for Dataframe
+                        df_key = f"df_{asset_class}_{cat}"
+
+                        # Render Dataframe with Selection
+                        event = st.dataframe(
+                            cat_df[valid_cols].style.background_gradient(subset=['Fortress Score'], cmap='RdYlGn'),
+                            use_container_width=True,
+                            height=500,
+                            hide_index=True,
+                            key=df_key,
+                            on_select="rerun",
+                            selection_mode="multi-row"
+                        )
+
+                        # Handle Selection
+                        if len(event.selection['rows']) > 0:
+                            selected_rows = cat_df.iloc[event.selection['rows']]
+
+                            # Add to CURRENT filter context
+                            current_tab_selection.extend(selected_rows['Symbol'].tolist())
+
+                            # Add to Local BLENDER context
+                            for idx, row in selected_rows.iterrows():
+                                # Find scheme code from full row data if available (New Schema)
+                                if 'Scheme Code' in row:
+                                    code = row['Scheme Code']
+                                else:
+                                    # Fallback: Try to find scheme code from raw_df using Symbol (Legacy support)
+                                    # But row is a Series, so checking 'Scheme Code' key works.
+                                    # If it's NaN or missing, we have an issue.
+                                    code = None
+                                    # Try look up in raw_df
+                                    try:
+                                        match = raw_df[raw_df['Symbol'] == row['Symbol']]
+                                        if not match.empty and 'Scheme Code' in match.columns:
+                                            code = match['Scheme Code'].values[0]
+                                    except: pass
+
+                                # If we found a code, add to basket
+                                if code:
+                                    local_blender_basket[code] = row['Symbol']
+                                else:
+                                    # Logic.py requires a code. If missing, we can't blend.
+                                    # But maybe logic.py handles symbol if code is symbol? Unlikely.
+                                    # For legacy rows (scan_mf), scheme code might be missing.
+                                    pass
 
                     final_display_df = pd.concat([final_display_df, cat_df])
                 else:
