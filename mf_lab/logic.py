@@ -145,3 +145,57 @@ def get_category(scheme_name):
     if "mid" in name: return "Mid Cap"
     if "small" in name: return "Small Cap"
     return "Flexi/Other"
+
+def calculate_drift_status(row):
+    """
+    Determines Integrity Badge and Status based on thresholds.
+    Returns: (Badge, Status, Drift Score, Message)
+    """
+    try:
+        # Defaults if columns missing
+        beta = row.get('beta', row.get('Beta', 0))
+        te = row.get('te', row.get('Tracking Error', 0))
+        cat = row.get('Category', 'Flexi/Other')
+
+        # 1. Tiered Beta Thresholds
+        beta_limit = 1.15
+        if cat == "Flexi/Other": beta_limit = 1.20
+        elif cat == "Mid Cap": beta_limit = 1.25
+        elif cat == "Small Cap": beta_limit = 1.45 # Updated per requirements
+
+        # 2. Tracking Error Threshold
+        te_limit = 8.0
+
+        # Scoring
+        drift_score = 0
+        issues = []
+
+        if beta > beta_limit:
+            drift_score += 50
+            issues.append(f"Beta {beta:.2f} > {beta_limit}")
+
+        if te > te_limit:
+            drift_score += 50
+            issues.append(f"TE {te:.1f} > {te_limit}")
+
+        # Classification
+        if drift_score >= 100:
+            return "🚨", "Critical", drift_score, f"Critical Drift: {' & '.join(issues)}"
+        elif drift_score >= 50:
+            return "⚠️", "Moderate", drift_score, f"Moderate Drift: {' & '.join(issues)}"
+        else:
+            return "✅", "Stable", 0, "Stable"
+
+    except Exception:
+        return "❓", "Unknown", 0, "Data Missing"
+
+def apply_drift_status(df):
+    """Applies drift calculation to a dataframe."""
+    if df.empty: return df
+
+    results = df.apply(calculate_drift_status, axis=1)
+    df['Integrity'] = [r[0] for r in results]
+    df['Drift Status'] = [r[1] for r in results]
+    df['Drift Score'] = [r[2] for r in results]
+    df['Drift Message'] = [r[3] for r in results]
+    return df

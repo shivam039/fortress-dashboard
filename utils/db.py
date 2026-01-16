@@ -108,7 +108,8 @@ def fetch_history_data(table_name, timestamp):
 def fetch_symbol_history(table_name, symbol):
     try:
         conn = sqlite3.connect('fortress_history.db')
-        df = pd.read_sql(f"SELECT timestamp, Score, Price, Verdict FROM {table_name} WHERE Symbol=? ORDER BY timestamp", conn, params=(symbol,))
+        # Fetch ALL columns to support deep dive analysis (Drift, Beta, TE, etc.)
+        df = pd.read_sql(f"SELECT * FROM {table_name} WHERE Symbol=? ORDER BY timestamp", conn, params=(symbol,))
         conn.close()
         return df
     except: return pd.DataFrame()
