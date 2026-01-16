@@ -45,32 +45,37 @@ def generate_manifest():
                 "capture_ratio_downside": "(Mean_Fund_Return_DownMkt / Mean_Benchmark_Return_DownMkt) * 100"
             },
             "integrity_thresholds": {
-                "tracking_error_limit": 8.0,
+                "debt_breach": "CAGR < 5.75% (Repo Rate 6.5% - 75bps tolerance).",
+                "tracking_error_limits": {
+                    "Large Cap": 6.0,
+                    "Others": 9.0
+                },
                 "beta_limits": {
                     "Large Cap": 1.15,
-                    "Flexi/Other": 1.20,
+                    "Flexi/Multi Cap": 1.20,
                     "Mid Cap": 1.25,
                     "Small Cap": 1.45
                 },
-                "technical_debt_note": "mf_lab/logic.py currently uses 1.40 for Small Cap beta threshold in 'detect_integrity_issues', but 1.45 in 'calculate_drift_status'. 1.45 is the Source of Truth."
+                "technical_debt_note": "Resolved: Small Cap Beta threshold unified to 1.45 as Source of Truth."
             }
         },
         "taxonomy": {
             "categories": {
-                "priority_order": ["Focused", "Value", "Contra", "ELSS", "Small Cap", "Mid Cap", "Large Cap"],
-                "fallback": "Flexi/Other",
-                "exclusions": ["regular", "idcw", "etf"],
-                "inclusions": ["direct", "growth"]
+                "equity_sub_categories": ["Large Cap", "Mid Cap", "Small Cap", "Flexi/Multi Cap", "Focused", "Value/Contra", "ELSS"],
+                "debt_sub_categories": ["Liquid/Overnight", "Ultra Short/Low Duration", "Corporate Bond", "Gilt/Dynamic Bond"],
+                "priority_order": ["Liquid/Overnight", "Ultra Short", "Corporate Bond", "Gilt", "Focused", "Value/Contra", "ELSS", "Flexi/Multi Cap", "Small Cap", "Mid Cap", "Large Cap"],
+                "exclusions": ["regular", "idcw", "etf (Equity only)"],
+                "inclusions": ["direct", "growth", "etf (Debt only)"]
             },
             "benchmarks": {
                 "Large Cap": "^NSEI",
                 "Mid Cap": "^NSEMDCP50",
                 "Small Cap": "^CNXSC",
-                "Flexi/Other": "^NSEI",
-                "Focused": "^NSEI (Proxy for Broad Market)",
-                "Value": "^NSEI (Proxy for Broad Market)",
-                "Contra": "^NSEI (Proxy for Broad Market)",
-                "ELSS": "^NSEI (Proxy for Broad Market)"
+                "Flexi/Multi Cap": "^CNX500",
+                "Focused": "^CNX500",
+                "Value/Contra": "^CNX500",
+                "ELSS": "^CNX500",
+                "Debt (All Categories)": "LIQUIDBEES.NS (Nippon India ETF Liquid BeES)"
             }
         },
         "audit_workflows": {
@@ -82,7 +87,8 @@ def generate_manifest():
             },
             "health_check": {
                 "sector_rotation": "Calculates 1-month returns for Banking, IT, Auto, FMCG, Infra. Identifies rotation flow.",
-                "hidden_gem": "Identifies fund with largest positive Delta in Fortress Score compared to previous audit."
+                "hidden_gem": "Identifies fund with largest positive Delta in Fortress Score compared to previous audit.",
+                "market_breadth": "Nifty 50 Advance/Decline Ratio (2-day)."
             }
         },
         "data_schema": {
@@ -101,7 +107,8 @@ def generate_manifest():
                 "Verdict": "Integrity/Drift Status (e.g., 'Stable', 'Critical').",
                 "Price": "Latest NAV.",
                 "Beta": "Volatility relative to benchmark.",
-                "Tracking Error": "Deviation from benchmark returns."
+                "Tracking Error": "Deviation from benchmark returns.",
+                "cagr": "Compound Annual Growth Rate (Raw) - Used for Debt Integrity Checks."
             },
             "dynamic_config": {
                 "ticker_groups": TICKER_GROUPS,

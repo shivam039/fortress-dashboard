@@ -10,13 +10,12 @@ from mf_lab.logic import apply_drift_status, get_category, calculate_fortress_sc
 def render():
     st.subheader("🛡️ Fortress MF Pro: Consistency Lab")
 
-    # ---------------- ADMIN TOOLS ----------------
+    # ---------------- ADMIN TOOLS (SIDEBAR) ----------------
     with st.sidebar.expander("🛠️ Admin Tools"):
         st.info("Trigger the background scanner to audit the full universe (800+ funds). This runs independently.")
         if st.button("🚀 Run Background Discovery Scan"):
             try:
                 # Run independent process
-                # Ensure we point to the correct file path
                 script_path = os.path.join(os.getcwd(), "cron_mf_audit.py")
                 if os.path.exists(script_path):
                     subprocess.Popen([sys.executable, script_path])
@@ -39,9 +38,20 @@ def render():
                         previous_df = fetch_history_data("scan_mf", timestamps[1])
 
                     report = generate_health_check_report(current_df, previous_df)
+                    st.markdown("### 📋 Monthly Health Check Report")
                     st.code(report, language='markdown')
                 else:
                     st.error("No scan data available. Please run a scan first.")
+
+    # ---------------- ASSET CLASS SELECTOR (SIDEBAR) ----------------
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Asset Class")
+    asset_class = st.sidebar.radio(
+        "Select Universe:",
+        ["Equity", "Debt"],
+        index=0,
+        help="Switch between Equity Mutual Funds and Debt Instruments."
+    )
 
     # ---------------- VIEW RESULTS ----------------
     # 1. Fetch Latest Data
@@ -51,231 +61,200 @@ def render():
         st.warning("No audit history found. Please run a scan from the Admin Tools.")
         return
 
-    selected_ts = st.selectbox("Select Audit Date", timestamps, index=0)
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        selected_ts = st.selectbox("Select Audit Date", timestamps, index=0)
 
     # Fetch Data
-    # fetch_history_data returns the raw dataframe stored in DB
     raw_df = fetch_history_data("scan_mf", selected_ts)
 
     if raw_df.empty:
         st.error("No data found for selected timestamp.")
         return
 
-    # PATCH: Schema Evolution for Old Scans
-    # If "Category" column is missing, infer it from Symbol using shared logic
+    # PATCH: Schema Evolution & Categorization
     if 'Category' not in raw_df.columns and 'Symbol' in raw_df.columns:
-        # Apply inference
         raw_df['Category'] = raw_df['Symbol'].apply(get_category)
         st.caption("ℹ️ Legacy Data Detected: Categories were inferred from fund names.")
 
     # --- DRIFT ANALYSIS APPLICATION ---
-    # Apply the drift logic (Integrity Badges)
     raw_df = apply_drift_status(raw_df)
 
-    # --- DRIFT WATCHLIST ---
-    st.markdown("### 🚨 Style Drift Watchlist")
+    # 2. FILTER BY ASSET CLASS
+    # Define Categories per Asset Class
+    equity_cats = ["Large Cap", "Mid Cap", "Small Cap", "Flexi/Multi Cap", "Focused", "Value/Contra", "ELSS"]
+    debt_cats = ["Liquid/Overnight", "Ultra Short/Low Duration", "Corporate Bond", "Gilt/Dynamic Bond"]
 
-    # Filter for critical drift
-    if "Drift Status" in raw_df.columns:
-        critical_drifts = raw_df[raw_df['Drift Status'] == "Critical"]
-        moderate_drifts = raw_df[raw_df['Drift Status'] == "Moderate"]
-        stable_count = len(raw_df[raw_df['Drift Status'] == "Stable"])
-        total_funds = len(raw_df)
+    if asset_class == "Equity":
+        display_cats = equity_cats
+        filtered_df = raw_df[raw_df['Category'].isin(equity_cats)]
+    else:
+        display_cats = debt_cats
+        filtered_df = raw_df[raw_df['Category'].isin(debt_cats)]
 
-        # Integrity Score Metric
-        integrity_score = (stable_count / total_funds * 100) if total_funds > 0 else 0
-        st.metric("Total Market Integrity Score", f"{integrity_score:.1f}%", f"{stable_count} Stable Funds")
+    if filtered_df.empty:
+        st.info(f"No funds found for {asset_class} in this scan.")
+        # Optional: Show 'Other' if any categories didn't match standard lists?
+        # For now, stick to strict taxonomy.
+    else:
+        # --- DRIFT WATCHLIST (Contextual to Asset Class) ---
+        with st.expander(f"🚨 {asset_class} Strategy Watchdog", expanded=True):
+            critical_drifts = filtered_df[filtered_df['Drift Status'] == "Critical"]
+            moderate_drifts = filtered_df[filtered_df['Drift Status'] == "Moderate"]
+            stable_count = len(filtered_df[filtered_df['Drift Status'] == "Stable"])
+            total_funds = len(filtered_df)
 
-        if not critical_drifts.empty:
-            for _, row in critical_drifts.head(3).iterrows():
-                 st.error(f"🚨 **CRITICAL DRIFT**: {row['Symbol']} - {row['Drift Message']}")
-            if len(critical_drifts) > 3:
-                st.caption(f"...and {len(critical_drifts) - 3} more critical drifts.")
+            integrity_score = (stable_count / total_funds * 100) if total_funds > 0 else 0
 
-        if critical_drifts.empty and not moderate_drifts.empty:
-             st.warning(f"⚠️ **Moderate Drift Alert**: {len(moderate_drifts)} funds are showing minor style deviations.")
+            m1, m2 = st.columns([1, 3])
+            m1.metric("Integrity Score", f"{integrity_score:.1f}%", f"{stable_count}/{total_funds} Stable")
 
-        if critical_drifts.empty and moderate_drifts.empty:
-            st.success("✅ Market Integrity Check: No significant style drifts detected.")
-
-    st.success(f"Loaded {len(raw_df)} funds from audit on {selected_ts}")
-
-    # 2. Category-Wise Normalization & Leaderboards
-    # We recalculate the 0-100 Score here to ensure it's relative to the *current* peer group displayed
-
-    # UPDATED: 7 Categories
-    tab_list = ["Large Cap", "Mid Cap", "Small Cap", "Flexi/Other", "Focused", "Value", "Contra", "ELSS"]
-    tabs = st.tabs(tab_list)
-
-    final_display_df = pd.DataFrame()
-
-    for i, cat in enumerate(tab_list):
-        with tabs[i]:
-            cat_df = raw_df[raw_df['Category'] == cat].copy()
-
-            if not cat_df.empty:
-                st.markdown(f"### 🏆 {cat} Consistency Leaderboard")
-
-                # Normalize Score 0-100 per category (Peer Normalization)
-                # Use shared logic now
-                cat_df = calculate_fortress_score(cat_df)
-
-                # Sort by Fortress Score
-                cat_df = cat_df.sort_values("Fortress Score", ascending=False)
-
-                # Format Columns for Display
-                disp_cols = ["Integrity", "Symbol", "Fortress Score", "Alpha (True)", "Sortino", "Win Rate", "Upside Cap", "Downside Cap", "Verdict"]
-
-                # Ensure columns exist (handle potential missing cols from old scans)
-                valid_cols = [c for c in disp_cols if c in cat_df.columns]
-
-                # Styling
-                st.dataframe(
-                    cat_df[valid_cols].style.background_gradient(subset=['Fortress Score'], cmap='RdYlGn'),
-                    use_container_width=True,
-                    height=500
-                )
-
-                final_display_df = pd.concat([final_display_df, cat_df])
+            if not critical_drifts.empty:
+                for _, row in critical_drifts.head(3).iterrows():
+                     m2.error(f"🚨 **CRITICAL**: {row['Symbol']} — {row['Drift Message']}")
+            elif not moderate_drifts.empty:
+                m2.warning(f"⚠️ {len(moderate_drifts)} funds showing moderate drift.")
             else:
-                st.info(f"No funds found in {cat} category.")
+                m2.success("✅ No significant integrity breaches detected.")
 
-    # 3. Global Analysis (Scatter Plot)
-    if not final_display_df.empty:
-        st.markdown("---")
-        st.subheader("📊 Global Map: Alpha vs Downside Protection")
 
-        # --- RESILIENT PLOTTING STRATEGY ---
-        # 1. Mandatory Columns Check
-        required_cols = ["Downside Cap", "Alpha (True)"]
-        missing_mandatory = [c for c in required_cols if c not in final_display_df.columns]
+        # 3. Category Leaderboards (Tabs)
+        st.markdown(f"### 🏆 {asset_class} Leaderboards")
 
-        if missing_mandatory:
-            st.info(f"Scatter plot unavailable for legacy scans. Missing metrics: {', '.join(missing_mandatory)}")
-        else:
-            # 2. Prepare Optional Attributes (Size & Color)
-            plot_kwargs = {
-                "data_frame": final_display_df,
-                "x": "Downside Cap",
-                "y": "Alpha (True)",
-                "text": "Symbol",
-                "title": "Risk-Reward Map",
-                "hover_data": [c for c in ["Sortino", "Win Rate", "Category"] if c in final_display_df.columns]
-            }
+        # Create Tabs
+        tabs = st.tabs(display_cats)
 
-            # Handle Color (Verdict)
-            if "Verdict" in final_display_df.columns:
-                final_display_df["Verdict"] = final_display_df["Verdict"].fillna("Historical")
-                plot_kwargs["color"] = "Verdict"
+        final_display_df = pd.DataFrame() # Accumulate for charts
 
-            # Handle Size (Fortress Score)
-            if "Fortress Score" in final_display_df.columns:
-                # Clip to min 0.1 to avoid size=0 errors, fill NaNs
-                final_display_df["Fortress Score"] = final_display_df["Fortress Score"].clip(lower=0.1).fillna(10.0)
-                plot_kwargs["size"] = "Fortress Score"
-                plot_kwargs["title"] += " (Size = Fortress Score)"
+        for i, cat in enumerate(display_cats):
+            with tabs[i]:
+                cat_df = raw_df[raw_df['Category'] == cat].copy()
 
-            try:
-                fig = px.scatter(**plot_kwargs)
-                st.plotly_chart(fig, use_container_width=True)
-            except Exception as e:
-                st.error(f"Could not render chart due to data format issues: {e}")
+                if not cat_df.empty:
+                    # Normalize Score 0-100 per category
+                    cat_df = calculate_fortress_score(cat_df)
 
-    # 4. Integrity Audit (Drift Map)
-    if not final_display_df.empty:
-        st.markdown("---")
-        st.subheader("🔍 Integrity Audit: Alpha vs Tracking Error")
+                    # Sort by Fortress Score
+                    cat_df = cat_df.sort_values("Fortress Score", ascending=False)
 
-        # Check required columns for Drift Map
-        drift_cols = ["Tracking Error", "Alpha (True)"]
-        # Use 'te' if 'Tracking Error' is missing (handle alias)
-        if "Tracking Error" not in final_display_df.columns and "te" in final_display_df.columns:
-            final_display_df["Tracking Error"] = final_display_df["te"]
+                    # Columns Config
+                    # Put Integrity First
+                    base_cols = ["Integrity", "Symbol", "Fortress Score", "Alpha (True)", "Sortino", "Win Rate", "Upside Cap", "Downside Cap"]
 
-        missing_drift = [c for c in drift_cols if c not in final_display_df.columns]
+                    # Add Debt specific cols if Debt
+                    if asset_class == "Debt":
+                        # Debt might care about Yield/CAGR more?
+                        # Assuming 'Alpha' captures excess return over liquid bees, which is good.
+                        pass
 
-        if missing_drift:
-             st.info(f"Drift map unavailable. Missing metrics: {', '.join(missing_drift)}")
-        else:
-             drift_kwargs = {
-                "data_frame": final_display_df,
-                "x": "Tracking Error",
-                "y": "Alpha (True)",
-                "text": "Symbol",
-                "title": "Drift Map (Color = Drift Status)",
-                "hover_data": [c for c in ["Beta", "Category", "Drift Message"] if c in final_display_df.columns]
-            }
+                    disp_cols = base_cols + ["Verdict"]
+                    valid_cols = [c for c in disp_cols if c in cat_df.columns]
 
-             if "Drift Status" in final_display_df.columns:
-                 drift_kwargs["color"] = "Drift Status"
-                 # Custom color map
-                 drift_kwargs["color_discrete_map"] = {
-                     "Stable": "green", "Moderate": "orange", "Critical": "red", "Unknown": "gray"
-                 }
+                    st.dataframe(
+                        cat_df[valid_cols].style.background_gradient(subset=['Fortress Score'], cmap='RdYlGn'),
+                        use_container_width=True,
+                        height=500,
+                        hide_index=True
+                    )
 
-             try:
-                fig_drift = px.scatter(**drift_kwargs)
-                # Add zones or lines if needed? For now simple scatter.
-                st.plotly_chart(fig_drift, use_container_width=True)
-             except Exception as e:
-                st.error(f"Could not render drift map: {e}")
+                    final_display_df = pd.concat([final_display_df, cat_df])
+                else:
+                    st.info(f"No funds found in {cat} category.")
+
+        # 4. Global Analysis (Charts) - Only if data exists
+        if not final_display_df.empty:
+            st.markdown("---")
+            st.subheader("📊 Global Map")
+
+            c1, c2 = st.columns(2)
+
+            # Chart 1: Risk-Reward
+            with c1:
+                required_cols = ["Downside Cap", "Alpha (True)"]
+                missing_mandatory = [c for c in required_cols if c not in final_display_df.columns]
+
+                if not missing_mandatory:
+                     # Clip Fortress Score for sizing
+                    if "Fortress Score" in final_display_df.columns:
+                        final_display_df["Size_Score"] = final_display_df["Fortress Score"].clip(lower=0.1).fillna(10.0)
+
+                    fig = px.scatter(
+                        final_display_df,
+                        x="Downside Cap",
+                        y="Alpha (True)",
+                        size="Size_Score" if "Size_Score" in final_display_df.columns else None,
+                        color="Category",
+                        hover_name="Symbol",
+                        title="Risk-Reward Map (Size = Score)",
+                        height=400
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Insufficient data for Risk-Reward Map.")
+
+            # Chart 2: Integrity Map
+            with c2:
+                drift_cols = ["Tracking Error", "Alpha (True)"]
+                if "Tracking Error" not in final_display_df.columns and "te" in final_display_df.columns:
+                    final_display_df["Tracking Error"] = final_display_df["te"]
+
+                if "Tracking Error" in final_display_df.columns and "Alpha (True)" in final_display_df.columns:
+                    fig_drift = px.scatter(
+                        final_display_df,
+                        x="Tracking Error",
+                        y="Alpha (True)",
+                        color="Drift Status",
+                        hover_name="Symbol",
+                        color_discrete_map={"Stable": "green", "Moderate": "orange", "Critical": "red", "Unknown": "gray"},
+                        title="Integrity Map: Drift vs Alpha",
+                        height=400
+                    )
+                    st.plotly_chart(fig_drift, use_container_width=True)
+                else:
+                    st.info("Insufficient data for Integrity Map.")
 
     # 5. Deep Dive Modal
     st.markdown("---")
     st.subheader("🕵️ Fund Deep Dive")
 
-    # Select Fund
+    # Select Fund from filtered list (or all?) - Better to let user search all
     all_symbols = sorted(raw_df['Symbol'].unique())
-    selected_fund = st.selectbox("Select Fund for Historical Analysis", all_symbols)
+    selected_fund = st.selectbox("Search Any Fund History", all_symbols)
 
     if selected_fund:
         hist_df = fetch_symbol_history("scan_mf", selected_fund)
         if not hist_df.empty:
              st.markdown(f"#### Historical Performance: {selected_fund}")
 
-             # Create Dual-Axis Chart: Fortress Score vs Tracking Error (or Beta)
-             # First, ensure date/timestamp is datetime
+             # Convert timestamp
              hist_df['timestamp'] = pd.to_datetime(hist_df['timestamp'])
              hist_df = hist_df.sort_values('timestamp')
 
-             # Check available columns in history
-             # Note: fetch_symbol_history now returns * so we should have everything stored in history.
-             # However, old history might lack 'Beta' or 'Tracking Error' columns if schema evolved.
+             # Plotting
+             # We want Score and Drift metric
+             metric2 = "Tracking Error"
+             if "Tracking Error" not in hist_df.columns:
+                 if "te" in hist_df.columns: metric2 = "te"
+                 elif "Beta" in hist_df.columns: metric2 = "Beta"
+                 else: metric2 = None
 
-             cols_to_plot = []
-             if "Score" in hist_df.columns: cols_to_plot.append("Score") # Raw Score
+             from plotly.subplots import make_subplots
+             import plotly.graph_objects as go
+
+             fig_hist = make_subplots(specs=[[{"secondary_y": True}]])
+
+             # Score
+             if "Score" in hist_df.columns:
+                 fig_hist.add_trace(go.Scatter(x=hist_df['timestamp'], y=hist_df['Score'], name="Raw Score", mode='lines+markers'), secondary_y=False)
 
              # Metric 2
-             metric2 = None
-             if "Tracking Error" in hist_df.columns: metric2 = "Tracking Error"
-             elif "te" in hist_df.columns: metric2 = "te"
-             elif "Beta" in hist_df.columns: metric2 = "Beta"
+             if metric2 and metric2 in hist_df.columns:
+                  fig_hist.add_trace(go.Scatter(x=hist_df['timestamp'], y=hist_df[metric2], name=metric2, mode='lines', line=dict(dash='dot')), secondary_y=True)
 
-             if metric2 and cols_to_plot:
-                 from plotly.subplots import make_subplots
-                 import plotly.graph_objects as go
+             fig_hist.update_layout(title="Historical Trend Analysis", height=400)
+             st.plotly_chart(fig_hist, use_container_width=True)
 
-                 fig_hist = make_subplots(specs=[[{"secondary_y": True}]])
-
-                 # Trace 1: Fortress Score (or Raw Score)
-                 fig_hist.add_trace(
-                     go.Scatter(x=hist_df['timestamp'], y=hist_df['Score'], name="Fortress Score", mode='lines+markers'),
-                     secondary_y=False
-                 )
-
-                 # Trace 2: Drift Metric
-                 fig_hist.add_trace(
-                     go.Scatter(x=hist_df['timestamp'], y=hist_df[metric2], name=metric2, mode='lines+markers', line=dict(dash='dot')),
-                     secondary_y=True
-                 )
-
-                 fig_hist.update_layout(title=f"Trend: Score vs {metric2}")
-                 fig_hist.update_yaxes(title_text="Score", secondary_y=False)
-                 fig_hist.update_yaxes(title_text=metric2, secondary_y=True)
-
-                 st.plotly_chart(fig_hist, use_container_width=True)
-             else:
-                 st.warning("Insufficient historical metrics for deep dive chart.")
-                 st.dataframe(hist_df) # Fallback
+             with st.expander("View Raw History Data"):
+                 st.dataframe(hist_df.sort_values('timestamp', ascending=False))
         else:
-            st.info("No historical data found for this fund.")
+            st.info("No history found.")
