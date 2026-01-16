@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import requests
 import plotly.express as px
 from .logic import get_benchmark_data, discover_funds, detect_integrity_issues
@@ -16,128 +15,100 @@ def get_category(scheme_name):
 def render():
     st.subheader("🛡️ Fortress MF Pro: Consistency Lab")
 
-    # MF Controls
-    col_mf1, col_mf2 = st.columns([2, 1])
-    with col_mf1:
+    # UI Controls
+    col1, col2 = st.columns([2, 1])
+    with col1:
         mf_limit = st.slider("Max Funds to Scan", 10, 100, 40)
-    with col_mf2:
+    with col2:
         st.write("")
         st.write("")
-        start_mf_scan = st.button("🚀 EXECUTE AUDIT", type="primary", use_container_width=True)
+        start_mf_scan = st.button("🚀 EXECUTE CATEGORY AUDIT", type="primary", use_container_width=True)
 
     if start_mf_scan:
-        with st.spinner("Fetching Benchmarks..."):
-            # Pre-load benchmarks
-            benchmarks = {}
-            try:
-                # Fallback handled in logic but repeated here for safety
-                benchmarks['Large Cap'] = get_benchmark_data("^NSEI")
-                if benchmarks['Large Cap'].empty: benchmarks['Large Cap'] = get_benchmark_data("^NSEI")
+        with st.spinner("Fetching Benchmarks & Auditing Funds..."):
+            # 1. Load Category Benchmarks
+            benchmarks = {
+                'Large Cap': get_benchmark_data("^NSEI"),
+                'Mid Cap': get_benchmark_data("^NSEMDCP50"),
+                'Small Cap': get_benchmark_data("^CNXSC"),
+                'Flexi/Other': get_benchmark_data("^NSEI") # Falls back to Nifty 50
+            }
 
-                benchmarks['Mid Cap'] = get_benchmark_data("^NSEMDCP50")
-                if benchmarks['Mid Cap'].empty: benchmarks['Mid Cap'] = benchmarks['Large Cap']
+            candidates = discover_funds(limit=mf_limit)
+            results = []
+            progress = st.progress(0)
 
-                benchmarks['Small Cap'] = get_benchmark_data("^CNXSC")
-                if benchmarks['Small Cap'].empty: benchmarks['Small Cap'] = benchmarks['Large Cap']
+            for i, c in enumerate(candidates):
+                try:
+                    cat = get_category(c['schemeName'])
+                    bench = benchmarks.get(cat)
 
-                benchmarks['Flexi/Other'] = benchmarks['Large Cap']
-            except:
-                st.error("Critical Benchmark Failure.")
-                return
+                    # Fetch NAV Data
+                    url = f"https://api.mfapi.in/mf/{c['schemeCode']}"
+                    data = requests.get(url).json()
+                    df = pd.DataFrame(data['data'])
+                    df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
+                    df['nav'] = df['nav'].astype(float)
+                    df = df.sort_values('date')
+                    df['ret'] = df['nav'].pct_change()
 
-        candidates = discover_funds(limit=mf_limit)
-        results = []
+                    metrics = detect_integrity_issues(df, bench, cat)
+                    if metrics:
+                        # Fortress Pro Scoring Formula
+                        # Alpha(40%) + Sortino(30%) + (100 - DownsideCap)(30%)
+                        raw_score = (metrics['alpha'] * 0.4) + \
+                                    (metrics['sortino'] * 0.3) + \
+                                    ((100 - metrics['downside']) * 0.3)
 
-        progress = st.progress(0)
-        status_text = st.empty()
+                        results.append({
+                            "Symbol": c['schemeName'][:50],
+                            "Category": cat,
+                            "Score": raw_score,
+                            "Alpha (True)": metrics['alpha'],
+                            "Sortino": metrics['sortino'],
+                            "Upside Cap": metrics['upside'],
+                            "Downside Cap": metrics['downside'],
+                            "Max Drawdown": metrics['max_dd'],
+                            "Win Rate": metrics['win_rate'],
+                            "Verdict": metrics['drift'],
+                            "Price": df['nav'].iloc[-1]
+                        })
+                except: continue
+                progress.progress((i + 1) / len(candidates))
 
-        for i, c in enumerate(candidates):
-            status_text.text(f"Auditing: {c['schemeName'][:30]}...")
-            try:
-                # Detect Category & Select Benchmark
-                cat = get_category(c['schemeName'])
-                bench = benchmarks.get(cat, benchmarks['Large Cap'])
+            if results:
+                final_df = pd.DataFrame(results)
 
-                url = f"https://api.mfapi.in/mf/{c['schemeCode']}"
-                data = requests.get(url).json()
-                df = pd.DataFrame(data['data'])
-                df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
-                df['nav'] = df['nav'].astype(float)
-                df = df.sort_values('date')
-                df['ret'] = df['nav'].pct_change()
+                # 2. Category-Wise Normalization & Leaderboards
+                for cat in ["Large Cap", "Mid Cap", "Small Cap", "Flexi/Other"]:
+                    cat_df = final_df[final_df['Category'] == cat].copy()
 
-                # Risk/Consistency Metrics
-                metrics = detect_integrity_issues(df, bench, cat)
-                if metrics:
-                    # New Scoring Logic
-                    # fortress_score = (alpha*4) + (sortino*10) - abs(max_dd) + (win_rate*0.2)
-                    raw_score = (metrics['alpha'] * 4) + (metrics['sortino'] * 10) - abs(metrics['max_dd']) + (metrics['win_rate'] * 0.2)
+                    if not cat_df.empty:
+                        st.markdown(f"### 🏆 {cat} Consistency Leaderboard")
 
-                    results.append({
-                        "Symbol": c['schemeName'][:50], # Mapped to Symbol for DB compatibility
-                        "Alpha (True)": round(metrics['alpha'], 2),
-                        "Sortino": round(metrics['sortino'], 2),
-                        "TE (Tracking Error)": round(metrics['te'], 2),
-                        "Beta": round(metrics['beta'], 2),
-                        "Max Drawdown": round(metrics['max_dd'], 2),
-                        "Win Rate": round(metrics['win_rate'], 1),
-                        "Verdict": metrics['drift'], # Mapped to Verdict
-                        "Score": raw_score, # Intermediate Raw Score
-                        "Price": df['nav'].iloc[-1] # Mapped to Price
-                    })
-            except Exception as e:
-                 # print(f"Error processing {c.get('schemeName')}: {e}")
-                 continue
-            progress.progress((i + 1) / len(candidates))
+                        # Normalize Score 0-100 per category
+                        if len(cat_df) > 1:
+                            c_min, c_max = cat_df['Score'].min(), cat_df['Score'].max()
+                            if c_max != c_min:
+                                cat_df['Score'] = ((cat_df['Score'] - c_min) / (c_max - c_min)) * 100
+                            else: cat_df['Score'] = 50.0
+                        else: cat_df['Score'] = 100.0
 
-        if results:
-            final_df = pd.DataFrame(results)
+                        cat_df['Score'] = cat_df['Score'].round(1)
+                        cat_df = cat_df.sort_values("Score", ascending=False)
 
-            # Normalization (Z-Score + Scaling)
-            if len(final_df) > 1:
-                std_dev = final_df['Score'].std()
-                if std_dev > 0:
-                    # Z-score normalization
-                    final_df['Score'] = (final_df['Score'] - final_df['Score'].mean()) / std_dev
-                else:
-                    # All scores identical
-                    final_df['Score'] = 0.0
+                        # Display Table
+                        disp_cols = ["Symbol", "Score", "Alpha (True)", "Sortino", "Upside Cap", "Downside Cap", "Verdict"]
+                        st.dataframe(cat_df[disp_cols].style.background_gradient(subset=['Score'], cmap='RdYlGn'), use_container_width=True)
 
-                # Scale 0-100
-                min_s = final_df['Score'].min()
-                max_s = final_df['Score'].max()
-                if max_s != min_s:
-                    final_df['Score'] = ((final_df['Score'] - min_s) / (max_s - min_s)) * 100
-                else:
-                    final_df['Score'] = 50.0 # Default if all scores are identical
-            else:
-                # Single result or empty, assign default
-                final_df['Score'] = 50.0
+                # 3. Save All Results to History
+                log_scan_results(final_df, "scan_mf")
+                st.success(f"Audit Complete. Records saved to database.")
 
-            # Ensure Score is always positive for Plotly size
-            final_df['Score'] = final_df['Score'].clip(lower=1.0)
-            final_df['Score'] = final_df['Score'].round(1)
-            final_df = final_df.sort_values("Score", ascending=False)
+                # 4. Scatter Plot (Global Analysis)
+                st.subheader("📊 Global Map: Alpha vs Downside Protection")
 
-            # Save to History
-            log_scan_results(final_df, "scan_mf")
-            fetch_timestamps.clear()
-            fetch_history_data.clear()
-            fetch_symbol_history.clear()
-            log_audit("MF Scan Completed", "Mutual Funds", f"Saved {len(final_df)} funds.")
-
-            st.success(f"Audit Complete. Found {len(final_df)} funds.")
-
-            # Display Columns
-            display_cols = ["Symbol", "Score", "Alpha (True)", "Sortino", "Max Drawdown", "Win Rate", "Beta", "Verdict"]
-            st.dataframe(final_df[display_cols].style.background_gradient(subset=['Score'], cmap='RdYlGn'), use_container_width=True)
-
-            # Visualization
-            st.subheader("📊 Consistency Map: Alpha vs Downside Protection")
-
-            fig = px.scatter(final_df, x="Max Drawdown", y="Alpha (True)",
-                             color="Verdict", size="Score", text="Symbol",
-                             hover_data=["Sortino", "Win Rate"])
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("No funds matched criteria or data fetch failed.")
+                fig = px.scatter(final_df, x="Downside Cap", y="Alpha (True)",
+                                 color="Verdict", size="Score", text="Symbol",
+                                 hover_data=["Sortino", "Win Rate"])
+                st.plotly_chart(fig, use_container_width=True)
