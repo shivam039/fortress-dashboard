@@ -1,11 +1,82 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import subprocess
 import sys
 import os
 from utils.db import fetch_timestamps, fetch_history_data, fetch_symbol_history
 from mf_lab.logic import apply_drift_status, get_category, calculate_fortress_score, generate_health_check_report
+from mf_lab.logic import calculate_correlation_matrix, run_crisis_audit
+
+def render_blender_suite(aggregated_selection):
+    """
+    Renders the Portfolio Blender & Backtester suite.
+    aggregated_selection: dict of {scheme_code: scheme_name}
+    """
+    st.markdown("---")
+    st.subheader("🧪 Fortress Portfolio Blender")
+
+    if not aggregated_selection:
+        st.info("Select funds from the tables above to activate the Quant-Suite Backtester.")
+        return
+
+    st.success(f"Loaded {len(aggregated_selection)} funds into the Blender.")
+
+    with st.expander("🔬 Quant-Suite Analysis", expanded=True):
+        if st.button("🚀 Run Crisis Audit & Overlap Check", use_container_width=True):
+            with st.spinner("Fetching daily NAV history & crunching stress tests..."):
+
+                # 1. Correlation Matrix
+                corr_matrix, high_overlaps = calculate_correlation_matrix(aggregated_selection)
+
+                # 2. Crisis Audit
+                audit_results = run_crisis_audit(aggregated_selection)
+
+                # RENDER RESULTS
+
+                # --- A. Overlap Radar ---
+                st.markdown("#### 📡 Risk Factor Radar (Correlation Heatmap)")
+                if not corr_matrix.empty:
+                    fig_corr = px.imshow(
+                        corr_matrix,
+                        text_auto=".2f",
+                        color_continuous_scale="RdBu_r",
+                        title="Return Correlation Matrix"
+                    )
+                    st.plotly_chart(fig_corr, use_container_width=True)
+
+                    if high_overlaps:
+                        st.warning(f"⚠️ **High Overlap Detected (>0.85)**: {len(high_overlaps)} pairs found.")
+                        for pair, val in high_overlaps:
+                            st.caption(f"- {pair}: {val:.2f}")
+                    else:
+                        st.success("✅ Good Diversification: No overlapping pairs > 0.85 found.")
+                else:
+                    st.error("Insufficient data for correlation analysis.")
+
+                # --- B. Crisis Audit ---
+                st.markdown("#### 💥 Fortress Crisis Audit")
+                st.markdown("Stress testing selected funds against historical black swan events.")
+
+                if audit_results:
+                    audit_df = pd.DataFrame(audit_results)
+
+                    # Ensure "Recovery" is shown if available
+                    # Pivot for cleaner view
+                    pivot_mdd = audit_df.pivot(index="Entity", columns="Window", values="Max Drawdown")
+
+                    st.markdown("**Max Drawdown**")
+                    st.dataframe(pivot_mdd.style.highlight_min(axis=1, color="pink"), use_container_width=True)
+
+                    if "Recovery" in audit_df.columns:
+                        pivot_rec = audit_df.pivot(index="Entity", columns="Window", values="Recovery")
+                        st.markdown("**Recovery Time**")
+                        st.dataframe(pivot_rec, use_container_width=True)
+
+                    st.caption("Values represent **Max Drawdown** and **Recovery Time** during the event window.")
+                else:
+                    st.error("Audit returned no results.")
 
 def render():
     st.subheader("🛡️ Fortress MF Pro: Consistency Lab")
@@ -126,6 +197,13 @@ def render():
 
         final_display_df = pd.DataFrame() # Accumulate for charts
 
+        # Initialize Local Blender Basket for THIS render cycle
+        # We rebuild the basket from the active selection state of all widgets
+        # This prevents the 'infinite accumulation' bug by relying on current widget state
+        local_blender_basket = {}
+
+        current_tab_selection = [] # List of Symbols selected in the CURRENT interaction
+
         for i, cat in enumerate(display_cats):
             with tabs[i]:
                 cat_df = raw_df[raw_df['Category'] == cat].copy()
@@ -141,21 +219,37 @@ def render():
                     # Put Integrity First
                     base_cols = ["Integrity", "Symbol", "Fortress Score", "Alpha (True)", "Sortino", "Win Rate", "Upside Cap", "Downside Cap"]
 
-                    # Add Debt specific cols if Debt
-                    if asset_class == "Debt":
-                        # Debt might care about Yield/CAGR more?
-                        # Assuming 'Alpha' captures excess return over liquid bees, which is good.
-                        pass
-
                     disp_cols = base_cols + ["Verdict"]
                     valid_cols = [c for c in disp_cols if c in cat_df.columns]
 
-                    st.dataframe(
+                    # Unique Key for Dataframe
+                    df_key = f"df_{asset_class}_{cat}"
+
+                    # Render Dataframe with Selection
+                    event = st.dataframe(
                         cat_df[valid_cols].style.background_gradient(subset=['Fortress Score'], cmap='RdYlGn'),
                         use_container_width=True,
                         height=500,
-                        hide_index=True
+                        hide_index=True,
+                        key=df_key,
+                        on_select="rerun",
+                        selection_mode="multi-row"
                     )
+
+                    # Handle Selection
+                    if len(event.selection['rows']) > 0:
+                        selected_rows = cat_df.iloc[event.selection['rows']]
+
+                        # Add to CURRENT filter context
+                        current_tab_selection.extend(selected_rows['Symbol'].tolist())
+
+                        # Add to Local BLENDER context
+                        for idx, row in selected_rows.iterrows():
+                            # Find scheme code from full row data
+                            code_series = raw_df[raw_df['Symbol'] == row['Symbol']]['Scheme Code']
+                            if not code_series.empty:
+                                code = code_series.values[0]
+                                local_blender_basket[code] = row['Symbol']
 
                     final_display_df = pd.concat([final_display_df, cat_df])
                 else:
@@ -166,26 +260,32 @@ def render():
             st.markdown("---")
             st.subheader("📊 Global Map")
 
+            # --- DYNAMIC FILTERING LOGIC ---
+            # If current_tab_selection has items, filter the chart_df
+            chart_df = final_display_df.copy()
+            if current_tab_selection:
+                chart_df = chart_df[chart_df['Symbol'].isin(current_tab_selection)]
+
             c1, c2 = st.columns(2)
 
             # Chart 1: Risk-Reward
             with c1:
                 required_cols = ["Downside Cap", "Alpha (True)"]
-                missing_mandatory = [c for c in required_cols if c not in final_display_df.columns]
+                missing_mandatory = [c for c in required_cols if c not in chart_df.columns]
 
                 if not missing_mandatory:
                      # Clip Fortress Score for sizing
-                    if "Fortress Score" in final_display_df.columns:
-                        final_display_df["Size_Score"] = final_display_df["Fortress Score"].clip(lower=0.1).fillna(10.0)
+                    if "Fortress Score" in chart_df.columns:
+                        chart_df["Size_Score"] = chart_df["Fortress Score"].clip(lower=0.1).fillna(10.0)
 
                     fig = px.scatter(
-                        final_display_df,
+                        chart_df,
                         x="Downside Cap",
                         y="Alpha (True)",
-                        size="Size_Score" if "Size_Score" in final_display_df.columns else None,
+                        size="Size_Score" if "Size_Score" in chart_df.columns else None,
                         color="Category",
                         hover_name="Symbol",
-                        title="Risk-Reward Map (Size = Score)",
+                        title=f"Risk-Reward Map ({'Filtered' if current_tab_selection else 'All Funds'})",
                         height=400
                     )
                     st.plotly_chart(fig, use_container_width=True)
@@ -194,26 +294,28 @@ def render():
 
             # Chart 2: Integrity Map
             with c2:
-                drift_cols = ["Tracking Error", "Alpha (True)"]
-                if "Tracking Error" not in final_display_df.columns and "te" in final_display_df.columns:
-                    final_display_df["Tracking Error"] = final_display_df["te"]
+                if "Tracking Error" not in chart_df.columns and "te" in chart_df.columns:
+                    chart_df["Tracking Error"] = chart_df["te"]
 
-                if "Tracking Error" in final_display_df.columns and "Alpha (True)" in final_display_df.columns:
+                if "Tracking Error" in chart_df.columns and "Alpha (True)" in chart_df.columns:
                     fig_drift = px.scatter(
-                        final_display_df,
+                        chart_df,
                         x="Tracking Error",
                         y="Alpha (True)",
                         color="Drift Status",
                         hover_name="Symbol",
                         color_discrete_map={"Stable": "green", "Moderate": "orange", "Critical": "red", "Unknown": "gray"},
-                        title="Integrity Map: Drift vs Alpha",
+                        title=f"Integrity Map ({'Filtered' if current_tab_selection else 'All Funds'})",
                         height=400
                     )
                     st.plotly_chart(fig_drift, use_container_width=True)
                 else:
                     st.info("Insufficient data for Integrity Map.")
 
-    # 5. Deep Dive Modal
+        # 5. RENDER BLENDER
+        render_blender_suite(local_blender_basket)
+
+    # 6. Deep Dive Modal
     st.markdown("---")
     st.subheader("🕵️ Fund Deep Dive")
 
@@ -238,9 +340,8 @@ def render():
                  elif "Beta" in hist_df.columns: metric2 = "Beta"
                  else: metric2 = None
 
+             fig_hist = go.Figure() # Replace make_subplots for simplicity if standard not available
              from plotly.subplots import make_subplots
-             import plotly.graph_objects as go
-
              fig_hist = make_subplots(specs=[[{"secondary_y": True}]])
 
              # Score

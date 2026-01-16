@@ -44,6 +44,23 @@ def generate_manifest():
                 "capture_ratio_upside": "(Mean_Fund_Return_UpMkt / Mean_Benchmark_Return_UpMkt) * 100",
                 "capture_ratio_downside": "(Mean_Fund_Return_DownMkt / Mean_Benchmark_Return_DownMkt) * 100"
             },
+            "backtest_logic": {
+                "methodology": "On-demand fetching of daily NAV history via mfapi.in for selected funds.",
+                "crisis_windows": {
+                    "Global Recession Scare (2020)": "Jan 1, 2020 – April 30, 2020 (Pandemic Crash)",
+                    "Rate Hike Pivot (2022)": "Jan 1, 2022 – July 31, 2022 (Inflation & Rates)",
+                    "Small-Cap Shakeout (2024)": "Feb 1, 2024 – March 31, 2024 (SEBI Warnings)"
+                },
+                "metrics": {
+                    "max_drawdown": "Deepest peak-to-trough decline within the specified window.",
+                    "recovery_time": "Time taken to reclaim the previous peak (or simplified recovery metric)."
+                }
+            },
+            "overlap_algorithm": {
+                "definition": "Statistical Return Correlation of daily returns over the common history.",
+                "threshold": "Correlation > 0.85 is flagged as 'High Overlap / Low Diversification'.",
+                "visualization": "Risk Factor Radar (Heatmap) showing pairwise correlations."
+            },
             "integrity_thresholds": {
                 "debt_breach": "CAGR < 5.75% (Repo Rate 6.5% - 75bps tolerance).",
                 "tracking_error_limits": {
