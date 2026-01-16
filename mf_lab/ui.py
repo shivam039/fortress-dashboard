@@ -1,114 +1,118 @@
 import streamlit as st
 import pandas as pd
-import requests
 import plotly.express as px
-from .logic import get_benchmark_data, discover_funds, detect_integrity_issues
-from utils.db import log_scan_results, fetch_timestamps, fetch_history_data, fetch_symbol_history, log_audit
-
-def get_category(scheme_name):
-    name = scheme_name.lower()
-    if "large" in name: return "Large Cap"
-    if "mid" in name: return "Mid Cap"
-    if "small" in name: return "Small Cap"
-    return "Flexi/Other"
+import subprocess
+import sys
+import os
+from utils.db import fetch_timestamps, fetch_history_data
 
 def render():
     st.subheader("🛡️ Fortress MF Pro: Consistency Lab")
 
-    # UI Controls
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        mf_limit = st.slider("Max Funds to Scan", 10, 100, 40)
-    with col2:
-        st.write("")
-        st.write("")
-        start_mf_scan = st.button("🚀 EXECUTE CATEGORY AUDIT", type="primary", use_container_width=True)
+    # ---------------- ADMIN TOOLS ----------------
+    with st.sidebar.expander("🛠️ Admin Tools"):
+        st.info("Trigger the background scanner to audit the full universe (800+ funds). This runs independently.")
+        if st.button("🚀 Run Background Discovery Scan"):
+            try:
+                # Run independent process
+                # Ensure we point to the correct file path
+                script_path = os.path.join(os.getcwd(), "cron_mf_audit.py")
+                if os.path.exists(script_path):
+                    subprocess.Popen([sys.executable, script_path])
+                    st.toast("✅ Background scan started! It will take ~15 mins.")
+                else:
+                    st.error(f"Script not found at {script_path}")
+            except Exception as e:
+                st.error(f"Failed to start scan: {e}")
 
-    if start_mf_scan:
-        with st.spinner("Fetching Benchmarks & Auditing Funds..."):
-            # 1. Load Category Benchmarks
-            benchmarks = {
-                'Large Cap': get_benchmark_data("^NSEI"),
-                'Mid Cap': get_benchmark_data("^NSEMDCP50"),
-                'Small Cap': get_benchmark_data("^CNXSC"),
-                'Flexi/Other': get_benchmark_data("^NSEI") # Falls back to Nifty 50
-            }
+    # ---------------- VIEW RESULTS ----------------
+    # 1. Fetch Latest Data
+    timestamps = fetch_timestamps("scan_mf")
 
-            candidates = discover_funds(limit=mf_limit)
-            results = []
-            progress = st.progress(0)
+    if not timestamps:
+        st.warning("No audit history found. Please run a scan from the Admin Tools.")
+        return
 
-            for i, c in enumerate(candidates):
-                try:
-                    cat = get_category(c['schemeName'])
-                    bench = benchmarks.get(cat)
+    selected_ts = st.selectbox("Select Audit Date", timestamps, index=0)
 
-                    # Fetch NAV Data
-                    url = f"https://api.mfapi.in/mf/{c['schemeCode']}"
-                    data = requests.get(url).json()
-                    df = pd.DataFrame(data['data'])
-                    df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
-                    df['nav'] = df['nav'].astype(float)
-                    df = df.sort_values('date')
-                    df['ret'] = df['nav'].pct_change()
+    # Fetch Data
+    # fetch_history_data returns the raw dataframe stored in DB
+    raw_df = fetch_history_data("scan_mf", selected_ts)
 
-                    metrics = detect_integrity_issues(df, bench, cat)
-                    if metrics:
-                        # Fortress Pro Scoring Formula
-                        # Alpha(40%) + Sortino(30%) + (100 - DownsideCap)(30%)
-                        raw_score = (metrics['alpha'] * 0.4) + \
-                                    (metrics['sortino'] * 0.3) + \
-                                    ((100 - metrics['downside']) * 0.3)
+    if raw_df.empty:
+        st.error("No data found for selected timestamp.")
+        return
 
-                        results.append({
-                            "Symbol": c['schemeName'][:50],
-                            "Category": cat,
-                            "Score": raw_score,
-                            "Alpha (True)": metrics['alpha'],
-                            "Sortino": metrics['sortino'],
-                            "Upside Cap": metrics['upside'],
-                            "Downside Cap": metrics['downside'],
-                            "Max Drawdown": metrics['max_dd'],
-                            "Win Rate": metrics['win_rate'],
-                            "Verdict": metrics['drift'],
-                            "Price": df['nav'].iloc[-1]
-                        })
-                except: continue
-                progress.progress((i + 1) / len(candidates))
+    st.success(f"Loaded {len(raw_df)} funds from audit on {selected_ts}")
 
-            if results:
-                final_df = pd.DataFrame(results)
+    # 2. Category-Wise Normalization & Leaderboards
+    # We recalculate the 0-100 Score here to ensure it's relative to the *current* peer group displayed
 
-                # 2. Category-Wise Normalization & Leaderboards
-                for cat in ["Large Cap", "Mid Cap", "Small Cap", "Flexi/Other"]:
-                    cat_df = final_df[final_df['Category'] == cat].copy()
+    tab_list = ["Large Cap", "Mid Cap", "Small Cap", "Flexi/Other"]
+    tabs = st.tabs(tab_list)
 
-                    if not cat_df.empty:
-                        st.markdown(f"### 🏆 {cat} Consistency Leaderboard")
+    final_display_df = pd.DataFrame()
 
-                        # Normalize Score 0-100 per category
-                        if len(cat_df) > 1:
-                            c_min, c_max = cat_df['Score'].min(), cat_df['Score'].max()
-                            if c_max != c_min:
-                                cat_df['Score'] = ((cat_df['Score'] - c_min) / (c_max - c_min)) * 100
-                            else: cat_df['Score'] = 50.0
-                        else: cat_df['Score'] = 100.0
+    for i, cat in enumerate(tab_list):
+        with tabs[i]:
+            cat_df = raw_df[raw_df['Category'] == cat].copy()
 
-                        cat_df['Score'] = cat_df['Score'].round(1)
-                        cat_df = cat_df.sort_values("Score", ascending=False)
+            if not cat_df.empty:
+                st.markdown(f"### 🏆 {cat} Consistency Leaderboard")
 
-                        # Display Table
-                        disp_cols = ["Symbol", "Score", "Alpha (True)", "Sortino", "Upside Cap", "Downside Cap", "Verdict"]
-                        st.dataframe(cat_df[disp_cols].style.background_gradient(subset=['Score'], cmap='RdYlGn'), use_container_width=True)
+                # Normalize Score 0-100 per category (Peer Normalization)
+                if len(cat_df) > 1:
+                    c_min, c_max = cat_df['Score'].min(), cat_df['Score'].max()
+                    if c_max != c_min:
+                        # Min-Max Scaling
+                        cat_df['Fortress Score'] = ((cat_df['Score'] - c_min) / (c_max - c_min)) * 100
+                    else:
+                        cat_df['Fortress Score'] = 50.0
+                else:
+                    cat_df['Fortress Score'] = 100.0
 
-                # 3. Save All Results to History
-                log_scan_results(final_df, "scan_mf")
-                st.success(f"Audit Complete. Records saved to database.")
+                cat_df['Fortress Score'] = cat_df['Fortress Score'].round(1)
 
-                # 4. Scatter Plot (Global Analysis)
-                st.subheader("📊 Global Map: Alpha vs Downside Protection")
+                # Sort by Fortress Score
+                cat_df = cat_df.sort_values("Fortress Score", ascending=False)
 
-                fig = px.scatter(final_df, x="Downside Cap", y="Alpha (True)",
-                                 color="Verdict", size="Score", text="Symbol",
-                                 hover_data=["Sortino", "Win Rate"])
-                st.plotly_chart(fig, use_container_width=True)
+                # Format Columns for Display
+                disp_cols = ["Symbol", "Fortress Score", "Alpha (True)", "Sortino", "Win Rate", "Upside Cap", "Downside Cap", "Verdict"]
+
+                # Ensure columns exist (handle potential missing cols from old scans)
+                valid_cols = [c for c in disp_cols if c in cat_df.columns]
+
+                # Styling
+                st.dataframe(
+                    cat_df[valid_cols].style.background_gradient(subset=['Fortress Score'], cmap='RdYlGn'),
+                    use_container_width=True,
+                    height=500
+                )
+
+                final_display_df = pd.concat([final_display_df, cat_df])
+            else:
+                st.info(f"No funds found in {cat} category.")
+
+    # 3. Global Analysis (Scatter Plot)
+    if not final_display_df.empty:
+        st.markdown("---")
+        st.subheader("📊 Global Map: Alpha vs Downside Protection")
+
+        # Ensure Fortress Score exists in final_display_df (it should from the loop)
+        fig = px.scatter(
+            final_display_df,
+            x="Downside Cap",
+            y="Alpha (True)",
+            color="Verdict",
+            size="Fortress Score",
+            text="Symbol",
+            hover_data=["Sortino", "Win Rate", "Category"],
+            title="Risk-Reward Map (Size = Fortress Score)"
+        )
+        # Reverse X axis because Lower Downside Cap is better?
+        # Actually standard interpretation: Low Downside Cap is good.
+        # Let's keep it standard but maybe note it.
+        # Usually scatter plots are intuitive: Top Left (High Alpha, Low Downside) is best?
+        # Yes, low downside cap is < 100.
+
+        st.plotly_chart(fig, use_container_width=True)
