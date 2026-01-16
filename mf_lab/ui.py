@@ -6,8 +6,34 @@ import subprocess
 import sys
 import os
 from utils.db import fetch_timestamps, fetch_history_data, fetch_symbol_history
-from mf_lab.logic import apply_drift_status, get_category, calculate_fortress_score, generate_health_check_report
+# Removed fetch_fund_history, calculate_correlation_matrix, run_crisis_audit from logic.py
+# as they should be imported from their source if needed, or left if they still exist in logic.py
+# logic.py hasn't been deleted, but superseded. However, UI still uses some functions from it.
+# We need to make sure logic.py doesn't conflict or we port those logic functions to UI or services.
+# For now, logic.py exists, so we keep imports.
+from mf_lab.logic import get_category, calculate_fortress_score, generate_health_check_report
 from mf_lab.logic import calculate_correlation_matrix, run_crisis_audit
+
+# We need a local apply_drift_status that respects DB values if present
+def apply_drift_status_ui(df):
+    """
+    Applies drift calculation to a dataframe.
+    Prioritizes existing DB columns 'integrity_label', 'drift_status', 'drift_message'.
+    Falls back to logic calculation if missing (legacy support).
+    """
+    if df.empty: return df
+
+    # Check if DB columns exist
+    if 'drift_status' in df.columns and 'integrity_label' in df.columns:
+        # Map DB columns to UI expected columns
+        df['Drift Status'] = df['drift_status']
+        df['Integrity'] = df['integrity_label']
+        df['Drift Message'] = df['drift_message']
+        return df
+
+    # Fallback to legacy logic
+    from mf_lab.logic import apply_drift_status
+    return apply_drift_status(df)
 
 def render_blender_suite(aggregated_selection):
     """
@@ -84,19 +110,37 @@ def render():
     # ---------------- ADMIN TOOLS (SIDEBAR) ----------------
     with st.sidebar.expander("🛠️ Admin Tools"):
         st.info("Trigger the background scanner to audit the full universe (800+ funds). This runs independently.")
+
+        # Scan Trigger
         if st.button("🚀 Run Background Discovery Scan"):
             try:
                 # Run independent process
                 script_path = os.path.join(os.getcwd(), "cron_mf_audit.py")
                 if os.path.exists(script_path):
                     subprocess.Popen([sys.executable, script_path])
-                    st.toast("✅ Background scan started! It will take ~15 mins.")
+                    st.toast("✅ Background scan started! Check logs/status.")
                 else:
                     st.error(f"Script not found at {script_path}")
             except Exception as e:
                 st.error(f"Failed to start scan: {e}")
 
         st.markdown("---")
+
+        # View Logs Button
+        if st.button("📜 View Audit Logs"):
+            try:
+                if os.path.exists("audit.log"):
+                    with open("audit.log", "r") as f:
+                        logs = f.readlines()
+                        # Show last 20 lines
+                        st.text("".join(logs[-20:]))
+                else:
+                    st.info("No audit logs found.")
+            except: pass
+
+        st.markdown("---")
+
+        # Health Check Report
         if st.button("📋 Generate Health Check"):
             with st.spinner("Analyzing Market Breadth & Sector Rotation..."):
                 timestamps = fetch_timestamps("scan_mf")
@@ -149,7 +193,8 @@ def render():
         st.caption("ℹ️ Legacy Data Detected: Categories were inferred from fund names.")
 
     # --- DRIFT ANALYSIS APPLICATION ---
-    raw_df = apply_drift_status(raw_df)
+    # Use UI wrapper that respects DB integrity
+    raw_df = apply_drift_status_ui(raw_df)
 
     # 2. FILTER BY ASSET CLASS
     # Define Categories per Asset Class
@@ -210,7 +255,10 @@ def render():
 
                 if not cat_df.empty:
                     # Normalize Score 0-100 per category
-                    cat_df = calculate_fortress_score(cat_df)
+                    # Note: Cron already normalizes 'Score' but calls it 'Score'.
+                    # UI expects 'Fortress Score'. If DB returned 'Fortress Score' (aliased from Score), we are good.
+                    if 'Fortress Score' not in cat_df.columns:
+                         cat_df['Fortress Score'] = cat_df['Score']
 
                     # Sort by Fortress Score
                     cat_df = cat_df.sort_values("Fortress Score", ascending=False)
@@ -245,11 +293,29 @@ def render():
 
                         # Add to Local BLENDER context
                         for idx, row in selected_rows.iterrows():
-                            # Find scheme code from full row data
-                            code_series = raw_df[raw_df['Symbol'] == row['Symbol']]['Scheme Code']
-                            if not code_series.empty:
-                                code = code_series.values[0]
+                            # Find scheme code from full row data if available (New Schema)
+                            if 'Scheme Code' in row:
+                                code = row['Scheme Code']
+                            else:
+                                # Fallback: Try to find scheme code from raw_df using Symbol (Legacy support)
+                                # But row is a Series, so checking 'Scheme Code' key works.
+                                # If it's NaN or missing, we have an issue.
+                                code = None
+                                # Try look up in raw_df
+                                try:
+                                    match = raw_df[raw_df['Symbol'] == row['Symbol']]
+                                    if not match.empty and 'Scheme Code' in match.columns:
+                                        code = match['Scheme Code'].values[0]
+                                except: pass
+
+                            # If we found a code, add to basket
+                            if code:
                                 local_blender_basket[code] = row['Symbol']
+                            else:
+                                # Logic.py requires a code. If missing, we can't blend.
+                                # But maybe logic.py handles symbol if code is symbol? Unlikely.
+                                # For legacy rows (scan_mf), scheme code might be missing.
+                                pass
 
                     final_display_df = pd.concat([final_display_df, cat_df])
                 else:
