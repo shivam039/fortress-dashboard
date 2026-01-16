@@ -135,3 +135,13 @@ def discover_funds(limit=None):
             return candidates[:limit]
         return candidates
     except: return []
+
+def get_category(scheme_name):
+    name = scheme_name.lower()
+    # Exclusion Layer: If "Mid" and "Small" both appear, default to "Small Cap"
+    if "mid" in name and "small" in name: return "Small Cap"
+
+    if "large" in name: return "Large Cap"
+    if "mid" in name: return "Mid Cap"
+    if "small" in name: return "Small Cap"
+    return "Flexi/Other"
