@@ -18,5 +18,13 @@ ALL_COLUMNS = {
     "Dispersion_Alert": {"label":"Dispersion"},
     "Ret_30D": {"label":"30D Backtest", "format":"%.2f%%"},
     "Ret_60D": {"label":"60D Backtest", "format":"%.2f%%"},
-    "Ret_90D": {"label":"90D Backtest", "format":"%.2f%%"}
+    "Ret_90D": {"label":"90D Backtest", "format":"%.2f%%"},
+    "Strategy": {"label": "Strategy"},
+    "Buy_Zone": {"label": "Buy Zone"},
+    "Steam_Left": {"label": "Steam Left ₹", "format": "₹%.2f"},
+    "Days_To_Target": {"label": "Est. Days", "format": "%.1f"},
+    "Resilience": {"label": "War/News Resilience"},
+    "Gap_Integrity": {"label": "Gap Integrity"},
+    "Velocity": {"label": "Momentum Velocity", "format": "%.2f%%"},
+    "Ret_7D": {"label": "7D Return", "format": "%.2f%%"}
 }
