@@ -94,6 +94,17 @@ def init_db():
                         FOREIGN KEY(scan_id) REFERENCES scans(scan_id)
                     )''')
 
+        # 7. Algo Trade Log
+        c.execute('''CREATE TABLE IF NOT EXISTS algo_trade_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT NOT NULL,
+                        strategy_name TEXT,
+                        symbol TEXT,
+                        action TEXT,
+                        details TEXT,
+                        status TEXT
+                    )''')
+
         # Legacy Tables Support (Optional: keep them if needed or let them be)
         # c.execute('''CREATE TABLE IF NOT EXISTS scan_results ...''') # Old flat table
 
@@ -432,3 +443,32 @@ def log_audit(action, universe="Global", details=""):
         conn.commit()
         conn.close()
     except: pass
+
+def log_algo_trade(strategy, symbol, action, details, status="Active"):
+    try:
+        conn = get_connection()
+        c = conn.cursor()
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        c.execute("INSERT INTO algo_trade_log (timestamp, strategy_name, symbol, action, details, status) VALUES (?, ?, ?, ?, ?, ?)",
+                  (ts, strategy, symbol, action, details, status))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error logging trade: {e}")
+
+def fetch_active_trades():
+    conn = get_connection()
+    try:
+        return pd.read_sql("SELECT * FROM algo_trade_log WHERE status='Active'", conn)
+    except:
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+def close_all_trades():
+    """Marks all active trades as Closed."""
+    conn = get_connection()
+    c = conn.cursor()
+    c.execute("UPDATE algo_trade_log SET status='Closed' WHERE status='Active'")
+    conn.commit()
+    conn.close()

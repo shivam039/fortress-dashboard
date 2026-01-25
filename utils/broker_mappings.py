@@ -1,4 +1,6 @@
 import urllib.parse
+import re
+import json
 
 # Mapping of NSE Symbols to Dhan Security IDs.
 # As Dhan requires specific numerical IDs for Deep Links, this dictionary must be populated.
@@ -89,3 +91,74 @@ def generate_dhan_url(symbol, qty, price=0, transaction_type="BUY"):
     else:
         # Fallback: Dhan Search / Watchlist
         return f"https://web.dhan.co/watchlist?search={clean_sym}"
+
+def convert_yahoo_to_zerodha(y_symbol):
+    # Yahoo: NIFTY231026C01900000 or RELIANCE231026...
+    # Regex to parse
+    if not y_symbol: return ""
+    match = re.match(r"([A-Z\^]+)(\d{2})(\d{2})(\d{2})([CP])(\d+)", y_symbol)
+    if not match:
+        return y_symbol # Fallback
+
+    symbol, yy, mm, dd, cp, strike_str = match.groups()
+
+    # Clean Symbol
+    symbol = symbol.replace("^NSEI", "NIFTY").replace("^NSEBANK", "BANKNIFTY").replace(".NS", "")
+
+    # Month Map for Weekly/Monthly
+    m_int = int(mm)
+    m_char = f"{m_int}" if m_int < 10 else "O" if m_int==10 else "N" if m_int==11 else "D"
+
+    strike = int(int(strike_str) / 1000)
+
+    cp_type = "CE" if cp == "C" else "PE"
+
+    # Construct Weekly Format: SYMBOL YY M DD STRIKE TYPE
+    z_symbol = f"{symbol}{yy}{m_char}{dd}{strike}{cp_type}"
+    return z_symbol
+
+def generate_basket_html(legs, broker="Zerodha"):
+    # legs: list of dicts {contractSymbol, qty, action, type}
+    # action: BUY/SELL
+    # type: CE/PE/STOCK
+
+    data = []
+    for leg in legs:
+        # Map Symbol
+        y_sym = leg.get('contractSymbol', '')
+        z_sym = convert_yahoo_to_zerodha(y_sym) if leg['type'] != "STOCK" else clean_symbol_for_broker(leg.get('contractSymbol'))
+
+        txn = "BUY" if leg['action'] == "BUY" else "SELL"
+        qty = int(leg.get('qty', 1))
+
+        item = {
+            "exchange": "NFO" if leg['type'] != "STOCK" else "NSE",
+            "tradingsymbol": z_sym,
+            "transaction_type": txn,
+            "quantity": qty,
+            "order_type": "MARKET",
+            "product": "MIS"
+        }
+        data.append(item)
+
+    json_data = json.dumps(data)
+
+    if broker == "Zerodha":
+        html = f"""
+        <form action="https://kite.zerodha.com/connect/basket" method="post" target="_blank">
+            <input type="hidden" name="api_key" value="fortress_v9" />
+            <input type="hidden" name="data" value='{json_data}' />
+            <button type="submit" style="background-color: #FF5722; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">
+                🚀 Execute via Zerodha Kite
+            </button>
+        </form>
+        """
+        return html
+    else:
+        # Dhan Fallback
+        return f"""
+        <div style="padding: 10px; background: #222; color: #fff; border-radius: 5px;">
+            Dhan Basket API not configured. <br>
+            <a href="https://web.dhan.co/orders/basket" target="_blank" style="color: #4CAF50;">Open Dhan Basket Builder</a>
+        </div>
+        """

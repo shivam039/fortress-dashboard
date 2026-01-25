@@ -25,6 +25,7 @@ from utils.db import (
 import mf_lab.ui
 import stock_scanner.ui
 import commodities.ui
+import options_algo.ui
 
 # Initialize Database
 init_db()
@@ -38,7 +39,7 @@ st.title("🛡️ Fortress 95 Pro v9.4 — Dynamic Columns Terminal")
 portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice = stock_scanner.ui.render_sidebar()
 
 # ---------------- TABS ----------------
-tab_scan, tab_mf, tab_comm, tab_hist = st.tabs(["🚀 Live Scanner", "🛡️ MF Consistency Lab", "🌍 Commodities Terminal", "📜 Scan History Intelligence"])
+tab_scan, tab_mf, tab_comm, tab_algo, tab_hist = st.tabs(["🚀 Live Scanner", "🛡️ MF Consistency Lab", "🌍 Commodities Terminal", "🤖 Options Algos", "📜 Scan History Intelligence"])
 
 with tab_scan:
     stock_scanner.ui.render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice)
@@ -48,6 +49,9 @@ with tab_mf:
 
 with tab_comm:
     commodities.ui.render(broker_choice)
+
+with tab_algo:
+    options_algo.ui.render(broker_choice)
 
 with tab_hist:
     st.subheader("📜 Scan History Intelligence")
