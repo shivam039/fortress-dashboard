@@ -74,7 +74,8 @@ SECTOR_MAP = {
     "TRENT.NS": "Retail", "ZOMATO.NS": "Retail", "NYKAA.NS": "Retail"
 }
 
-INDEX_BENCHMARKS = {"Nifty 50": "^NSEI", "Nifty Next 50": "^NIFTYJR", "Nifty Midcap 150": "^NSMIDCP"}
+# ^NIFTYJR is delisted/unreliable on Yahoo. Using ^CNX100 (Nifty 100) as proxy or fallback.
+INDEX_BENCHMARKS = {"Nifty 50": "^NSEI", "Nifty Next 50": "^CNX100", "Nifty Midcap 150": "^NSMIDCP"}
 
 NIFTY_SYMBOL = "^NSEI"
 
