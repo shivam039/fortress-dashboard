@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from .logic import analyze_arbitrage, check_correlations
+from commodities.logic import analyze_arbitrage, check_correlations
 from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
 
 def render(broker_choice="Zerodha"):
