@@ -105,6 +105,56 @@ def get_table_name_from_universe(u):
     if "Mutual Funds" == u: return "scan_mf"
     return "scan_entries"
 
+def log_scan_results(df, table_name="scan_results"):
+    """
+    Logs scan results to SQLite with automated schema evolution.
+    Checks for new columns in df and adds them to the table if missing.
+    """
+    if df.empty: return
+
+    conn = get_connection()
+    c = conn.cursor()
+
+    try:
+        # Check if table exists
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
+        table_exists = c.fetchone()
+
+        if not table_exists:
+            df.to_sql(table_name, conn, if_exists='replace', index=False)
+        else:
+            # Get existing columns
+            c.execute(f"PRAGMA table_info({table_name})") # PRAGMA doesn't support ? params easily
+            existing_cols = {row[1] for row in c.fetchall()}
+
+            # Find new columns
+            new_cols = [col for col in df.columns if col not in existing_cols]
+
+            for col in new_cols:
+                # Determine type roughly
+                dtype = df[col].dtype
+                sql_type = "TEXT"
+                if pd.api.types.is_float_dtype(dtype):
+                    sql_type = "REAL"
+                elif pd.api.types.is_integer_dtype(dtype):
+                    sql_type = "INTEGER"
+
+                try:
+                    # Column names should be quoted to handle spaces/special chars
+                    c.execute(f'ALTER TABLE {table_name} ADD COLUMN "{col}" {sql_type}')
+                    print(f"Schema Evolution: Added column '{col}' to '{table_name}'")
+                except Exception as e:
+                    print(f"Error adding column {col}: {e}")
+
+            # Append data
+            df.to_sql(table_name, conn, if_exists='append', index=False)
+
+        conn.commit()
+    except Exception as e:
+        print(f"Error logging scan results: {e}")
+    finally:
+        conn.close()
+
 # --- NEW INSERTION LOGIC ---
 
 def register_scan(timestamp, universe="Mutual Funds", status="In Progress"):
