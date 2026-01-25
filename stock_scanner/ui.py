@@ -71,9 +71,6 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
 
             # --- GENERATE ACTIONS COLUMN ---
             def generate_action_link(row):
-                if row["Verdict"] not in ["🔥 HIGH", "🚀 PASS"]:
-                    return None
-
                 qty = row.get("Position_Qty", 0)
                 symbol = row["Symbol"]
                 price = row.get("Price", 0)

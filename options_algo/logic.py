@@ -133,8 +133,11 @@ def resolve_strategy_legs(template, symbol, expiry_idx=0):
 
                 for _, row in df.iterrows():
                     s = row['strike']
-                    i_vol = row['impliedVolatility']
-                    if i_vol is None or np.isnan(i_vol) or i_vol == 0: i_vol = 0.2
+                    i_vol = 0.2
+                    if 'impliedVolatility' in row:
+                        val = row['impliedVolatility']
+                        if val is not None and not np.isnan(val) and val > 0:
+                            i_vol = val
 
                     greeks = calculate_greeks(spot, s, T, r, i_vol, opt_type)
                     d = abs(greeks['Delta'])
@@ -168,8 +171,13 @@ def resolve_strategy_legs(template, symbol, expiry_idx=0):
             if not row.empty:
                 price = row.iloc[0]['lastPrice']
                 contract_symbol = row.iloc[0]['contractSymbol']
-                iv = row.iloc[0]['impliedVolatility']
-                if not iv or np.isnan(iv): iv = 0.2
+
+                iv = 0.2
+                if 'impliedVolatility' in row.columns:
+                    val = row.iloc[0]['impliedVolatility']
+                    if val is not None and not np.isnan(val) and val > 0:
+                        iv = val
+
                 greeks = calculate_greeks(spot, selected_strike, T, r, iv, opt_type)
             else:
                 price = 0 # Should not happen if strike is from list
