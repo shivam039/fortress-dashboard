@@ -1,7 +1,22 @@
 import yfinance as yf
 import pandas as pd
 import logging
-from fortress_config import COMMODITY_TICKERS, COMMODITY_CONSTANTS
+import sys
+import os
+
+# Ensure root is in path for config import
+if os.getcwd() not in sys.path:
+    sys.path.append(os.getcwd())
+
+try:
+    import fortress_config
+    COMMODITY_TICKERS = fortress_config.COMMODITY_TICKERS
+    COMMODITY_CONSTANTS = fortress_config.COMMODITY_CONSTANTS
+except ImportError:
+    # Fallback/Debug
+    COMMODITY_TICKERS = {}
+    COMMODITY_CONSTANTS = {"WAREHOUSING_COST_PCT_MONTHLY": 0.001, "ARB_YIELD_THRESHOLD": 10.0}
+    print("Error importing fortress_config. Using empty defaults.")
 
 logger = logging.getLogger(__name__)
 

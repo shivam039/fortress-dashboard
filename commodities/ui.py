@@ -1,9 +1,11 @@
 import streamlit as st
 import pandas as pd
-from commodities.logic import analyze_arbitrage, check_correlations
-from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
 
 def render(broker_choice="Zerodha"):
+    # Defer imports to prevent startup crashes
+    from commodities.logic import analyze_arbitrage, check_correlations
+    from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
+
     st.header("🌍 Commodities Intelligence Terminal")
     st.caption("Global-to-Local Arbitrage • Cash-and-Carry Analysis • Parity Audits")
 
