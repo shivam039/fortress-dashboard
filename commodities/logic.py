@@ -38,11 +38,11 @@ def fetch_market_data():
 
     # Add Commodities
     for name, cfg in COMMODITY_TICKERS.items():
-        tickers.append(cfg['global'])
-        tickers.append(cfg['local'])
+        if cfg.get('global'): tickers.append(cfg['global'])
+        if cfg.get('local'): tickers.append(cfg['local'])
 
-    # Deduplicate
-    tickers = list(set(tickers))
+    # Deduplicate and filter empty/None
+    tickers = list(set([t for t in tickers if t]))
 
     try:
         # Fetch all in one go for efficiency
