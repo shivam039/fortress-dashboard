@@ -79,6 +79,21 @@ def init_db():
                         PRIMARY KEY (ticker, date)
                     )''')
 
+        # 6. Commodity Scans
+        c.execute('''CREATE TABLE IF NOT EXISTS scan_commodities (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        scan_id INTEGER,
+                        symbol TEXT,
+                        global_price REAL,
+                        local_price REAL,
+                        usd_inr REAL,
+                        parity_price REAL,
+                        spread REAL,
+                        arb_yield REAL,
+                        action_label TEXT,
+                        FOREIGN KEY(scan_id) REFERENCES scans(scan_id)
+                    )''')
+
         # Legacy Tables Support (Optional: keep them if needed or let them be)
         # c.execute('''CREATE TABLE IF NOT EXISTS scan_results ...''') # Old flat table
 
@@ -103,6 +118,7 @@ def get_connection():
 def get_table_name_from_universe(u):
     # Legacy support
     if "Mutual Funds" == u: return "scan_mf"
+    if "Commodities" == u: return "scan_commodities"
     return "scan_entries"
 
 def log_scan_results(df, table_name="scan_results"):
@@ -298,6 +314,14 @@ def fetch_history_data(table_name, timestamp):
 
     if not scan_info.empty:
         scan_id = scan_info.iloc[0]['scan_id']
+
+        if table_name == "scan_commodities":
+            try:
+                df = pd.read_sql("SELECT * FROM scan_commodities WHERE scan_id = ?", conn, params=(scan_id,))
+                conn.close()
+                return df
+            except Exception as e:
+                print(f"Error fetching commodity data: {e}")
 
         # JOIN Query
         query = """
