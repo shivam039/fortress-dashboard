@@ -3,6 +3,7 @@ import pandas as pd
 import logging
 import sys
 import os
+import importlib
 
 # Ensure root is in path for config import
 if os.getcwd() not in sys.path:
@@ -12,11 +13,17 @@ try:
     import fortress_config
     COMMODITY_TICKERS = fortress_config.COMMODITY_TICKERS
     COMMODITY_CONSTANTS = fortress_config.COMMODITY_CONSTANTS
-except ImportError:
-    # Fallback/Debug
-    COMMODITY_TICKERS = {}
-    COMMODITY_CONSTANTS = {"WAREHOUSING_COST_PCT_MONTHLY": 0.001, "ARB_YIELD_THRESHOLD": 10.0}
-    print("Error importing fortress_config. Using empty defaults.")
+except (ImportError, AttributeError):
+    # Try reloading, maybe it was a stale module or partial load
+    try:
+        importlib.reload(fortress_config)
+        COMMODITY_TICKERS = fortress_config.COMMODITY_TICKERS
+        COMMODITY_CONSTANTS = fortress_config.COMMODITY_CONSTANTS
+    except Exception as e:
+        # Fallback/Debug
+        COMMODITY_TICKERS = {}
+        COMMODITY_CONSTANTS = {"WAREHOUSING_COST_PCT_MONTHLY": 0.001, "ARB_YIELD_THRESHOLD": 10.0}
+        print(f"Error importing fortress_config (Reload failed: {e}). Using empty defaults.")
 
 logger = logging.getLogger(__name__)
 
