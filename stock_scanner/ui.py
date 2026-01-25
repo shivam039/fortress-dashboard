@@ -11,11 +11,16 @@ from fortress_config import TICKER_GROUPS, INDEX_BENCHMARKS
 from .logic import check_institutional_fortress
 from .config import ALL_COLUMNS
 from utils.db import log_audit, get_table_name_from_universe, log_scan_results, fetch_timestamps, fetch_history_data, fetch_symbol_history
+from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
 
 def render_sidebar():
     st.sidebar.title("💰 Portfolio & Risk")
     portfolio_val = st.sidebar.number_input("Portfolio Value (₹)", value=1000000, step=50000)
     risk_pct = st.sidebar.slider("Risk Per Trade (%)", 0.5, 3.0, 1.0, 0.1)/100
+
+    # Broker Selection
+    broker_choice = st.sidebar.selectbox("Preferred Broker", ["Zerodha", "Dhan"])
+
     selected_universe = st.sidebar.selectbox("Select Index", list(TICKER_GROUPS.keys()))
 
     # Sidebar Multiselect for Dynamic Columns
@@ -23,9 +28,9 @@ def render_sidebar():
         "Select Columns to Display", options=list(ALL_COLUMNS.keys()), default=list(ALL_COLUMNS.keys())
     )
 
-    return portfolio_val, risk_pct, selected_universe, selected_columns
+    return portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice
 
-def render(portfolio_val, risk_pct, selected_universe, selected_columns):
+def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice):
     # ---------------- MARKET PULSE ----------------
     st.subheader("🌐 Market Pulse")
     pulse_cols = st.columns(len(INDEX_BENCHMARKS))
@@ -63,6 +68,22 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns):
         if results:
             df = pd.DataFrame(results).sort_values("Score",ascending=False)
             status_text.success(f"Scan Complete: {len(df[df['Score']>=60])} actionable setups.")
+
+            # --- GENERATE ACTIONS COLUMN ---
+            def generate_action_link(row):
+                if row["Verdict"] not in ["🔥 HIGH", "🚀 PASS"]:
+                    return None
+
+                qty = row.get("Position_Qty", 0)
+                symbol = row["Symbol"]
+                price = row.get("Price", 0)
+
+                if broker_choice == "Zerodha":
+                    return generate_zerodha_url(symbol, qty)
+                else:
+                    return generate_dhan_url(symbol, qty, price)
+
+            df["Actions"] = df.apply(generate_action_link, axis=1)
 
             # --- SECTOR INTELLIGENCE TERMINAL ---
             st.subheader("🔥 Sector Intelligence & Rotation")
@@ -116,18 +137,24 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns):
 
             log_audit("Scan Completed", selected_universe, f"Saved {len(df)} records to {target_table}")
 
-            display_df = df[selected_columns]
+            # Ensure 'Actions' is available in display if selected
+            # Note: selected_columns might contain 'Actions', so we ensure it exists in df (done above)
+            display_cols = [c for c in selected_columns if c in df.columns]
+            display_df = df[display_cols]
 
             st_column_config = {}
-            for col in selected_columns:
-                cfg = ALL_COLUMNS[col]
+            for col in display_cols:
+                cfg = ALL_COLUMNS.get(col, {})
                 fmt = cfg.get("format")
-                if cfg.get("type")=="progress":
+                if col == "Actions":
+                    label = f"⚡ Trade ({broker_choice})"
+                    st_column_config[col] = st.column_config.LinkColumn(label, display_text="⚡ Trade")
+                elif cfg.get("type")=="progress":
                     st_column_config[col] = st.column_config.ProgressColumn(cfg["label"],min_value=cfg["min"],max_value=cfg["max"])
                 elif fmt:
                     st_column_config[col] = st.column_config.NumberColumn(cfg["label"],format=fmt)
                 else:
-                    st_column_config[col] = st.column_config.TextColumn(cfg["label"])
+                    st_column_config[col] = st.column_config.TextColumn(cfg.get("label", col))
 
             st.dataframe(display_df,use_container_width=True,height=600,column_config=st_column_config)
 

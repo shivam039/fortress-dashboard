@@ -1,6 +1,7 @@
 ALL_COLUMNS = {
     "Symbol": {"label":"Symbol"},
     "Verdict": {"label":"Verdict"},
+    "Actions": {"label": "Trade Now"},
     "Score": {"label":"Conviction", "type":"progress", "min":0, "max":100},
     "Price": {"label":"Price ₹", "format":"₹%.2f"},
     "RSI": {"label":"RSI", "format":"%.1f"},
