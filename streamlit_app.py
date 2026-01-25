@@ -34,13 +34,13 @@ st.title("🛡️ Fortress 95 Pro v9.4 — Dynamic Columns Terminal")
 
 # Sidebar - Stock Scanner Controls
 # Delegating sidebar rendering to stock_scanner.ui
-portfolio_val, risk_pct, selected_universe, selected_columns = stock_scanner.ui.render_sidebar()
+portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice = stock_scanner.ui.render_sidebar()
 
 # ---------------- TABS ----------------
 tab_scan, tab_mf, tab_hist = st.tabs(["🚀 Live Scanner", "🛡️ MF Consistency Lab", "📜 Scan History Intelligence"])
 
 with tab_scan:
-    stock_scanner.ui.render(portfolio_val, risk_pct, selected_universe, selected_columns)
+    stock_scanner.ui.render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice)
 
 with tab_mf:
     mf_lab.ui.render()
