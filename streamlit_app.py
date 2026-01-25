@@ -24,7 +24,7 @@ from utils.db import (
 import mf_lab.ui
 import stock_scanner.ui
 import commodities.ui
-import options_algo.ui
+from options_algo.ui import render as options_algo_render
 
 # Initialize Database
 init_db()
@@ -73,7 +73,7 @@ elif selected_view == "🤖 Options Algos":
     st.sidebar.subheader("Execution Settings")
     broker_choice = st.sidebar.selectbox("Preferred Broker", ["Zerodha", "Dhan"], key="algo_broker")
 
-    options_algo.ui.render(broker_choice)
+    options_algo_render(broker_choice)
 
 elif selected_view == "📜 Scan History":
     st.subheader("📜 Scan History Intelligence")
