@@ -70,6 +70,7 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
             status_text.success(f"Scan Complete: {len(df[df['Score']>=60])} actionable setups.")
 
             # --- GENERATE ACTIONS COLUMN ---
+            # Universal Action Links: Enabled for all scan results (No Verdict Gate)
             def generate_action_link(row):
                 qty = row.get("Position_Qty", 0)
                 symbol = row["Symbol"]

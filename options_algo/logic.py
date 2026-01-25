@@ -177,6 +177,10 @@ def resolve_strategy_legs(template, symbol, expiry_idx=0):
                     val = row.iloc[0]['impliedVolatility']
                     if val is not None and not np.isnan(val) and val > 0:
                         iv = val
+                    else:
+                        iv = 0.2  # Robust fallback
+                else:
+                    iv = 0.2 # Robust fallback
 
                 greeks = calculate_greeks(spot, selected_strike, T, r, iv, opt_type)
             else:

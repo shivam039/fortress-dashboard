@@ -1,6 +1,7 @@
 import urllib.parse
 import re
 import json
+import streamlit as st
 
 # Mapping of NSE Symbols to Dhan Security IDs.
 # As Dhan requires specific numerical IDs for Deep Links, this dictionary must be populated.
@@ -161,10 +162,9 @@ def generate_basket_html(legs, broker="Zerodha"):
         </body>
         </html>
         """
-        return html
     else:
         # Dhan Web Overlay / Deep Link Wrapper
-        return f"""
+        html = f"""
         <div style="display: flex; align-items: center; justify-content: center;">
             <a href="https://web.dhan.co/orders/basket" target="_blank" style="text-decoration: none;">
                 <button style="
@@ -182,3 +182,5 @@ def generate_basket_html(legs, broker="Zerodha"):
             </a>
         </div>
         """
+
+    st.components.v1.html(html, height=100)

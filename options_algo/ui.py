@@ -1,10 +1,6 @@
 import streamlit as st
 import pandas as pd
 import json
-from options_algo.templates import STRATEGY_TEMPLATES
-from options_algo.logic import resolve_strategy_legs, check_synthetic_future_arb, fetch_option_chain
-from utils.broker_mappings import generate_zerodha_url, generate_dhan_url, generate_basket_html
-from utils.db import log_algo_trade, fetch_active_trades, close_all_trades
 
 TICKER_MAP = {
     "NIFTY": "^NSEI",
@@ -16,7 +12,7 @@ TICKER_MAP = {
 }
 
 def render(broker_choice="Zerodha"):
-    # Defer Imports
+    # Defer Imports to avoid circular dependency and initialization issues
     from options_algo.templates import STRATEGY_TEMPLATES
     from options_algo.logic import resolve_strategy_legs, check_synthetic_future_arb, fetch_option_chain
     from utils.broker_mappings import generate_zerodha_url, generate_dhan_url, generate_basket_html
@@ -104,9 +100,8 @@ def render(broker_choice="Zerodha"):
                 details = json.dumps(legs_for_html, default=str)
                 log_algo_trade(st.session_state['algo_strategy'], st.session_state['algo_symbol'], "ENTRY", details)
 
-                # Generate HTML
-                html_code = generate_basket_html(legs_for_html, broker_choice)
-                st.components.v1.html(html_code, height=100)
+                # Generate HTML & Render Button
+                generate_basket_html(legs_for_html, broker_choice)
 
                 st.success("Trade Logged! Click the button above to execute.")
 
@@ -148,8 +143,7 @@ def render(broker_choice="Zerodha"):
                         pass
 
                 if all_reverse_legs:
-                    html_code = generate_basket_html(all_reverse_legs, broker_choice)
-                    st.components.v1.html(html_code, height=100)
+                    generate_basket_html(all_reverse_legs, broker_choice)
                     st.error("EXIT BASKET GENERATED. CLICK ABOVE TO EXECUTE.")
                 else:
                     st.error("Could not parse active trades to generate exit.")
