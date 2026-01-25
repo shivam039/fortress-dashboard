@@ -79,7 +79,7 @@ def init_db():
                         PRIMARY KEY (ticker, date)
                     )''')
 
-        # 6. Commodity Scans
+        # 6. Commodity Scans (Auto-created if missing)
         c.execute('''CREATE TABLE IF NOT EXISTS scan_commodities (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         scan_id INTEGER,
@@ -94,7 +94,7 @@ def init_db():
                         FOREIGN KEY(scan_id) REFERENCES scans(scan_id)
                     )''')
 
-        # 7. Algo Trade Log
+        # 7. Algo Trade Log (Auto-created if missing)
         c.execute('''CREATE TABLE IF NOT EXISTS algo_trade_log (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         timestamp TEXT NOT NULL,

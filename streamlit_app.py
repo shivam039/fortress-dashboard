@@ -42,6 +42,7 @@ nav_options = [
     "🤖 Options Algos",
     "📜 Scan History"
 ]
+# Server-Side Navigation
 selected_view = st.sidebar.radio("Select Module", nav_options)
 st.sidebar.markdown("---")
 
