@@ -64,6 +64,47 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns):
             df = pd.DataFrame(results).sort_values("Score",ascending=False)
             status_text.success(f"Scan Complete: {len(df[df['Score']>=60])} actionable setups.")
 
+            # --- SECTOR INTELLIGENCE TERMINAL ---
+            st.subheader("🔥 Sector Intelligence & Rotation")
+
+            # Aggregate Sector Metrics
+            if "Sector" in df.columns and "Velocity" in df.columns:
+                sector_stats = df.groupby("Sector").agg({
+                    "Velocity": "mean",
+                    "Above_EMA200": "mean", # Breadth (0-1)
+                    "Score": "mean"
+                }).reset_index()
+
+                # Formatting
+                sector_stats["Breadth (%)"] = (sector_stats["Above_EMA200"] * 100).round(1)
+                sector_stats["Avg Score"] = sector_stats["Score"].round(1)
+                sector_stats["Velocity"] = sector_stats["Velocity"].round(2)
+
+                # Thesis Generation
+                def get_thesis(row):
+                    if row["Score"] > 75 and row["Velocity"] > 0:
+                        return "🐂 Bullish Accumulation"
+                    elif row["Score"] < 35 and row["Breadth (%)"] < 40:
+                        return "❄️ Structural Weakness"
+                    elif row["Velocity"] > 2:
+                        return "🚀 High Momentum"
+                    else:
+                        return "⚖️ Neutral / Rotation"
+
+                sector_stats["Thesis"] = sector_stats.apply(get_thesis, axis=1)
+
+                # Display Dashboard
+                st.dataframe(
+                    sector_stats[["Sector", "Thesis", "Velocity", "Breadth (%)", "Avg Score"]].sort_values("Velocity", ascending=False),
+                    use_container_width=True,
+                    column_config={
+                        "Velocity": st.column_config.NumberColumn("Momentum Vel", format="%.2f%%"),
+                        "Breadth (%)": st.column_config.ProgressColumn("Inst. Breadth", min_value=0, max_value=100, format="%.1f%%"),
+                        "Avg Score": st.column_config.ProgressColumn("Sector Strength", min_value=0, max_value=100)
+                    },
+                    hide_index=True
+                )
+
             # Log Logic
             target_table = get_table_name_from_universe(selected_universe)
             df['Universe'] = selected_universe # Add metadata

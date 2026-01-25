@@ -1,144 +1,189 @@
 import pandas as pd
-import requests
-import time
 import sys
 import os
-import yfinance as yf
+import time
 from datetime import datetime
 
-# Add current directory to path to allow imports
+# Add current directory to path
 sys.path.append(os.getcwd())
 
-# Import Logic (Re-using existing logic to ensure consistency)
-# We will use the functions, but might need to bypass the @st.cache_data decorators if they cause issues
-# in a non-Streamlit environment. However, usually they just work or can be bypassed.
-from mf_lab.logic import detect_integrity_issues, discover_funds, get_category
-from utils.db import log_scan_results
+# Services
+from mf_lab.services.config import logger, LOCK_FILE
+from mf_lab.services.data import discover_funds, fetch_fund_nav, fetch_benchmark_data
+from mf_lab.services.metrics import calculate_metrics
+from mf_lab.services.scoring import calculate_composite_score, normalize_batch_scores
+from mf_lab.services.alerts import check_integrity_rules, generate_smart_alerts, send_telegram_alert
+from mf_lab.logic import get_category
+from utils.db import init_db, register_scan, update_scan_status, bulk_insert_results, log_audit
 
-def fetch_benchmark_data_headless(ticker):
-    """Fetches Benchmark data without Streamlit caching for the background script"""
-    try:
-        # Using 5y history to cover the required analysis window
-        nifty = yf.download(ticker, period="5y", interval="1d", progress=False)
-        if nifty.empty: return pd.DataFrame()
-        if isinstance(nifty.columns, pd.MultiIndex):
-            nifty.columns = nifty.columns.get_level_values(0)
-        nifty['ret'] = nifty['Close'].pct_change()
-        return nifty[['ret']].dropna()
-    except Exception as e:
-        print(f"Error fetching benchmark {ticker}: {e}")
-        return pd.DataFrame()
+# --- CORE LOGIC ---
 
 def run_audit(limit=None):
-    print(f"[{datetime.now()}] Starting Fortress Discovery Audit...")
 
-    # 1. Fetch Benchmarks
-    print("Fetching Benchmarks...")
-    benchmarks = {
-        'Large Cap': fetch_benchmark_data_headless("^NSEI"),
-        'Mid Cap': fetch_benchmark_data_headless("^NSEMDCP50"),
-        'Small Cap': fetch_benchmark_data_headless("^CNXSC"),
-        'Flexi/Other': fetch_benchmark_data_headless("^NSEI")
-    }
+    # 1. Concurrency Lock
+    if os.path.exists(LOCK_FILE):
+        logger.warning("Audit already running (Lock file exists). Exiting.")
+        return
 
-    # 2. Discover Funds
-    print("Discovering Funds...")
-    candidates = discover_funds(limit=limit)
-    print(f"Found {len(candidates)} candidates for audit.")
+    try:
+        open(LOCK_FILE, "w").close()
 
-    results = []
+        start_time = datetime.now()
+        timestamp = start_time.strftime("%Y-%m-%d %H:%M:%S")
+        logger.info(f"Starting Fortress Discovery Audit at {timestamp}...")
 
-    # 3. Audit Loop
-    for i, c in enumerate(candidates):
-        try:
-            scheme_code = c['schemeCode']
-            scheme_name = c['schemeName']
+        # Init DB (ensure tables exist)
+        init_db()
 
-            # Rate Limiting
-            time.sleep(0.4)
+        # Register Scan
+        scan_id = register_scan(timestamp, universe="Mutual Funds", status="In Progress")
 
-            # Fetch NAV
-            url = f"https://api.mfapi.in/mf/{scheme_code}"
-            resp = requests.get(url)
-            if resp.status_code != 200:
+        # 2. Fetch Benchmarks
+        logger.info("Fetching Benchmarks (Cached)...")
+        # Note: ^CNX500 is often unreliable on Yahoo. Using ^NSEI (Nifty 50) as robust proxy for broad market if 500 fails.
+        # Or we could try ^CRSLDX (Nifty 500) if valid, but Nifty 50 is safest fallback.
+        nifty50 = fetch_benchmark_data("^NSEI")
+
+        benchmarks_map = {
+            'Large Cap': nifty50,
+            'Mid Cap': fetch_benchmark_data("^NSEMDCP50"),
+            'Small Cap': fetch_benchmark_data("^CNXSC"),
+            'Flexi/Multi Cap': nifty50, # Fallback from ^CNX500
+            'Focused': nifty50,
+            'Value/Contra': nifty50,
+            'ELSS': nifty50,
+            # Debt
+            'Liquid/Overnight': fetch_benchmark_data("LIQUIDBEES.NS"),
+            'Ultra Short/Low Duration': fetch_benchmark_data("LIQUIDBEES.NS"),
+            'Corporate Bond': fetch_benchmark_data("LIQUIDBEES.NS"),
+            'Gilt/Dynamic Bond': fetch_benchmark_data("LIQUIDBEES.NS")
+        }
+
+        # Fallback benchmark
+        default_bench = benchmarks_map['Flexi/Multi Cap']
+        debt_bench = benchmarks_map['Liquid/Overnight']
+
+        # 3. Discover Funds
+        logger.info("Discovering Funds...")
+        candidates = discover_funds(limit=limit)
+        logger.info(f"Found {len(candidates)} candidates.")
+
+        results_data = []
+        metrics_data = []
+        alerts_data = []
+
+        # 4. Audit Loop
+        for i, c in enumerate(candidates):
+            try:
+                scheme_code = c['schemeCode']
+                scheme_name = c['schemeName']
+
+                # Fetch NAV
+                fund_df = fetch_fund_nav(scheme_code)
+
+                if len(fund_df) < 750: continue # Min history
+                if fund_df['nav'].iloc[-1] < 10: continue # Low quality/penny fund filter
+
+                cat = get_category(scheme_name)
+                bench = benchmarks_map.get(cat)
+
+                # Fallback Logic
+                if bench is None or bench.empty:
+                    if cat in ["Liquid/Overnight", "Ultra Short/Low Duration", "Corporate Bond", "Gilt/Dynamic Bond"]:
+                        bench = debt_bench
+                    else:
+                        bench = default_bench
+
+                if bench.empty: continue
+
+                # Calculate Metrics
+                metrics = calculate_metrics(fund_df, bench)
+
+                if metrics:
+                    # Calculate Score Components (Raw)
+                    raw_score = calculate_composite_score(metrics)
+
+                    # Drift Check
+                    integrity, drift_status, drift_msg = check_integrity_rules(metrics, cat)
+
+                    # Store Result
+                    res_row = {
+                        "scan_id": scan_id,
+                        "symbol": scheme_name, # Full name as ID for now
+                        "scheme_code": scheme_code, # Added for Blender Support
+                        "category": cat,
+                        "Score": raw_score, # Raw first, normalized later
+                        "price": fund_df['nav'].iloc[-1],
+                        "integrity_label": integrity,
+                        "drift_status": drift_status,
+                        "drift_message": drift_msg
+                    }
+                    results_data.append(res_row)
+
+                    # Store Metrics
+                    met_row = metrics.copy()
+                    met_row['scan_id'] = scan_id
+                    met_row['symbol'] = scheme_name
+                    metrics_data.append(met_row)
+
+                    # Generate Alerts
+                    fund_alerts = generate_smart_alerts(res_row, metrics)
+                    for alert in fund_alerts:
+                        alert['scan_id'] = scan_id
+                        alert['timestamp'] = timestamp
+                        alerts_data.append(alert)
+                        # Send Notification for Critical
+                        if alert['severity'] == 'High':
+                            send_telegram_alert(f"{alert['type']}: {alert['symbol']} - {alert['message']}")
+
+                if (i + 1) % 10 == 0:
+                    logger.info(f"Processed {i + 1}/{len(candidates)} funds...")
+
+            except Exception as e:
+                logger.error(f"Failed to process {c.get('schemeName')}: {e}")
                 continue
 
-            data = resp.json()
-            if not data.get('data'):
-                continue
+        # 5. Normalization & Persistence
+        if results_data:
+            # Create DFs
+            res_df = pd.DataFrame(results_data)
+            met_df = pd.DataFrame(metrics_data)
+            alt_df = pd.DataFrame(alerts_data) if alerts_data else pd.DataFrame()
 
-            df = pd.DataFrame(data['data'])
-            df['date'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
-            df['nav'] = df['nav'].astype(float)
-            df = df.sort_values('date')
-            df['ret'] = df['nav'].pct_change()
+            # Normalize Scores (0-100) per Universe
+            res_df = normalize_batch_scores(res_df)
 
-            # Survival Filter: Skip if < 750 days of history
-            # (Roughly 3 years of trading days ~ 750)
-            if len(df) < 750:
-                continue
+            # Ensure Schema Alignment for Insert
+            # 'Fortress Score' is added by normalize, but 'Score' is updated.
+            # We can drop 'Fortress Score' as it's redundant if 'Score' is the final value.
+            if 'Fortress Score' in res_df.columns:
+                res_df = res_df.drop(columns=['Fortress Score'])
 
-            cat = get_category(scheme_name)
-            bench = benchmarks.get(cat)
-            if bench is None or bench.empty:
-                continue
+            # Bulk Insert
+            logger.info(f"Saving {len(res_df)} results to DB...")
+            bulk_insert_results(res_df, met_df, alt_df)
 
-            # Calculate Metrics
-            metrics = detect_integrity_issues(df, bench, cat)
+            update_scan_status(scan_id, "Completed")
+            log_audit("Scan Completed", "Mutual Funds", f"Scanned {len(res_df)} funds.")
+            logger.info("Audit Finished Successfully.")
 
-            if metrics:
-                # Fortress Pro Scoring Formula
-                # Score = (Alpha * 0.4) + (Sortino * 0.3) + ((100 - Downside) * 0.3)
-                raw_score = (metrics['alpha'] * 0.4) + \
-                            (metrics['sortino'] * 0.3) + \
-                            ((100 - metrics['downside']) * 0.3)
+        else:
+            logger.warning("No results found.")
+            update_scan_status(scan_id, "Failed")
 
-                results.append({
-                    "Symbol": scheme_name[:100], # Truncate for DB safety
-                    "Scheme Code": scheme_code,
-                    "Category": cat,
-                    "Score": raw_score,
-                    "Alpha (True)": metrics['alpha'],
-                    "Sortino": metrics['sortino'],
-                    "Upside Cap": metrics['upside'],
-                    "Downside Cap": metrics['downside'],
-                    "Max Drawdown": metrics['max_dd'],
-                    "Win Rate": metrics['win_rate'],
-                    "Verdict": metrics['drift'],
-                    "Price": df['nav'].iloc[-1],
-                    "Beta": metrics['beta'],
-                    "Tracking Error": metrics['te']
-                })
-
-            if (i + 1) % 10 == 0:
-                print(f"Processed {i + 1}/{len(candidates)}...")
-
-        except Exception as e:
-            # print(f"Error processing {c.get('schemeName', 'Unknown')}: {e}")
-            continue
-
-    # 4. Persistence
-    if results:
-        final_df = pd.DataFrame(results)
-        print(f"Audit Complete. Saving {len(final_df)} records to database...")
-
-        # We explicitly write to 'scan_mf' table
-        log_scan_results(final_df, "scan_mf")
-        print("Database update successful.")
-    else:
-        print("No results found or all filtered out.")
+    except Exception as e:
+        logger.critical(f"Audit Crash: {e}")
+    finally:
+        if os.path.exists(LOCK_FILE):
+            os.remove(LOCK_FILE)
 
 if __name__ == "__main__":
-    # If run directly, check for arguments or run default
-    # Example: python cron_mf_audit.py --limit 10
     limit = None
     if len(sys.argv) > 1:
         try:
-            # Simple arg parsing for limit
             arg = sys.argv[1]
             if arg.startswith("--limit="):
                 limit = int(arg.split("=")[1])
-        except:
-            pass
+        except: pass
 
     run_audit(limit)
