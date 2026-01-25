@@ -114,9 +114,21 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
 
                 sector_stats["Thesis"] = sector_stats.apply(get_thesis, axis=1)
 
+                # Classification
+                def check_rise(row):
+                    if row['Velocity'] > 0 and row['Breadth (%)'] > 70: return "🔥 YES"
+                    return ""
+
+                def check_fall(row):
+                    if row['Velocity'] < 0 or row['Breadth (%)'] < 40: return "❄️ YES"
+                    return ""
+
+                sector_stats['On the Rise'] = sector_stats.apply(check_rise, axis=1)
+                sector_stats['On the Fall'] = sector_stats.apply(check_fall, axis=1)
+
                 # Display Dashboard
                 st.dataframe(
-                    sector_stats[["Sector", "Thesis", "Velocity", "Breadth (%)", "Avg Score"]].sort_values("Velocity", ascending=False),
+                    sector_stats[["Sector", "Thesis", "Velocity", "Breadth (%)", "Avg Score", "On the Rise", "On the Fall"]].sort_values("Velocity", ascending=False),
                     use_container_width=True,
                     column_config={
                         "Velocity": st.column_config.NumberColumn("Momentum Vel", format="%.2f%%"),
@@ -125,6 +137,25 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
                     },
                     hide_index=True
                 )
+
+            # --- STRATEGY PICKS ---
+            st.subheader("🎯 Strategic Picks")
+            c1, c2 = st.columns(2)
+
+            momentum_picks = df[df['Strategy'] == "Momentum Pick"]
+            lt_picks = df[df['Strategy'] == "Long-Term Pick"]
+
+            with c1:
+                st.markdown(f"#### 🚀 Momentum Picks ({len(momentum_picks)})")
+                if not momentum_picks.empty:
+                    st.dataframe(momentum_picks[['Symbol', 'Price', 'RSI', 'Score', 'Actions']], use_container_width=True, hide_index=True,
+                                 column_config={"Actions": st.column_config.LinkColumn("Execute")})
+
+            with c2:
+                st.markdown(f"#### 💎 Long-Term Picks ({len(lt_picks)})")
+                if not lt_picks.empty:
+                    st.dataframe(lt_picks[['Symbol', 'Price', 'Dispersion_Alert', 'Score', 'Actions']], use_container_width=True, hide_index=True,
+                                 column_config={"Actions": st.column_config.LinkColumn("Execute")})
 
             # Log Logic
             target_table = get_table_name_from_universe(selected_universe)

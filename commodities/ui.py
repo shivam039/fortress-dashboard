@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from .logic import analyze_arbitrage
+from .logic import analyze_arbitrage, check_correlations
 from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
 
 def render(broker_choice="Zerodha"):
@@ -12,6 +12,7 @@ def render(broker_choice="Zerodha"):
 
     with st.spinner("Analyzing Global vs Local Markets..."):
         df = analyze_arbitrage()
+        correlations = check_correlations()
 
     if df.empty:
         st.warning("No market data available. Please check internet connection or try again later.")
@@ -111,3 +112,20 @@ def render(broker_choice="Zerodha"):
             *   **Positive Spread**: MCX is expensive -> **Short MCX**.
             *   **Negative Spread**: MCX is cheap -> **Long MCX**.
             """)
+
+    # --- CORRELATION INTELLIGENCE ---
+    st.markdown("---")
+    st.subheader("🔗 Sector Correlation Intelligence")
+    if correlations:
+        col_c1, col_c2 = st.columns(2)
+        for i, alert in enumerate(correlations):
+            target_col = col_c1 if i % 2 == 0 else col_c2
+            with target_col:
+                color = "red" if alert['Impact'] == "Negative" else "green"
+                icon = "📉" if alert['Impact'] == "Negative" else "📈"
+                st.markdown(f"#### {icon} {alert['Source']} {alert['Change']}")
+                st.write(f"**Impact:** :{color}[{alert['Impact']}] on **{alert['Sectors']}**")
+                st.caption(f"Thesis: {alert['Thesis']}")
+                st.markdown("---")
+    else:
+        st.info("No significant sector correlations detected based on commodity movements.")

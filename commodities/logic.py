@@ -148,3 +148,65 @@ def analyze_arbitrage():
         })
 
     return pd.DataFrame(results)
+
+def check_correlations(prices=None):
+    """
+    Checks for sector-wide impacts based on commodity prices.
+    Returns a list of warnings/alerts.
+    """
+    if prices is None:
+        prices = fetch_market_data()
+
+    alerts = []
+
+    # Crude Oil Impact
+    # Crude Up -> Paints Down (Raw material), Aviation Down (Fuel)
+    # Crude Down -> Paints Up, Aviation Up
+    crude_sym = COMMODITY_TICKERS.get("Crude Oil", {}).get("global")
+    if crude_sym:
+        # We need "Change" to determine direction. fetch_market_data only returns latest price.
+        # We need historical data to compute change.
+        try:
+             # Quick fetch for trend
+             hist = yf.Ticker(crude_sym).history(period="5d")
+             if len(hist) >= 2:
+                 pct_change = ((hist['Close'].iloc[-1] - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]) * 100
+
+                 if pct_change > 1.0:
+                     alerts.append({
+                         "Source": "Crude Oil",
+                         "Change": f"Diff +{pct_change:.1f}%",
+                         "Impact": "Negative",
+                         "Sectors": "Paints (ASIANPAINT, BERGEPAINT), Aviation (INDIGO)",
+                         "Thesis": "Rising input costs squeeze margins."
+                     })
+                 elif pct_change < -1.0:
+                     alerts.append({
+                         "Source": "Crude Oil",
+                         "Change": f"Diff {pct_change:.1f}%",
+                         "Impact": "Positive",
+                         "Sectors": "Paints, Aviation, Tyres",
+                         "Thesis": "Lower input costs boost margins."
+                     })
+        except: pass
+
+    # Gold Impact
+    # Gold Up -> Gold Loan Up (Collateral value), Jewelry mixed (Inventory gain vs Demand drop)
+    gold_sym = COMMODITY_TICKERS.get("Gold", {}).get("global")
+    if gold_sym:
+        try:
+             hist = yf.Ticker(gold_sym).history(period="5d")
+             if len(hist) >= 2:
+                 pct_change = ((hist['Close'].iloc[-1] - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]) * 100
+
+                 if pct_change > 0.5:
+                     alerts.append({
+                         "Source": "Gold",
+                         "Change": f"Diff +{pct_change:.1f}%",
+                         "Impact": "Positive",
+                         "Sectors": "Gold Loans (MUTHOOTFIN, MANAPPURAM)",
+                         "Thesis": "Higher collateral value reduces LTV risk."
+                     })
+        except: pass
+
+    return alerts
