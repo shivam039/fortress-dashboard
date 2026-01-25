@@ -82,28 +82,28 @@ NIFTY_SYMBOL = "^NSEI"
 COMMODITY_TICKERS = {
     "Gold": {
         "global": "GC=F",
-        "local": "GOLD.MC",
+        "local": None, # "GOLD.MC" Delisted/Expired
         "import_duty": 0.15,
         "unit": "10g",
         "conversion_factor": 10.0 / 31.1035 # Troy oz to 10g
     },
     "Crude Oil": {
         "global": "CL=F",
-        "local": "CRUDEOIL.MC",
+        "local": None, # "CRUDEOIL.MC" Delisted/Expired
         "import_duty": 0.00,
         "unit": "barrel",
         "conversion_factor": 1.0 # Barrel to Barrel
     },
     "Silver": {
         "global": "SI=F",
-        "local": "SILVER.MC",
+        "local": None, # "SILVER.MC" Delisted/Expired
         "import_duty": 0.15,
         "unit": "1kg",
         "conversion_factor": 1000.0 / 31.1035 # Troy oz to kg
     },
     "Natural Gas": {
         "global": "NG=F",
-        "local": "NATURALGAS.MC",
+        "local": None, # "NATURALGAS.MC" Delisted/Expired
         "import_duty": 0.00,
         "unit": "mmbtu",
         "conversion_factor": 1.0 # MMBtu to MMBtu
