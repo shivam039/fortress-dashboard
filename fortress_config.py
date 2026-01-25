@@ -77,3 +77,40 @@ SECTOR_MAP = {
 INDEX_BENCHMARKS = {"Nifty 50": "^NSEI", "Nifty Next 50": "^NIFTYJR", "Nifty Midcap 150": "^NSMIDCP"}
 
 NIFTY_SYMBOL = "^NSEI"
+
+# --- COMMODITIES INTELLIGENCE CONFIG ---
+COMMODITY_TICKERS = {
+    "Gold": {
+        "global": "GC=F",
+        "local": "GOLD.MC",
+        "import_duty": 0.15,
+        "unit": "10g",
+        "conversion_factor": 10.0 / 31.1035 # Troy oz to 10g
+    },
+    "Crude Oil": {
+        "global": "CL=F",
+        "local": "CRUDEOIL.MC",
+        "import_duty": 0.00,
+        "unit": "barrel",
+        "conversion_factor": 1.0 # Barrel to Barrel
+    },
+    "Silver": {
+        "global": "SI=F",
+        "local": "SILVER.MC",
+        "import_duty": 0.15,
+        "unit": "1kg",
+        "conversion_factor": 1000.0 / 31.1035 # Troy oz to kg
+    },
+    "Natural Gas": {
+        "global": "NG=F",
+        "local": "NATURALGAS.MC",
+        "import_duty": 0.00,
+        "unit": "mmbtu",
+        "conversion_factor": 1.0 # MMBtu to MMBtu
+    }
+}
+
+COMMODITY_CONSTANTS = {
+    "WAREHOUSING_COST_PCT_MONTHLY": 0.001, # 0.1% per month
+    "ARB_YIELD_THRESHOLD": 10.0 # 10% annualized
+}
