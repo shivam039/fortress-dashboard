@@ -105,6 +105,14 @@ def init_db():
                         status TEXT
                     )''')
 
+        # 8. Audit Logs
+        c.execute('''CREATE TABLE IF NOT EXISTS audit_logs (
+                        timestamp TEXT,
+                        action TEXT,
+                        universe TEXT,
+                        details TEXT
+                    )''')
+
         # Legacy Tables Support (Optional: keep them if needed or let them be)
         # c.execute('''CREATE TABLE IF NOT EXISTS scan_results ...''') # Old flat table
 

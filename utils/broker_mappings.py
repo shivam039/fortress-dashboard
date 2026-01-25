@@ -142,23 +142,43 @@ def generate_basket_html(legs, broker="Zerodha"):
         data.append(item)
 
     json_data = json.dumps(data)
+    safe_json = json_data.replace("'", "&apos;")
 
     if broker == "Zerodha":
+        # Kite Publisher JS Injection
         html = f"""
-        <form action="https://kite.zerodha.com/connect/basket" method="post" target="_blank">
-            <input type="hidden" name="api_key" value="fortress_v9" />
-            <input type="hidden" name="data" value='{json_data}' />
-            <button type="submit" style="background-color: #FF5722; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">
-                🚀 Execute via Zerodha Kite
-            </button>
-        </form>
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <script src="https://kite.trade/publisher.js?v=3"></script>
+        </head>
+        <body style="background-color: transparent; margin: 0; padding: 0;">
+            <kite-button href="#"
+                data-kite="fortress_v9"
+                data-action="basket"
+                data-data='{safe_json}'>
+            </kite-button>
+        </body>
+        </html>
         """
         return html
     else:
-        # Dhan Fallback
+        # Dhan Web Overlay / Deep Link Wrapper
         return f"""
-        <div style="padding: 10px; background: #222; color: #fff; border-radius: 5px;">
-            Dhan Basket API not configured. <br>
-            <a href="https://web.dhan.co/orders/basket" target="_blank" style="color: #4CAF50;">Open Dhan Basket Builder</a>
+        <div style="display: flex; align-items: center; justify-content: center;">
+            <a href="https://web.dhan.co/orders/basket" target="_blank" style="text-decoration: none;">
+                <button style="
+                    background-color: #4CAF50;
+                    color: white;
+                    padding: 10px 20px;
+                    border: none;
+                    border-radius: 5px;
+                    cursor: pointer;
+                    font-weight: bold;
+                    font-family: sans-serif;
+                    font-size: 14px;">
+                    🚀 Execute via Dhan Web
+                </button>
+            </a>
         </div>
         """
