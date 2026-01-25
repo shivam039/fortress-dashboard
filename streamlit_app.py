@@ -1,4 +1,4 @@
-# streamlit_app.py - v9.4 MASTER TERMINAL (Dynamic Columns + Heatmap Safety)
+# streamlit_app.py - v9.6 MASTER TERMINAL
 import time, sqlite3
 from datetime import datetime
 import streamlit as st
@@ -17,7 +17,6 @@ except ImportError:
     st.stop()
 
 # ---------------- MODULE IMPORTS ----------------
-# Import modules after config check because stock_scanner depends on fortress_config
 from utils.db import (
     init_db, log_audit, get_table_name_from_universe,
     fetch_timestamps, fetch_history_data, fetch_symbol_history
@@ -30,30 +29,52 @@ import options_algo.ui
 # Initialize Database
 init_db()
 
-# ---------------- UI ----------------
+# ---------------- UI CONFIG ----------------
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
-st.title("🛡️ Fortress 95 Pro v9.4 — Dynamic Columns Terminal")
+st.title("🛡️ Fortress 95 Pro v9.6 — Institutional Terminal")
 
-# Sidebar - Stock Scanner Controls
-# Delegating sidebar rendering to stock_scanner.ui
-portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice = stock_scanner.ui.render_sidebar()
+# ---------------- NAVIGATION ----------------
+st.sidebar.title("Navigation")
+nav_options = [
+    "🚀 Live Scanner",
+    "🛡️ MF Consistency Lab",
+    "🌍 Commodities Terminal",
+    "🤖 Options Algos",
+    "📜 Scan History"
+]
+selected_view = st.sidebar.radio("Select Module", nav_options)
+st.sidebar.markdown("---")
 
-# ---------------- TABS ----------------
-tab_scan, tab_mf, tab_comm, tab_algo, tab_hist = st.tabs(["🚀 Live Scanner", "🛡️ MF Consistency Lab", "🌍 Commodities Terminal", "🤖 Options Algos", "📜 Scan History Intelligence"])
+# ---------------- MODULE ROUTING ----------------
 
-with tab_scan:
+if selected_view == "🚀 Live Scanner":
+    # Sidebar: Stock Scanner Specifics
+    # We call the scanner's sidebar renderer here
+    portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice = stock_scanner.ui.render_sidebar()
+
+    # Main Content
     stock_scanner.ui.render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice)
 
-with tab_mf:
+elif selected_view == "🛡️ MF Consistency Lab":
+    # Sidebar handled internally by mf_lab.ui.render() (Asset Class, View Mode, Admin Tools)
+    # They are wrapped in st.sidebar context in the module
     mf_lab.ui.render()
 
-with tab_comm:
+elif selected_view == "🌍 Commodities Terminal":
+    # Sidebar: Broker Choice for Execution
+    st.sidebar.subheader("Execution Settings")
+    broker_choice = st.sidebar.selectbox("Preferred Broker", ["Zerodha", "Dhan"], key="comm_broker")
+
     commodities.ui.render(broker_choice)
 
-with tab_algo:
+elif selected_view == "🤖 Options Algos":
+    # Sidebar: Broker Choice
+    st.sidebar.subheader("Execution Settings")
+    broker_choice = st.sidebar.selectbox("Preferred Broker", ["Zerodha", "Dhan"], key="algo_broker")
+
     options_algo.ui.render(broker_choice)
 
-with tab_hist:
+elif selected_view == "📜 Scan History":
     st.subheader("📜 Scan History Intelligence")
 
     # 1. Setup & Controls
