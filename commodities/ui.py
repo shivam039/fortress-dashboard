@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+from datetime import datetime
 from commodities.logic import analyze_arbitrage, check_correlations
 from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
 
@@ -7,6 +8,7 @@ def render(broker_choice="Zerodha"):
     # Defer imports to prevent startup crashes
     from commodities.logic import analyze_arbitrage, check_correlations
     from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
+    from utils.db import register_scan, save_scan_results
 
     st.header("🌍 Commodities Intelligence Terminal")
     st.caption("Global-to-Local Arbitrage • Cash-and-Carry Analysis • Parity Audits")
@@ -21,6 +23,18 @@ def render(broker_choice="Zerodha"):
     if df.empty:
         st.warning("No market data available. Please check internet connection or try again later.")
         return
+
+    # Log Results
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        scan_id = register_scan(timestamp, universe="Global Commodities", scan_type="COMMODITY", status="Completed")
+        save_scan_results(scan_id, df)
+
+        if correlations:
+            corr_df = pd.DataFrame(correlations)
+            save_scan_results(scan_id, corr_df)
+    except Exception as e:
+        print(f"Commodity logging error: {e}")
 
     # --- TOP METRICS ---
     # Identify best opportunity

@@ -10,7 +10,7 @@ from datetime import datetime
 from fortress_config import TICKER_GROUPS, INDEX_BENCHMARKS
 from .logic import check_institutional_fortress
 from .config import ALL_COLUMNS
-from utils.db import log_audit, get_table_name_from_universe, log_scan_results, fetch_timestamps, fetch_history_data, fetch_symbol_history
+from utils.db import log_audit, get_table_name_from_universe, log_scan_results, fetch_timestamps, fetch_history_data, fetch_symbol_history, register_scan, save_scan_results, update_scan_status
 from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
 
 def generate_action_link(row, broker_choice):
@@ -208,15 +208,18 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
                                  })
 
             # Log Logic
-            target_table = get_table_name_from_universe(selected_universe)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            scan_id = register_scan(timestamp, universe=selected_universe, scan_type="STOCK", status="Completed")
+
             df['Universe'] = selected_universe # Add metadata
-            log_scan_results(df, target_table)
+            save_scan_results(scan_id, df)
+
             # Clear cache after new scan so history tab updates
             fetch_timestamps.clear()
             fetch_history_data.clear()
             fetch_symbol_history.clear()
 
-            log_audit("Scan Completed", selected_universe, f"Saved {len(df)} records to {target_table}")
+            log_audit("Scan Completed", selected_universe, f"Saved {len(df)} records to unified history (ID: {scan_id})")
 
             # Ensure 'Actions' is available in display if selected
             # Note: selected_columns might contain 'Actions', so we ensure it exists in df (done above)
