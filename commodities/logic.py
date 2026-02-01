@@ -117,9 +117,12 @@ def analyze_arbitrage():
         p_glob = prices.get(glob_sym, 0.0)
         p_loc = prices.get(loc_sym, 0.0)
 
-        # Skip if missing data
-        if pd.isna(p_glob) or pd.isna(p_loc) or p_glob == 0 or p_loc == 0:
+        # Skip if global price is missing (we need global at minimum)
+        if pd.isna(p_glob) or p_glob == 0:
             continue
+
+        # Determine if we have local data
+        has_local = not (pd.isna(p_loc) or p_loc == 0)
 
         # --- PARITY CALCULATION ---
         # Formula: (Global * USDINR * Conversion * (1 + Duty)) + Warehousing
@@ -137,39 +140,47 @@ def analyze_arbitrage():
         # Total Parity Price
         parity_price = base_parity_inr + duty_amt + warehousing_amt
 
-        # Spread (Local - Parity)
-        spread = p_loc - parity_price
+        if has_local:
+            # Spread (Local - Parity)
+            spread = p_loc - parity_price
 
-        # Annualized Yield % (Theoretical)
-        # Yield = (Spread / Parity) * 100
-        # If we assume this gap closes or is captured.
-        # User asked for "Gross Arbitrage Yield %".
-        arb_yield = (spread / parity_price) * 100
+            # Annualized Yield % (Theoretical)
+            # Yield = (Spread / Parity) * 100
+            # If we assume this gap closes or is captured.
+            # User asked for "Gross Arbitrage Yield %".
+            arb_yield = (spread / parity_price) * 100
 
-        # --- ACTION LOGIC ---
-        action = "WAIT"
-        threshold = COMMODITY_CONSTANTS.get("ARB_YIELD_THRESHOLD", 10.0)
+            # --- ACTION LOGIC ---
+            action = "WAIT"
+            threshold = COMMODITY_CONSTANTS.get("ARB_YIELD_THRESHOLD", 10.0)
 
-        # Note: Yield here is flat %. Annualized would depend on duration.
-        # User asked for "Gross Arbitrage Yield %" without explicit time factor in formula prompt,
-        # but threshold is >10% annualized.
-        # If this is a spot-future arb, the spread is for the duration.
-        # Assuming near month (approx 30 days).
-        # Annualized = Flat * (365/30) ~ Flat * 12.
-        # Let's display Flat Yield and maybe check threshold against Annualized?
-        # "Validation: Only enable execution... if Gross Arbitrage Yield % exceeds threshold... (e.g. >10% annualized)"
-        # I'll calculate annualized for the check.
+            # Note: Yield here is flat %. Annualized would depend on duration.
+            # User asked for "Gross Arbitrage Yield %" without explicit time factor in formula prompt,
+            # but threshold is >10% annualized.
+            # If this is a spot-future arb, the spread is for the duration.
+            # Assuming near month (approx 30 days).
+            # Annualized = Flat * (365/30) ~ Flat * 12.
+            # Let's display Flat Yield and maybe check threshold against Annualized?
+            # "Validation: Only enable execution... if Gross Arbitrage Yield % exceeds threshold... (e.g. >10% annualized)"
+            # I'll calculate annualized for the check.
 
-        annualized_yield = arb_yield * 12 # approx
+            annualized_yield = arb_yield * 12 # approx
 
-        trade_type = ""
+            trade_type = ""
 
-        if annualized_yield > threshold:
-            action = "🔥 SHORT MCX / LONG GLOBAL"
-            trade_type = "SELL" # We Sell the expensive Local
-        elif annualized_yield < -threshold:
-             action = "❄️ LONG MCX / SHORT GLOBAL"
-             trade_type = "BUY" # We Buy the cheap Local
+            if annualized_yield > threshold:
+                action = "🔥 SHORT MCX / LONG GLOBAL"
+                trade_type = "SELL" # We Sell the expensive Local
+            elif annualized_yield < -threshold:
+                action = "❄️ LONG MCX / SHORT GLOBAL"
+                trade_type = "BUY" # We Buy the cheap Local
+        else:
+            spread = None
+            arb_yield = None
+            annualized_yield = None
+            action = "DATA ONLY" # Or MCX OFFLINE
+            trade_type = ""
+            p_loc = None # Ensure it's None if it was 0
 
         results.append({
             "Commodity": name,
@@ -210,7 +221,7 @@ def check_correlations(prices=None):
         # We need historical data to compute change.
         try:
              # Quick fetch for trend
-             hist = yf.Ticker(crude_sym).history(period="5d")
+             hist = yf.Ticker(crude_sym).history(period="5d", timeout=10)
              if len(hist) >= 2:
                  pct_change = ((hist['Close'].iloc[-1] - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]) * 100
 
@@ -237,7 +248,7 @@ def check_correlations(prices=None):
     gold_sym = COMMODITY_SPECS.get("Gold", {}).get("global")
     if gold_sym:
         try:
-             hist = yf.Ticker(gold_sym).history(period="5d")
+             hist = yf.Ticker(gold_sym).history(period="5d", timeout=10)
              if len(hist) >= 2:
                  pct_change = ((hist['Close'].iloc[-1] - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]) * 100
 

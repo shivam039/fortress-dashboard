@@ -18,104 +18,120 @@ def render(broker_choice="Zerodha"):
         df = analyze_arbitrage()
         correlations = check_correlations()
 
-    if df.empty:
-        st.warning("No market data available. Please check internet connection or try again later.")
-        return
+    if not df.empty:
+        # --- TOP METRICS ---
+        # Identify best opportunity
+        df['Abs_Yield'] = df['Ann. Yield (%)'].abs()
 
-    # --- TOP METRICS ---
-    # Identify best opportunity
-    df['Abs_Yield'] = df['Ann. Yield (%)'].abs()
-    best_opp = df.loc[df['Abs_Yield'].idxmax()] if not df.empty else None
+        # Check if we have valid yield data
+        has_yields = df['Ann. Yield (%)'].notna().any()
 
-    m1, m2, m3, m4 = st.columns(4)
-    if best_opp is not None:
-        m1.metric("Top Opportunity", best_opp['Commodity'], f"{best_opp['Ann. Yield (%)']:.1f}% Ann.")
-        m2.metric("Spread Gap", f"₹ {best_opp['Spread (₹)']:,.0f}", best_opp['Action'])
-
-    avg_yield = df['Ann. Yield (%)'].mean()
-    m3.metric("Avg Market Yield", f"{avg_yield:.1f}%")
-    m4.metric("USD/INR", f"₹ {df['USD/INR'].iloc[0]:.2f}" if not df.empty else "N/A")
-
-    # --- MAIN TABLE ---
-    st.subheader("🌐 Global-to-Local Arbitrage Table")
-
-    # Generate Execution Links
-    def get_link(row):
-        # Only generating link if Action is valid (Trade Type exists)
-        if not row['Trade_Type']:
-            return None
-
-        qty = 1 # Default Lot
-        symbol = row['Symbol (Local)']
-        t_type = row['Trade_Type'] # BUY or SELL
-
-        # Note: Shorting on Dhan/Zerodha via basket is standard.
-        # But 'SELL' transaction type in basket works.
-
-        if broker_choice == "Zerodha":
-            return generate_zerodha_url(symbol, qty, transaction_type=t_type)
+        if has_yields:
+            best_opp = df.loc[df['Abs_Yield'].idxmax()]
         else:
-            return generate_dhan_url(symbol, qty, transaction_type=t_type)
+            best_opp = None
 
-    df['Execute'] = df.apply(get_link, axis=1)
+        m1, m2, m3, m4 = st.columns(4)
+        if best_opp is not None:
+            m1.metric("Top Opportunity", best_opp['Commodity'], f"{best_opp['Ann. Yield (%)']:.1f}% Ann.")
+            m2.metric("Spread Gap", f"₹ {best_opp['Spread (₹)']:,.0f}", best_opp['Action'])
+        else:
+            m1.metric("Top Opportunity", "Global Data Only", "MCX Offline")
+            m2.metric("Spread Gap", "N/A", "See Parity")
 
-    # Display Configuration
-    display_cols = [
-        'Commodity', 'Symbol (Local)', 'Global Price ($)', 'Parity Price (₹)',
-        'MCX Price (₹)', 'Spread (₹)', 'Yield (%)', 'Ann. Yield (%)',
-        'Action', 'Execute'
-    ]
+        if has_yields:
+            avg_yield = df['Ann. Yield (%)'].mean()
+            m3.metric("Avg Market Yield", f"{avg_yield:.1f}%")
+        else:
+             m3.metric("Avg Market Yield", "N/A")
 
-    st.dataframe(
-        df[display_cols],
-        use_container_width=True,
-        column_config={
-            "Global Price ($)": st.column_config.NumberColumn(format="$%.2f"),
-            "Parity Price (₹)": st.column_config.NumberColumn(format="₹%.2f"),
-            "MCX Price (₹)": st.column_config.NumberColumn(format="₹%.2f"),
-            "Spread (₹)": st.column_config.NumberColumn(format="₹%.2f"),
-            "Yield (%)": st.column_config.NumberColumn(format="%.2f%%"),
-            "Ann. Yield (%)": st.column_config.NumberColumn(format="%.2f%%", help="Annualized Yield based on 1-month duration assumption"),
-            "Execute": st.column_config.LinkColumn("⚡ Trade", display_text="Execute")
-        },
-        hide_index=True
-    )
+        m4.metric("USD/INR", f"₹ {df['USD/INR'].iloc[0]:.2f}")
 
-    # --- DETAILS SECTION ---
-    st.markdown("---")
-    c1, c2 = st.columns(2)
+        # --- MAIN TABLE ---
+        if not has_yields:
+            st.subheader("🌍 Global Commodity Trends")
+        else:
+            st.subheader("🌐 Global-to-Local Arbitrage Table")
 
-    with c1:
-        st.subheader("📊 Yield & Cost Breakdown")
-        st.info("Calculations include Import Duties, Conversion Factors, and Warehousing Costs.")
-        # Show breakdown for selected row? Or just table.
-        # Let's show the breakdown table (hidden cols from main)
-        breakdown_cols = ['Commodity', 'Duty Paid', 'Warehousing']
+        # Generate Execution Links
+        def get_link(row):
+            # Only generating link if Action is valid (Trade Type exists)
+            if not row['Trade_Type']:
+                return None
+
+            qty = 1 # Default Lot
+            symbol = row['Symbol (Local)']
+            t_type = row['Trade_Type'] # BUY or SELL
+
+            # Note: Shorting on Dhan/Zerodha via basket is standard.
+            # But 'SELL' transaction type in basket works.
+
+            if broker_choice == "Zerodha":
+                return generate_zerodha_url(symbol, qty, transaction_type=t_type)
+            else:
+                return generate_dhan_url(symbol, qty, transaction_type=t_type)
+
+        df['Execute'] = df.apply(get_link, axis=1)
+
+        # Display Configuration
+        display_cols = [
+            'Commodity', 'Symbol (Local)', 'Global Price ($)', 'Parity Price (₹)',
+            'MCX Price (₹)', 'Spread (₹)', 'Yield (%)', 'Ann. Yield (%)',
+            'Action', 'Execute'
+        ]
+
         st.dataframe(
-            df[breakdown_cols],
+            df[display_cols],
             use_container_width=True,
             column_config={
-                "Duty Paid": st.column_config.NumberColumn(format="₹%.2f"),
-                "Warehousing": st.column_config.NumberColumn(format="₹%.2f")
+                "Global Price ($)": st.column_config.NumberColumn(format="$%.2f"),
+                "Parity Price (₹)": st.column_config.NumberColumn(format="₹%.2f"),
+                "MCX Price (₹)": st.column_config.NumberColumn(format="₹%.2f"),
+                "Spread (₹)": st.column_config.NumberColumn(format="₹%.2f"),
+                "Yield (%)": st.column_config.NumberColumn(format="%.2f%%"),
+                "Ann. Yield (%)": st.column_config.NumberColumn(format="%.2f%%", help="Annualized Yield based on 1-month duration assumption"),
+                "Execute": st.column_config.LinkColumn("⚡ Trade", display_text="Execute")
             },
             hide_index=True
         )
 
-    with c2:
-        st.subheader("📦 Cash-and-Carry Intelligence")
-        st.caption("Spot vs Future Spread Analysis")
-        # Placeholder logic for now as 'Next Month' tickers are hard to generalize dynamically
-        st.warning("⚠️ Live Cash-and-Carry data requires specific expiry contract selection.")
-        st.write("Current logic optimizes for Global-to-Local Parity gaps.")
+        # --- DETAILS SECTION ---
+        st.markdown("---")
+        c1, c2 = st.columns(2)
 
-        # Educational Text
-        with st.expander("How to read this?"):
-            st.markdown("""
-            *   **Parity Price**: Theoretical fair value of MCX contract based on Global Spot + Duties + Costs.
-            *   **Spread**: Difference between Actual MCX Price and Parity.
-            *   **Positive Spread**: MCX is expensive -> **Short MCX**.
-            *   **Negative Spread**: MCX is cheap -> **Long MCX**.
-            """)
+        with c1:
+            st.subheader("📊 Yield & Cost Breakdown")
+            st.info("Calculations include Import Duties, Conversion Factors, and Warehousing Costs.")
+            # Show breakdown for selected row? Or just table.
+            # Let's show the breakdown table (hidden cols from main)
+            breakdown_cols = ['Commodity', 'Duty Paid', 'Warehousing']
+            st.dataframe(
+                df[breakdown_cols],
+                use_container_width=True,
+                column_config={
+                    "Duty Paid": st.column_config.NumberColumn(format="₹%.2f"),
+                    "Warehousing": st.column_config.NumberColumn(format="₹%.2f")
+                },
+                hide_index=True
+            )
+
+        with c2:
+            st.subheader("📦 Cash-and-Carry Intelligence")
+            st.caption("Spot vs Future Spread Analysis")
+            # Placeholder logic for now as 'Next Month' tickers are hard to generalize dynamically
+            st.warning("⚠️ Live Cash-and-Carry data requires specific expiry contract selection.")
+            st.write("Current logic optimizes for Global-to-Local Parity gaps.")
+
+            # Educational Text
+            with st.expander("How to read this?"):
+                st.markdown("""
+                *   **Parity Price**: Theoretical fair value of MCX contract based on Global Spot + Duties + Costs.
+                *   **Spread**: Difference between Actual MCX Price and Parity.
+                *   **Positive Spread**: MCX is expensive -> **Short MCX**.
+                *   **Negative Spread**: MCX is cheap -> **Long MCX**.
+                """)
+    else:
+         st.warning("No market data available. Please check internet connection or try again later.")
 
     # --- CORRELATION INTELLIGENCE ---
     st.markdown("---")
