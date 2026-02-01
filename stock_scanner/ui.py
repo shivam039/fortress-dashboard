@@ -13,6 +13,32 @@ from .config import ALL_COLUMNS
 from utils.db import log_audit, get_table_name_from_universe, log_scan_results, fetch_timestamps, fetch_history_data, fetch_symbol_history
 from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
 
+def generate_action_link(row, broker_choice):
+    qty = row.get("Position_Qty", 0)
+    symbol = row["Symbol"]
+    price = row.get("Price", 0)
+
+    if broker_choice == "Zerodha":
+        return generate_zerodha_url(symbol, qty)
+    else:
+        return generate_dhan_url(symbol, qty, price)
+
+def get_column_config(display_cols, broker_choice):
+    st_column_config = {}
+    for col in display_cols:
+        cfg = ALL_COLUMNS.get(col, {})
+        fmt = cfg.get("format")
+        if col == "Actions":
+            label = f"⚡ Trade ({broker_choice})"
+            st_column_config[col] = st.column_config.LinkColumn(label, display_text="⚡ Trade")
+        elif cfg.get("type")=="progress":
+            st_column_config[col] = st.column_config.ProgressColumn(cfg["label"],min_value=cfg["min"],max_value=cfg["max"])
+        elif fmt:
+            st_column_config[col] = st.column_config.NumberColumn(cfg["label"],format=fmt)
+        else:
+            st_column_config[col] = st.column_config.TextColumn(cfg.get("label", col))
+    return st_column_config
+
 def render_sidebar():
     st.sidebar.title("💰 Portfolio & Risk")
     portfolio_val = st.sidebar.number_input("Portfolio Value (₹)", value=1000000, step=50000)
@@ -31,6 +57,36 @@ def render_sidebar():
     return portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice
 
 def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice):
+    # ---------------- SEARCH FEATURE ----------------
+    search_symbol = st.text_input("🔍 Search Stock (Symbol)", placeholder="e.g., RELIANCE.NS")
+    if search_symbol:
+        search_symbol = search_symbol.upper().strip()
+        if "." not in search_symbol:
+            search_symbol += ".NS"
+
+        try:
+            with st.spinner(f"Analyzing {search_symbol}..."):
+                search_tkr = yf.Ticker(search_symbol)
+                search_hist = yf.download(search_symbol, period="2y", progress=False)
+
+            if not search_hist.empty:
+                search_res = check_institutional_fortress(search_symbol, search_hist, search_tkr, portfolio_val, risk_pct)
+                if search_res:
+                    search_df = pd.DataFrame([search_res])
+                    search_df["Actions"] = search_df.apply(lambda row: generate_action_link(row, broker_choice), axis=1)
+
+                    # Show columns based on sidebar selection
+                    search_cols = [c for c in selected_columns if c in search_df.columns]
+                    search_config = get_column_config(search_cols, broker_choice)
+
+                    st.dataframe(search_df[search_cols], use_container_width=True, hide_index=True, column_config=search_config)
+                else:
+                    st.warning(f"Insufficient data or analysis failed for {search_symbol} (Need >210 candles).")
+            else:
+                st.error(f"No data found for {search_symbol}. Check ticker symbol.")
+        except Exception as e:
+            st.error(f"Search Error: {str(e)}")
+
     # ---------------- MARKET PULSE ----------------
     st.subheader("🌐 Market Pulse")
     pulse_cols = st.columns(len(INDEX_BENCHMARKS))
@@ -71,17 +127,7 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
 
             # --- GENERATE ACTIONS COLUMN ---
             # Universal Action Links: Enabled for all scan results (No Verdict Gate)
-            def generate_action_link(row):
-                qty = row.get("Position_Qty", 0)
-                symbol = row["Symbol"]
-                price = row.get("Price", 0)
-
-                if broker_choice == "Zerodha":
-                    return generate_zerodha_url(symbol, qty)
-                else:
-                    return generate_dhan_url(symbol, qty, price)
-
-            df["Actions"] = df.apply(generate_action_link, axis=1)
+            df["Actions"] = df.apply(lambda row: generate_action_link(row, broker_choice), axis=1)
 
             # --- SECTOR INTELLIGENCE TERMINAL ---
             st.subheader("🔥 Sector Intelligence & Rotation")
@@ -146,14 +192,20 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
             with c1:
                 st.markdown(f"#### 🚀 Momentum Picks ({len(momentum_picks)})")
                 if not momentum_picks.empty:
-                    st.dataframe(momentum_picks[['Symbol', 'Price', 'RSI', 'Score', 'Actions']], use_container_width=True, hide_index=True,
-                                 column_config={"Actions": st.column_config.LinkColumn("Execute")})
+                    st.dataframe(momentum_picks[['Symbol', 'Price', 'RSI', 'Target_10D', 'Score', 'Actions']], use_container_width=True, hide_index=True,
+                                 column_config={
+                                     "Actions": st.column_config.LinkColumn("Execute"),
+                                     "Target_10D": st.column_config.NumberColumn("10D Target", format="₹%.2f")
+                                 })
 
             with c2:
                 st.markdown(f"#### 💎 Long-Term Picks ({len(lt_picks)})")
                 if not lt_picks.empty:
-                    st.dataframe(lt_picks[['Symbol', 'Price', 'Dispersion_Alert', 'Score', 'Actions']], use_container_width=True, hide_index=True,
-                                 column_config={"Actions": st.column_config.LinkColumn("Execute")})
+                    st.dataframe(lt_picks[['Symbol', 'Price', 'Target_10D', 'Dispersion_Alert', 'Score', 'Actions']], use_container_width=True, hide_index=True,
+                                 column_config={
+                                     "Actions": st.column_config.LinkColumn("Execute"),
+                                     "Target_10D": st.column_config.NumberColumn("10D Target", format="₹%.2f")
+                                 })
 
             # Log Logic
             target_table = get_table_name_from_universe(selected_universe)
@@ -171,19 +223,7 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
             display_cols = [c for c in selected_columns if c in df.columns]
             display_df = df[display_cols]
 
-            st_column_config = {}
-            for col in display_cols:
-                cfg = ALL_COLUMNS.get(col, {})
-                fmt = cfg.get("format")
-                if col == "Actions":
-                    label = f"⚡ Trade ({broker_choice})"
-                    st_column_config[col] = st.column_config.LinkColumn(label, display_text="⚡ Trade")
-                elif cfg.get("type")=="progress":
-                    st_column_config[col] = st.column_config.ProgressColumn(cfg["label"],min_value=cfg["min"],max_value=cfg["max"])
-                elif fmt:
-                    st_column_config[col] = st.column_config.NumberColumn(cfg["label"],format=fmt)
-                else:
-                    st_column_config[col] = st.column_config.TextColumn(cfg.get("label", col))
+            st_column_config = get_column_config(display_cols, broker_choice)
 
             st.dataframe(display_df,use_container_width=True,height=600,column_config=st_column_config)
 
