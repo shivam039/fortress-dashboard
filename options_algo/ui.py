@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import json
+from datetime import datetime
 
 TICKER_MAP = {
     "NIFTY": "^NSEI",
@@ -16,7 +17,7 @@ def render(broker_choice="Zerodha"):
     from options_algo.templates import STRATEGY_TEMPLATES
     from options_algo.logic import resolve_strategy_legs, check_synthetic_future_arb, fetch_option_chain
     from utils.broker_mappings import generate_zerodha_url, generate_dhan_url, generate_basket_html
-    from utils.db import log_algo_trade, fetch_active_trades, close_all_trades
+    from utils.db import log_algo_trade, fetch_active_trades, close_all_trades, register_scan, save_scan_results
 
     st.header("🤖 Options Algo Terminal")
     st.caption("Institutional Strategies • Live Greeks • Basket Execution")
@@ -51,6 +52,25 @@ def render(broker_choice="Zerodha"):
                     st.session_state['algo_spot'] = spot
                     st.session_state['algo_strategy'] = strategy_name
                     st.session_state['algo_symbol'] = symbol
+
+                    # Automated Logging
+                    try:
+                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        scan_id = register_scan(timestamp, universe=symbol, scan_type="OPTIONS", status="Completed")
+
+                        # Prepare DF for logging
+                        log_df = pd.DataFrame(legs)
+                        # Flatten Greeks
+                        if 'greeks' in log_df.columns:
+                            greeks_df = log_df['greeks'].apply(pd.Series)
+                            log_df = pd.concat([log_df.drop(['greeks'], axis=1), greeks_df], axis=1)
+
+                        log_df['Strategy'] = strategy_name
+                        log_df['Spot'] = spot
+
+                        save_scan_results(scan_id, log_df)
+                    except Exception as e:
+                        print(f"Auto-logging error: {e}")
 
         # Display Results if Available
         if 'algo_legs' in st.session_state:
