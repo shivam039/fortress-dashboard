@@ -6,24 +6,36 @@ import os
 import importlib
 
 # Ensure root is in path for config import
-if os.getcwd() not in sys.path:
-    sys.path.append(os.getcwd())
+# This handles the case where the script is run directly from the 'commodities' directory
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
 
 try:
     import fortress_config
     COMMODITY_TICKERS = fortress_config.COMMODITY_TICKERS
+    COMMODITY_SPECS = fortress_config.COMMODITY_SPECS
     COMMODITY_CONSTANTS = fortress_config.COMMODITY_CONSTANTS
 except (ImportError, AttributeError):
-    # Try reloading, maybe it was a stale module or partial load
     try:
-        importlib.reload(fortress_config)
+        # Fallback to relative import if running as a package
+        from .. import fortress_config
         COMMODITY_TICKERS = fortress_config.COMMODITY_TICKERS
+        COMMODITY_SPECS = fortress_config.COMMODITY_SPECS
         COMMODITY_CONSTANTS = fortress_config.COMMODITY_CONSTANTS
-    except Exception as e:
-        # Fallback/Debug
-        COMMODITY_TICKERS = {}
-        COMMODITY_CONSTANTS = {"WAREHOUSING_COST_PCT_MONTHLY": 0.001, "ARB_YIELD_THRESHOLD": 10.0}
-        print(f"Error importing fortress_config (Reload failed: {e}). Using empty defaults.")
+    except (ImportError, ValueError):
+        # Final fallback if both fail (e.g., config missing or bad path)
+        print("Error importing fortress_config. Using empty defaults.")
+        COMMODITY_TICKERS = []
+        COMMODITY_SPECS = {}
+        COMMODITY_CONSTANTS = {
+            "WAREHOUSING_COST_PCT_MONTHLY": 0.001,
+            "ARB_YIELD_THRESHOLD": 10.0,
+            "DEFAULT_WINDOW": 20,
+            "CORRELATION_THRESHOLD": 0.8,
+            "VOLATILITY_LOOKBACK": 14
+        }
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +48,16 @@ def fetch_market_data():
     # Add Currency
     tickers.append("INR=X")
 
-    # Add Commodities
-    for name, cfg in COMMODITY_TICKERS.items():
-        if cfg.get('global'): tickers.append(cfg['global'])
-        if cfg.get('local'): tickers.append(cfg['local'])
+    # Add Commodities from simple list
+    tickers.extend(COMMODITY_TICKERS)
+
+    # Add Commodities from specs if not in list (for local tickers which might not be in the global list)
+    for name, cfg in COMMODITY_SPECS.items():
+        if cfg.get('local') and cfg['local'] not in tickers:
+            tickers.append(cfg['local'])
+        # Ensure global from specs is also included if missing from list
+        if cfg.get('global') and cfg['global'] not in tickers:
+             tickers.append(cfg['global'])
 
     # Deduplicate and filter empty/None
     tickers = list(set([t for t in tickers if t]))
@@ -91,7 +109,8 @@ def analyze_arbitrage():
 
     results = []
 
-    for name, cfg in COMMODITY_TICKERS.items():
+    # Iterate over COMMODITY_SPECS for arbitrage details
+    for name, cfg in COMMODITY_SPECS.items():
         glob_sym = cfg['global']
         loc_sym = cfg['local']
 
@@ -184,7 +203,8 @@ def check_correlations(prices=None):
     # Crude Oil Impact
     # Crude Up -> Paints Down (Raw material), Aviation Down (Fuel)
     # Crude Down -> Paints Up, Aviation Up
-    crude_sym = COMMODITY_TICKERS.get("Crude Oil", {}).get("global")
+    # Use COMMODITY_SPECS to lookup Crude ticker
+    crude_sym = COMMODITY_SPECS.get("Crude Oil", {}).get("global")
     if crude_sym:
         # We need "Change" to determine direction. fetch_market_data only returns latest price.
         # We need historical data to compute change.
@@ -214,7 +234,7 @@ def check_correlations(prices=None):
 
     # Gold Impact
     # Gold Up -> Gold Loan Up (Collateral value), Jewelry mixed (Inventory gain vs Demand drop)
-    gold_sym = COMMODITY_TICKERS.get("Gold", {}).get("global")
+    gold_sym = COMMODITY_SPECS.get("Gold", {}).get("global")
     if gold_sym:
         try:
              hist = yf.Ticker(gold_sym).history(period="5d")

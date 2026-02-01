@@ -80,7 +80,9 @@ INDEX_BENCHMARKS = {"Nifty 50": "^NSEI", "Nifty Next 50": "^CNX100", "Nifty Midc
 NIFTY_SYMBOL = "^NSEI"
 
 # --- COMMODITIES INTELLIGENCE CONFIG ---
-COMMODITY_TICKERS = {
+COMMODITY_TICKERS = ['GC=F', 'SI=F', 'CL=F', 'NG=F', 'HG=F']
+
+COMMODITY_SPECS = {
     "Gold": {
         "global": "GC=F",
         "local": None, # "GOLD.MC" Delisted/Expired
@@ -113,5 +115,8 @@ COMMODITY_TICKERS = {
 
 COMMODITY_CONSTANTS = {
     "WAREHOUSING_COST_PCT_MONTHLY": 0.001, # 0.1% per month
-    "ARB_YIELD_THRESHOLD": 10.0 # 10% annualized
+    "ARB_YIELD_THRESHOLD": 10.0, # 10% annualized
+    "DEFAULT_WINDOW": 20,
+    "CORRELATION_THRESHOLD": 0.8,
+    "VOLATILITY_LOOKBACK": 14
 }
