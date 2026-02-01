@@ -49,18 +49,39 @@ def calculate_greeks(S, K, T, r, sigma, option_type="CE"):
         "Vega": round(vega, 3)
     }
 
-def fetch_option_chain(symbol, expiry_index=0):
+def get_available_expiries(symbol):
+    """Fetches available expiry dates for a symbol."""
+    try:
+        tkr = yf.Ticker(symbol)
+        # Check if options is empty or raises error
+        exps = tkr.options
+        if not exps:
+            return []
+        return list(exps)
+    except Exception as e:
+        print(f"Error fetching expirations for {symbol}: {e}")
+        return []
+
+def fetch_option_chain(symbol, expiry_date_str=None):
     try:
         tkr = yf.Ticker(symbol)
         expirations = tkr.options
         if not expirations:
             return None, None, 0
 
-        expiry_date_str = expirations[expiry_index] if len(expirations) > expiry_index else expirations[0]
-        chain = tkr.option_chain(expiry_date_str)
+        # Use provided expiry or default to first
+        target_expiry = expiry_date_str
+        if not target_expiry or target_expiry not in expirations:
+            target_expiry = expirations[0]
+
+        try:
+            chain = tkr.option_chain(target_expiry)
+        except Exception as e:
+            print(f"Error fetching chain for {target_expiry}: {e}")
+            return None, None, 0
 
         # Calculate T (Time to Expiry)
-        expiry_date = datetime.strptime(expiry_date_str, "%Y-%m-%d")
+        expiry_date = datetime.strptime(target_expiry, "%Y-%m-%d")
         now = datetime.now()
         T = (expiry_date - now).days / 365.0
         if T < 0.002: T = 0.002 # Min 1 day
@@ -80,9 +101,9 @@ def fetch_option_chain(symbol, expiry_index=0):
         print(f"Error fetching options: {e}")
         return None, None, 0
 
-def resolve_strategy_legs(template, symbol, expiry_idx=0):
+def resolve_strategy_legs(template, symbol, expiry_date=None):
     # Fetch chain
-    chain, T, spot = fetch_option_chain(symbol, expiry_idx)
+    chain, T, spot = fetch_option_chain(symbol, expiry_date)
     if chain is None or spot == 0:
         return []
 

@@ -14,7 +14,7 @@ TICKER_MAP = {
 def render(broker_choice="Zerodha"):
     # Defer Imports to avoid circular dependency and initialization issues
     from options_algo.templates import STRATEGY_TEMPLATES
-    from options_algo.logic import resolve_strategy_legs, check_synthetic_future_arb, fetch_option_chain
+    from options_algo.logic import resolve_strategy_legs, check_synthetic_future_arb, fetch_option_chain, get_available_expiries
     from utils.broker_mappings import generate_zerodha_url, generate_dhan_url, generate_basket_html
     from utils.db import log_algo_trade, fetch_active_trades, close_all_trades
 
@@ -23,7 +23,7 @@ def render(broker_choice="Zerodha"):
 
     try:
         # Sidebar / Top Controls
-        c1, c2, c3 = st.columns([1, 1, 1])
+        c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
         with c1:
             symbol_key = st.selectbox("Underlying", list(TICKER_MAP.keys()) + ["Other"])
             if symbol_key == "Other":
@@ -31,18 +31,28 @@ def render(broker_choice="Zerodha"):
             else:
                 symbol = TICKER_MAP[symbol_key]
 
+        # Expiry Selection
         with c2:
-            strategy_name = st.selectbox("Select Strategy", list(STRATEGY_TEMPLATES.keys()))
+            # Safe call to get expiries
+            available_expiries = get_available_expiries(symbol)
+            if available_expiries:
+                selected_expiry = st.selectbox("Expiry Date", available_expiries)
+            else:
+                st.selectbox("Expiry Date", ["No Expiry Found"], disabled=True)
+                selected_expiry = None
 
         with c3:
+            strategy_name = st.selectbox("Select Strategy", list(STRATEGY_TEMPLATES.keys()))
+
+        with c4:
             multiplier = st.number_input("Lot Multiplier", 1, 100, 1)
 
         # Main Analysis
-        if st.button("🚀 Analyze Strategy", type="primary"):
+        if st.button("🚀 Analyze Strategy", type="primary", disabled=(selected_expiry is None)):
             with st.spinner("Fetching Option Chain & Calculating Greeks..."):
                 template = STRATEGY_TEMPLATES[strategy_name]
-                # Resolve Legs
-                legs, spot, T = resolve_strategy_legs(template, symbol)
+                # Resolve Legs with selected expiry
+                legs, spot, T = resolve_strategy_legs(template, symbol, selected_expiry)
 
                 if not legs:
                     st.error("Failed to fetch option chain data. Check symbol or internet.")
@@ -108,8 +118,9 @@ def render(broker_choice="Zerodha"):
         # Synthetic Future Arb
         st.markdown("---")
         st.subheader("🧪 Arbitrage Scanner")
-        if st.button("Scan Conversion Arb"):
-            chain, T, spot = fetch_option_chain(symbol)
+        # Ensure selected_expiry is available from scope above
+        if st.button("Scan Conversion Arb", disabled=('selected_expiry' not in locals() or selected_expiry is None)):
+            chain, T, spot = fetch_option_chain(symbol, selected_expiry)
             arb = check_synthetic_future_arb(spot, chain, T)
             if arb:
                 st.write(arb)
