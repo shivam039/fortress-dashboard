@@ -215,9 +215,9 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
             save_scan_results(scan_id, df)
 
             # Clear cache after new scan so history tab updates
-            fetch_timestamps.clear()
-            fetch_history_data.clear()
-            fetch_symbol_history.clear()
+            # fetch_timestamps.clear() # Caching removed
+            # fetch_history_data.clear()
+            # fetch_symbol_history.clear()
 
             log_audit("Scan Completed", selected_universe, f"Saved {len(df)} records to unified history (ID: {scan_id})")
 

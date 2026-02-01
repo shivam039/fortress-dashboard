@@ -70,11 +70,6 @@ def render():
     with st.spinner(f"Loading {scan_type} scan from {selected_timestamp}..."):
         # We pass table_name="" because fetch_history_data logic relies on scan_type logic now
         # or falls back to standard tables if scan_type matches.
-        # But wait, my fetch_history_data change:
-        # if db_scan_type in ['STOCK', 'OPTIONS', 'COMMODITY'] ...
-        # So passing scan_type in args is not strictly necessary if 'scans' table has it,
-        # but fetch_history_data needs timestamp to look up scan_id.
-        # It takes table_name, timestamp, scan_type (optional).
         df = fetch_history_data(table_name="", timestamp=selected_timestamp, scan_type=scan_type)
 
     if df.empty:
