@@ -95,28 +95,66 @@ def generate_dhan_url(symbol, qty, price=0, transaction_type="BUY"):
 
 def convert_yahoo_to_zerodha(y_symbol):
     # Yahoo: NIFTY231026C01900000 or RELIANCE231026...
-    # Regex to parse
     if not y_symbol: return ""
     match = re.match(r"([A-Z\^]+)(\d{2})(\d{2})(\d{2})([CP])(\d+)", y_symbol)
     if not match:
         return y_symbol # Fallback
 
-    symbol, yy, mm, dd, cp, strike_str = match.groups()
+    symbol_raw, yy, mm, dd, cp, strike_str = match.groups()
 
     # Clean Symbol
-    symbol = symbol.replace("^NSEI", "NIFTY").replace("^NSEBANK", "BANKNIFTY").replace(".NS", "")
+    symbol = symbol_raw.replace("^NSEI", "NIFTY").replace("^NSEBANK", "BANKNIFTY").replace(".NS", "")
 
-    # Month Map for Weekly/Monthly
-    m_int = int(mm)
-    m_char = f"{m_int}" if m_int < 10 else "O" if m_int==10 else "N" if m_int==11 else "D"
-
-    strike = int(int(strike_str) / 1000)
-
+    # Strike Logic
+    # Yahoo uses 100 multiplier (cents), so divide by 100 to get strike
+    strike = int(int(strike_str) / 100)
     cp_type = "CE" if cp == "C" else "PE"
 
-    # Construct Weekly Format: SYMBOL YY M DD STRIKE TYPE
-    z_symbol = f"{symbol}{yy}{m_char}{dd}{strike}{cp_type}"
-    return z_symbol
+    # Weekly vs Monthly Logic
+    # 1. Stocks are always Monthly (YYMMM)
+    # 2. Indices can be Weekly (YYMDD) or Monthly (YYMMM)
+    # Logic: If it is Last Thursday -> Monthly. Else Weekly.
+
+    from datetime import date, timedelta
+    import calendar
+
+    try:
+        # Reconstruct date
+        d_obj = date(int("20"+yy), int(mm), int(dd))
+
+        # Determine if it's monthly expiry
+        # Rule: Last Thursday of the month
+        # Find last day of month
+        next_month = d_obj.replace(day=28) + timedelta(days=4)
+        last_day_of_month = next_month - timedelta(days=next_month.day)
+
+        # Backtrack to last Thursday
+        offset = (last_day_of_month.weekday() - 3) % 7
+        last_thursday = last_day_of_month - timedelta(days=offset)
+
+        is_monthly = (d_obj == last_thursday)
+
+        # Force Monthly for Stocks (Non-Indices)
+        indices = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
+        if symbol not in indices:
+            is_monthly = True
+
+        if is_monthly:
+            # Monthly Format: SYMBOL YY MMM STRIKE TYPE (e.g., NIFTY24FEB22000CE)
+            mmm = d_obj.strftime("%b").upper()
+            return f"{symbol}{yy}{mmm}{strike}{cp_type}"
+        else:
+            # Weekly Format: SYMBOL YY M DD STRIKE TYPE (e.g., NIFTY2422222000CE)
+            m_int = int(mm)
+            m_char = f"{m_int}" if m_int < 10 else "O" if m_int==10 else "N" if m_int==11 else "D"
+            return f"{symbol}{yy}{m_char}{dd}{strike}{cp_type}"
+
+    except Exception as e:
+        # Fallback to Weekly if logic fails
+        print(f"Conversion Error: {e}")
+        m_int = int(mm)
+        m_char = f"{m_int}" if m_int < 10 else "O" if m_int==10 else "N" if m_int==11 else "D"
+        return f"{symbol}{yy}{m_char}{dd}{strike}{cp_type}"
 
 def generate_basket_html(legs, broker="Zerodha"):
     # legs: list of dicts {contractSymbol, qty, action, type}
