@@ -1,187 +1,71 @@
-import streamlit as st
-import pandas as pd
-import json
+import logging
 from datetime import datetime
 
-TICKER_MAP = {
-    "NIFTY": "^NSEI",
-    "BANKNIFTY": "^NSEBANK",
-    "RELIANCE": "RELIANCE.NS",
-    "INFY": "INFY.NS",
-    "TCS": "TCS.NS",
-    "HDFCBANK": "HDFCBANK.NS"
-}
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+from fortress_config import OPTIONS_UNDERLYINGS
+from options_algo.logic import fetch_option_chain, get_available_expiries, payoff_curve, scan_strategies
+from utils.broker_mappings import generate_dhan_url, generate_zerodha_url
+from utils.db import log_audit, register_scan, save_scan_results
+
+logger = logging.getLogger(__name__)
+
 
 def render(broker_choice="Zerodha"):
-    # Defer Imports to avoid circular dependency and initialization issues
-    from options_algo.templates import STRATEGY_TEMPLATES
-    from options_algo.logic import resolve_strategy_legs, check_synthetic_future_arb, fetch_option_chain, get_available_expiries
-    from utils.broker_mappings import generate_zerodha_url, generate_dhan_url, generate_basket_html
-    from utils.db import log_algo_trade, fetch_active_trades, close_all_trades, register_scan, save_scan_results
-
     st.header("🤖 Options Algo Terminal")
-    st.caption("Institutional Strategies • Live Greeks • Basket Execution")
+    debug_mode = st.sidebar.toggle("Options Debug Mode", value=False)
+
+    underlying = st.sidebar.selectbox("Underlying", OPTIONS_UNDERLYINGS)
+    expiries = get_available_expiries(underlying)
+    expiry = st.sidebar.selectbox("Expiry", expiries) if expiries else None
+    risk_pct = st.sidebar.slider("Risk %", 0.5, 5.0, 1.0, 0.5)
+    oi_threshold = st.sidebar.number_input("OI threshold", min_value=100, value=10000)
+
+    if not expiry:
+        st.warning("Data load failed - retry or check logs")
+        return
 
     try:
-        # Sidebar / Top Controls
-        c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
-        with c1:
-            symbol_key = st.selectbox("Underlying", list(TICKER_MAP.keys()) + ["Other"])
-            if symbol_key == "Other":
-                symbol = st.text_input("Enter Symbol (Yahoo fmt)", "^NSEI")
-            else:
-                symbol = TICKER_MAP[symbol_key]
-
-        # Expiry Selection
-        with c2:
-            # Safe call to get expiries
-            available_expiries = get_available_expiries(symbol)
-            if available_expiries:
-                selected_expiry = st.selectbox("Expiry Date", available_expiries)
-            else:
-                st.selectbox("Expiry Date", ["No Expiry Found"], disabled=True)
-                selected_expiry = None
-
-        with c3:
-            strategy_name = st.selectbox("Select Strategy", list(STRATEGY_TEMPLATES.keys()))
-
-        with c4:
-            multiplier = st.number_input("Lot Multiplier", 1, 100, 1)
-
-        # Main Analysis
-        if st.button("🚀 Analyze Strategy", type="primary", disabled=(selected_expiry is None)):
-            with st.spinner("Fetching Option Chain & Calculating Greeks..."):
-                template = STRATEGY_TEMPLATES[strategy_name]
-                # Resolve Legs with selected expiry
-                legs, spot, T = resolve_strategy_legs(template, symbol, selected_expiry)
-
-                if not legs:
-                    st.error("Failed to fetch option chain data. Check symbol or internet.")
-                else:
-                    st.session_state['algo_legs'] = legs
-                    st.session_state['algo_spot'] = spot
-                    st.session_state['algo_strategy'] = strategy_name
-                    st.session_state['algo_symbol'] = symbol
-
-                    # Automated Logging
-                    try:
-                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        scan_id = register_scan(timestamp, universe=symbol, scan_type="OPTIONS", status="Completed")
-
-                        # Prepare DF for logging
-                        log_df = pd.DataFrame(legs)
-                        # Flatten Greeks
-                        if 'greeks' in log_df.columns:
-                            greeks_df = log_df['greeks'].apply(pd.Series)
-                            log_df = pd.concat([log_df.drop(['greeks'], axis=1), greeks_df], axis=1)
-
-                        log_df['Strategy'] = strategy_name
-                        log_df['Spot'] = spot
-
-                        save_scan_results(scan_id, log_df)
-                    except Exception as e:
-                        print(f"Auto-logging error: {e}")
-
-        # Display Results if Available
-        if 'algo_legs' in st.session_state:
-            legs = st.session_state['algo_legs']
-            spot = st.session_state['algo_spot']
-
-            st.subheader(f"Strategy: {st.session_state['algo_strategy']} ({st.session_state['algo_symbol']})")
-            st.metric("Spot Price", f"{spot:,.2f}")
-
-            # Display Legs Table
-            legs_df = pd.DataFrame(legs)
-
-            # Format for Display
-            display_df = legs_df.copy()
-            display_df['Strike'] = display_df['strike']
-            display_df['Type'] = display_df['type']
-            display_df['Action'] = display_df['action']
-            display_df['Price'] = display_df['price'].apply(lambda x: f"{x:.2f}")
-
-            # Extract Greeks
-            greeks_df = display_df['greeks'].apply(pd.Series)
-            display_df = pd.concat([display_df, greeks_df], axis=1)
-
-            # Select Columns
-            cols = ['leg_id', 'Action', 'Type', 'Strike', 'Price', 'Delta', 'Gamma', 'Theta', 'Vega', 'contractSymbol']
-            st.dataframe(display_df[cols], use_container_width=True, hide_index=True)
-
-            # Net Greeks
-            net_delta = sum([g['Delta'] * (1 if l['action']=="BUY" else -1) * l['qty_mult'] * multiplier for l, g in zip(legs, display_df['greeks'])])
-            net_theta = sum([g['Theta'] * (1 if l['action']=="BUY" else -1) * l['qty_mult'] * multiplier for l, g in zip(legs, display_df['greeks'])])
-
-            g1, g2 = st.columns(2)
-            g1.metric("Net Delta", f"{net_delta:.2f}")
-            g2.metric("Net Theta (Daily Decay)", f"{net_theta:.2f}")
-
-            # Execution
-            st.markdown("---")
-            if st.button("⚡ Generate Basket Link"):
-                # Prepare legs for HTML generator & Logging
-                legs_for_html = []
-                for l in legs:
-                    l_copy = l.copy()
-                    l_copy['qty'] = l['qty_mult'] * multiplier
-                    legs_for_html.append(l_copy)
-
-                # Log Trade
-                details = json.dumps(legs_for_html, default=str)
-                log_algo_trade(st.session_state['algo_strategy'], st.session_state['algo_symbol'], "ENTRY", details)
-
-                # Generate HTML & Render Button
-                generate_basket_html(legs_for_html, broker_choice)
-
-                st.success("Trade Logged! Click the button above to execute.")
-
-        # Synthetic Future Arb
-        st.markdown("---")
-        st.subheader("🧪 Arbitrage Scanner")
-        # Ensure selected_expiry is available from scope above
-        if st.button("Scan Conversion Arb", disabled=('selected_expiry' not in locals() or selected_expiry is None)):
-            chain, T, spot = fetch_option_chain(symbol, selected_expiry)
-            arb = check_synthetic_future_arb(spot, chain, T)
-            if arb:
-                st.write(arb)
-                if arb['Yield_Ann'] > 10:
-                    st.success(f"🔥 Arbitrage Opportunity! Yield: {arb['Yield_Ann']:.2f}%")
-                else:
-                    st.info(f"Yield {arb['Yield_Ann']:.2f}% below threshold.")
-            else:
-                st.warning("No Arb data found.")
-
-        # Universal Kill Switch
-        st.markdown("---")
-        st.subheader("🚨 Risk Control")
-
-        active_trades = fetch_active_trades()
-        if not active_trades.empty:
-            st.warning(f"{len(active_trades)} Active Strategies Detected.")
-            st.dataframe(active_trades)
-
-            if st.button("💀 PANIC EXIT (Close All)"):
-                # Generate Reverse Basket
-                all_reverse_legs = []
-                for idx, row in active_trades.iterrows():
-                    try:
-                        legs_data = json.loads(row['details'])
-                        for l in legs_data:
-                            rev_l = l.copy()
-                            rev_l['action'] = "SELL" if l.get('action') == "BUY" else "BUY"
-                            all_reverse_legs.append(rev_l)
-                    except:
-                        pass
-
-                if all_reverse_legs:
-                    generate_basket_html(all_reverse_legs, broker_choice)
-                    st.error("EXIT BASKET GENERATED. CLICK ABOVE TO EXECUTE.")
-                else:
-                    st.error("Could not parse active trades to generate exit.")
-
-                close_all_trades()
-                st.error("ALL TRADES MARKED CLOSED IN DB.")
-        else:
-            st.success("No Active Strategies.")
+        with st.spinner("Loading data..."):
+            chain_df, spot, _ = fetch_option_chain(underlying, expiry)
     except Exception as e:
-        st.error(f"Options Algo Error: {e}")
+        logger.error(f"options_algo error: {e}")
+        st.warning("Data load failed - retry or check logs")
+        return
+
+    chain_df = chain_df.fillna(0)
+    st.dataframe(chain_df[["Strike", "Type", "IV", "Delta", "OI", "Premium"]], use_container_width=True)
+    st.download_button("⬇️ Export Options CSV", chain_df.to_csv(index=False).encode("utf-8"), "options_chain.csv", "text/csv")
+
+    lots = max(1, int((risk_pct / 100) * 100))
+    chain_df["Exec"] = chain_df.apply(
+        lambda r: generate_zerodha_url(underlying, lots, "BUY") if broker_choice == "Zerodha" else generate_dhan_url(underlying, lots, transaction_type="BUY"),
+        axis=1,
+    )
+
+    strat_df = scan_strategies(chain_df, oi_threshold=oi_threshold)
+    if not strat_df.empty:
+        st.subheader("Strategy Scanner")
+        st.dataframe(strat_df, use_container_width=True)
+        picked = st.selectbox("Payoff strategy", strat_df["Strategy"].tolist())
+        p = float(strat_df[strat_df["Strategy"] == picked]["Premium"].iloc[0])
+        grid = np.linspace(spot * 0.9, spot * 1.1, 120)
+        pnl = payoff_curve(grid, picked, p, spot)
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=grid, y=pnl, mode="lines", name=picked))
+        fig.update_layout(title="Strategy Payoff", xaxis_title="Underlying", yaxis_title="P&L")
+        st.plotly_chart(fig, use_container_width=True)
+
+    try:
+        scan_id = register_scan(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), universe=underlying, scan_type="OPTIONS", status="Completed")
+        save_scan_results(scan_id, chain_df.head(200))
+        log_audit("Options chain scan", "Options", f"{underlying} {expiry}")
+    except Exception as e:
+        logger.error(f"options_algo error: {e}")
+
+    if debug_mode:
+        st.write({"underlying": underlying, "expiry": expiry, "spot": spot})
+        st.dataframe(chain_df, use_container_width=True)

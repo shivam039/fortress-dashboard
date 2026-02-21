@@ -163,6 +163,11 @@ def run_audit(limit=None):
             logger.info(f"Saving {len(res_df)} results to DB...")
             bulk_insert_results(res_df, met_df, alt_df)
 
+            top10 = res_df.sort_values("Score", ascending=False).head(10).copy()
+            top10["timestamp"] = timestamp
+            top10.to_csv("mf_top10_consistent.csv", index=False)
+            log_audit("MF Top10", "Mutual Funds", f"Top consistent schemes: {', '.join(top10['symbol'].astype(str).tolist())}")
+
             update_scan_status(scan_id, "Completed")
             log_audit("Scan Completed", "Mutual Funds", f"Scanned {len(res_df)} funds.")
             logger.info("Audit Finished Successfully.")

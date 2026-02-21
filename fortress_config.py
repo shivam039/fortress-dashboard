@@ -158,3 +158,16 @@ COMMODITY_CONSTANTS = {
     "CORRELATION_THRESHOLD": 0.8,
     "VOLATILITY_LOOKBACK": 14
 }
+
+# --- Cross-module universes ---
+MF_SCHEMES = [
+    "120503",  # SBI Small Cap
+    "120716",  # HDFC Flexi Cap
+    "118834",  # ICICI Pru Bluechip
+    "125497",  # Axis Small Cap
+    "120503",  # keep known active codes
+]
+
+OPTIONS_UNDERLYINGS = ["^NSEI", "^NSEBANK", "NIFTYBEES.NS", "BANKBEES.NS"]
+
+COMMODITIES_TICKERS = ["GC=F", "SI=F", "CL=F", "HG=F", "INR=X"]
