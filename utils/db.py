@@ -124,7 +124,10 @@ def _ensure_scan_history_details_neon():
         """
     )
     if not _postgres_has_column("scan_history_details", "raw_data"):
-        _exec("ALTER TABLE scan_history_details ADD COLUMN raw_data JSONB")
+        try:
+            _exec("ALTER TABLE scan_history_details ADD COLUMN raw_data JSONB")
+        except Exception as exc:
+            logger.warning("Could not add raw_data column to scan_history_details: %s", exc)
 
 
 def init_db():
@@ -305,7 +308,8 @@ def init_db():
             """CREATE TABLE IF NOT EXISTS scan_history_details (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 scan_id INTEGER,
-                symbol TEXT
+                symbol TEXT,
+                raw_data TEXT
             )"""
         )
         if not _sqlite_has_column(conn, "scan_history_details", "raw_data"):
@@ -448,21 +452,28 @@ def register_scan(timestamp, universe="Mutual Funds", scan_type="MF", status="In
 def save_scan_results(scan_id, df):
     if df.empty:
         return
-    df_to_save = df.copy()
-    df_to_save["scan_id"] = scan_id
+
+    # Prepare list of dicts for insertion (common for both backends)
+    records = []
+    for row in df.to_dict(orient="records"):
+        # Serialize the full row to JSON for raw_data column
+        records.append({
+            "scan_id": scan_id,
+            "symbol": row.get("symbol") or row.get("Symbol"),
+            "raw_data": json.dumps(row)
+        })
 
     if _can_use_neon():
-        for row in df_to_save.to_dict(orient="records"):
+        # Neon: Explicit INSERT with CAST for JSONB
+        for rec in records:
             _exec(
                 "INSERT INTO scan_history_details (scan_id, symbol, raw_data) VALUES (:scan_id, :symbol, CAST(:raw_data AS JSONB))",
-                {
-                    "scan_id": scan_id,
-                    "symbol": row.get("symbol") or row.get("Symbol"),
-                    "raw_data": json.dumps(row),
-                },
+                rec
             )
         return
 
+    # SQLite: Use to_sql but with the prepared simple DataFrame
+    df_to_save = pd.DataFrame(records)
     log_scan_results(df_to_save, table_name="scan_history_details")
 
 
