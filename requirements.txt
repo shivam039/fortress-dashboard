@@ -10,3 +10,6 @@ matplotlib
 mftool
 plotly
 requests
+psycopg2-binary
+sqlalchemy
+toml

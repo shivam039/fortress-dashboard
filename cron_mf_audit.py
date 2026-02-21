@@ -14,7 +14,7 @@ from mf_lab.services.metrics import calculate_metrics
 from mf_lab.services.scoring import calculate_composite_score, normalize_batch_scores
 from mf_lab.services.alerts import check_integrity_rules, generate_smart_alerts, send_telegram_alert
 from mf_lab.logic import get_category
-from utils.db import init_db, register_scan, update_scan_status, bulk_insert_results, log_audit
+from utils.db import init_db, register_scan, update_scan_status, bulk_insert_results, log_audit, get_engine, is_postgres
 
 # --- CORE LOGIC ---
 
@@ -31,6 +31,14 @@ def run_audit(limit=None):
         start_time = datetime.now()
         timestamp = start_time.strftime("%Y-%m-%d %H:%M:%S")
         logger.info(f"Starting Fortress Discovery Audit at {timestamp}...")
+
+        # Check DB Mode
+        try:
+            conn = get_engine()
+            db_type = "Postgres (Neon)" if is_postgres(conn) else "SQLite (Local)"
+            logger.info(f"Using Database Backend: {db_type}")
+        except Exception as e:
+            logger.warning(f"DB Check failed: {e}")
 
         # Init DB (ensure tables exist)
         init_db()
