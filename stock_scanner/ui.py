@@ -8,7 +8,7 @@ import seaborn as sns
 from datetime import datetime
 
 from fortress_config import TICKER_GROUPS, INDEX_BENCHMARKS
-from .logic import check_institutional_fortress
+from .logic import check_institutional_fortress, apply_advanced_scoring, DEFAULT_SCORING_CONFIG
 from .config import ALL_COLUMNS
 from utils.db import log_audit, get_table_name_from_universe, log_scan_results, fetch_timestamps, fetch_history_data, fetch_symbol_history, register_scan, save_scan_results, update_scan_status
 from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
@@ -49,14 +49,43 @@ def render_sidebar():
 
     selected_universe = st.sidebar.selectbox("Select Index", list(TICKER_GROUPS.keys()))
 
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("⚙️ Advanced Scoring")
+    tech_w = st.sidebar.slider("Technical Weight", 0.0, 1.0, 0.50, 0.05)
+    fund_w = st.sidebar.slider("Fundamental Weight", 0.0, 1.0, 0.25, 0.05)
+    sent_w = st.sidebar.slider("Sentiment Weight", 0.0, 1.0, 0.15, 0.05)
+    ctx_w = st.sidebar.slider("Context / RS / MTF Weight", 0.0, 1.0, 0.10, 0.05)
+    total = tech_w + fund_w + sent_w + ctx_w
+    if total <= 0:
+        total = 1.0
+    weights = {
+        "technical": tech_w / total,
+        "fundamental": fund_w / total,
+        "sentiment": sent_w / total,
+        "context": ctx_w / total,
+    }
+
+    enable_regime = st.sidebar.checkbox("Enable regime scaling", value=True)
+    liquidity_cr_min = st.sidebar.number_input("Liquidity gate (₹ Cr, 20D avg)", min_value=0.0, value=8.0, step=0.5)
+
     # Sidebar Multiselect for Dynamic Columns
     selected_columns = st.sidebar.multiselect(
         "Select Columns to Display", options=list(ALL_COLUMNS.keys()), default=list(ALL_COLUMNS.keys())
     )
 
-    return portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice
+    scoring_config = {
+        "weights": weights,
+        "enable_regime": enable_regime,
+        "liquidity_cr_min": liquidity_cr_min,
+        "market_cap_cr_min": DEFAULT_SCORING_CONFIG["market_cap_cr_min"],
+        "price_min": DEFAULT_SCORING_CONFIG["price_min"],
+        "max_debt_to_equity": DEFAULT_SCORING_CONFIG["max_debt_to_equity"],
+        "min_interest_coverage": DEFAULT_SCORING_CONFIG["min_interest_coverage"],
+    }
 
-def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice):
+    return portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice, scoring_config
+
+def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice, scoring_config):
     # ---------------- SEARCH FEATURE ----------------
     search_symbol = st.text_input("🔍 Search Stock (Symbol)", placeholder="e.g., RELIANCE.NS")
     if search_symbol:
@@ -122,7 +151,15 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
             progress_bar.progress((i+1)/len(tickers))
 
         if results:
-            df = pd.DataFrame(results).sort_values("Score",ascending=False)
+            df = pd.DataFrame(results)
+
+            # Sector rotation bonus (top 3 sectors by 3M perf proxy = avg Ret_90D)
+            sector_perf = df.groupby("Sector", as_index=False)["Ret_90D"].mean().sort_values("Ret_90D", ascending=False)
+            top_sectors = set(sector_perf.head(3)["Sector"].tolist())
+            df["Sector_Rotation_Bonus"] = df["Sector"].isin(top_sectors).astype(int) * 10
+            df["Context_Raw"] = pd.to_numeric(df.get("Context_Raw", 0), errors="coerce").fillna(0) + df["Sector_Rotation_Bonus"]
+
+            df = apply_advanced_scoring(df, scoring_config).sort_values("Score",ascending=False)
             status_text.success(f"Scan Complete: {len(df[df['Score']>=60])} actionable setups.")
 
             # --- GENERATE ACTIONS COLUMN ---
