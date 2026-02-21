@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pandas_ta as ta
 import datetime
+import streamlit as st
 import yfinance as yf
 from fortress_config import (
     SECTOR_MAP,
@@ -40,16 +41,30 @@ def _safe_float(value, default=0.0):
         return default
 
 
+@st.cache_data(ttl="10m")
+def get_stock_data(symbol, period="1y", interval="1d", group_by="column"):
+    """Cached market data fetch to reduce repeated Yahoo calls across reruns."""
+    data = yf.download(symbol, period=period, interval=interval, group_by=group_by, progress=False, auto_adjust=False)
+    if isinstance(data.columns, pd.MultiIndex) and group_by == "column":
+        data.columns = data.columns.get_level_values(0)
+    return data
+
+
+@st.cache_data(ttl="10m")
+def _download_close_series(symbol, period="1y", interval="1d"):
+    bench = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
+    if isinstance(bench.columns, pd.MultiIndex):
+        bench.columns = bench.columns.get_level_values(0)
+    return bench.get("Close", pd.Series(dtype=float)).dropna()
+
+
 def _get_benchmark_series(symbol):
     cached = _BENCHMARK_CACHE.get(symbol)
     if cached is not None and len(cached) > 0:
         return cached
 
     try:
-        bench = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=False)
-        if isinstance(bench.columns, pd.MultiIndex):
-            bench.columns = bench.columns.get_level_values(0)
-        close = bench.get("Close", pd.Series(dtype=float)).dropna()
+        close = _download_close_series(symbol)
         _BENCHMARK_CACHE[symbol] = close
         return close
     except:
@@ -125,19 +140,15 @@ def _normalize_weight_map(weight_map):
     return {k: max(v, 0.0) / total for k, v in merged.items()}
 
 
+@st.cache_data(ttl="10m")
 def detect_market_regime():
     try:
-        nifty = yf.download(NIFTY_SYMBOL, period="1y", interval="1d", progress=False, auto_adjust=False)
-        if isinstance(nifty.columns, pd.MultiIndex):
-            nifty.columns = nifty.columns.get_level_values(0)
-        nifty_close = nifty["Close"].dropna()
+        nifty_close = _download_close_series(NIFTY_SYMBOL)
         nifty_now = _safe_float(nifty_close.iloc[-1]) if not nifty_close.empty else 0.0
         nifty_ema200 = _safe_float(ta.ema(nifty_close, 200).iloc[-1]) if len(nifty_close) >= 200 else 0.0
 
-        vix = yf.download("^INDIAVIX", period="6mo", interval="1d", progress=False, auto_adjust=False)
-        if isinstance(vix.columns, pd.MultiIndex):
-            vix.columns = vix.columns.get_level_values(0)
-        vix_value = _safe_float(vix.get("Close", pd.Series(dtype=float)).dropna().iloc[-1], default=20.0)
+        vix_close = _download_close_series("^INDIAVIX", period="6mo")
+        vix_value = _safe_float(vix_close.iloc[-1], default=20.0) if not vix_close.empty else 20.0
 
         if nifty_now > nifty_ema200 and vix_value < 18:
             return {"Market_Regime": "Bull", "Regime_Multiplier": 1.15, "VIX": vix_value}
@@ -184,6 +195,23 @@ def apply_advanced_scoring(df, scoring_config=None):
     sector_rotation_bonus = _compute_sector_rotation_bonus(df)
     df["Sector_Rotation_Bonus"] = sector_rotation_bonus.round(2)
     df["Context_Raw"] = pd.to_numeric(df.get("Context_Raw", 0), errors="coerce").fillna(0) + df["Sector_Rotation_Bonus"]
+
+    # Sector-relative scoring: normalize RSI and conviction by sector before blending into Context_Raw.
+    if "Sector" in df.columns:
+        rsi_raw = pd.to_numeric(df.get("RSI", np.nan), errors="coerce")
+        conviction_raw = pd.to_numeric(df.get("Score", np.nan), errors="coerce")
+
+        def _sector_zscore(series):
+            std = series.std(ddof=0)
+            if std is None or std == 0 or pd.isna(std):
+                return pd.Series(0.0, index=series.index)
+            return (series - series.mean()) / std
+
+        rsi_z = rsi_raw.groupby(df["Sector"]).transform(_sector_zscore).fillna(0.0)
+        conviction_z = conviction_raw.groupby(df["Sector"]).transform(_sector_zscore).fillna(0.0)
+        df["Sector_RSI_Z"] = rsi_z.round(3)
+        df["Sector_Conviction_Z"] = conviction_z.round(3)
+        df["Context_Raw"] += ((rsi_z + conviction_z) * 5.0)
 
     # Normalize category sub-scores within scan universe
     df["Technical_Score"] = _normalize_series(df.get("Technical_Raw", 50)).round(2)
@@ -236,6 +264,15 @@ def apply_advanced_scoring(df, scoring_config=None):
         + df["Sentiment_Score"] * w["sentiment"]
         + df["Context_Score"] * w["context"]
     )
+    df["sub_scores"] = df.apply(
+        lambda row: {
+            "technical": round(_safe_float(row.get("Technical_Score")), 2),
+            "fundamental": round(_safe_float(row.get("Fundamental_Score")), 2),
+            "sentiment": round(_safe_float(row.get("Sentiment_Score")), 2),
+            "context": round(_safe_float(row.get("Context_Score")), 2),
+        },
+        axis=1,
+    )
     df["Score"] = (df["Score_Pre_Regime"] * df["Regime_Multiplier"]).clip(lower=0, upper=100).round(2)
 
     df = _apply_quality_gates(df, cfg)
@@ -258,7 +295,7 @@ def apply_advanced_scoring(df, scoring_config=None):
     df["Context_Score"] = df["Context_Score"]
     return df
 
-def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk_per_trade):
+def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk_per_trade, selected_universe=None):
     try:
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
@@ -282,23 +319,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         current_volume = _safe_float(volume.iloc[-1])
         avg_volume_20 = _safe_float(volume.tail(20).mean())
         avg_value_20d_cr = (avg_volume_20 * price) / 1e7 if price > 0 else 0.0
-        smallcap_universe = set(TICKER_GROUPS.get("Nifty Smallcap 250", []))
-        is_smallcap = ticker in smallcap_universe
-        if is_smallcap and avg_value_20d_cr < SMALLCAP_LIQUIDITY_MIN_CR:
-            return {
-                "Symbol": ticker,
-                "Verdict": "🚨 AVOID",
-                "Score": 0,
-                "Price": round(price, 2),
-                "Conviction": -1000,
-                "Liquidity_Flag": "Low Liquidity - Avoid",
-                "Avg_Value_20D_Cr": round(avg_value_20d_cr, 2),
-                "Sector": SECTOR_MAP.get(ticker, "General"),
-                "Technical_Raw": 0.0,
-                "Fundamental_Raw": 0.0,
-                "Sentiment_Raw": 0.0,
-                "Context_Raw": 0.0,
-            }
+        if selected_universe == "Nifty Smallcap 250" and avg_value_20d_cr < SMALLCAP_LIQUIDITY_MIN_CR:
+            return None
         vol_surge_ratio = (current_volume / avg_volume_20) if avg_volume_20 > 0 else 0.0
         vol_surge = vol_surge_ratio > 1.5
 
@@ -310,7 +332,7 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
 
         regime_multiplier = float(detect_market_regime().get("Regime_Multiplier", 1.0))
         regime_multiplier = float(np.clip(regime_multiplier, 1.0, 2.0))
-        # Regime-aware: tighter stops in Bear to reduce stop-outs
+        # Adaptive: tighter stops in Bull, wider in Bear to avoid shakeouts
         sl_distance = atr * (1.5 / regime_multiplier)
         sl_price = round(price-sl_distance,2)
         target_10d = round(price + atr*1.8,2)
@@ -579,3 +601,58 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             "Regime_Multiplier": round(regime_multiplier, 2)
         }
     except: return None
+
+
+def backtest_top_picks(scan_timestamp):
+    """Backtest top picks from a scan timestamp against Nifty benchmark forward returns."""
+    try:
+        from utils.db import get_connection
+
+        with get_connection() as conn:
+            query = """
+                SELECT d.symbol AS Symbol, d.price AS Entry_Price
+                FROM scan_history_details d
+                INNER JOIN scans s ON s.scan_id = d.scan_id
+                WHERE s.timestamp = ?
+                  AND s.scan_type = 'STOCK'
+                  AND COALESCE(d.score, 0) >= 60
+            """
+            picks = pd.read_sql(query, conn, params=(scan_timestamp,))
+        if picks.empty:
+            return pd.DataFrame()
+
+        benchmark = _download_close_series(NIFTY_SYMBOL, period="2y")
+        if benchmark.empty:
+            return pd.DataFrame()
+
+        horizon_days = [7, 30, 60]
+        out_rows = []
+        for _, row in picks.iterrows():
+            symbol = row["Symbol"]
+            data = _download_close_series(symbol, period="2y")
+            if data.empty:
+                continue
+            latest = float(data.iloc[-1])
+            stock_returns = {}
+            nifty_returns = {}
+            for days in horizon_days:
+                if len(data) > days and len(benchmark) > days:
+                    stock_returns[f"Stock_{days}D_%"] = ((latest / float(data.iloc[-(days + 1)])) - 1) * 100
+                    nifty_returns[f"Nifty_{days}D_%"] = ((float(benchmark.iloc[-1]) / float(benchmark.iloc[-(days + 1)])) - 1) * 100
+                else:
+                    stock_returns[f"Stock_{days}D_%"] = np.nan
+                    nifty_returns[f"Nifty_{days}D_%"] = np.nan
+            out_rows.append({"Symbol": symbol, **stock_returns, **nifty_returns})
+
+        detail_df = pd.DataFrame(out_rows)
+        if detail_df.empty:
+            return detail_df
+
+        avg_row = {"Symbol": "AVERAGE"}
+        for days in horizon_days:
+            avg_row[f"Stock_{days}D_%"] = detail_df[f"Stock_{days}D_%"].mean()
+            avg_row[f"Nifty_{days}D_%"] = detail_df[f"Nifty_{days}D_%"].mean()
+        avg_df = pd.concat([detail_df, pd.DataFrame([avg_row])], ignore_index=True)
+        return avg_df
+    except Exception:
+        return pd.DataFrame()

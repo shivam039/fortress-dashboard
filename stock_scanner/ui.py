@@ -10,10 +10,38 @@ import seaborn as sns
 from datetime import datetime
 
 from fortress_config import TICKER_GROUPS, INDEX_BENCHMARKS
-from .logic import check_institutional_fortress, apply_advanced_scoring, DEFAULT_SCORING_CONFIG, detect_market_regime
+from .logic import (
+    check_institutional_fortress,
+    apply_advanced_scoring,
+    DEFAULT_SCORING_CONFIG,
+    detect_market_regime,
+    get_stock_data,
+    backtest_top_picks,
+)
 from .config import ALL_COLUMNS
 from utils.db import log_audit, get_table_name_from_universe, log_scan_results, fetch_timestamps, fetch_history_data, fetch_symbol_history, register_scan, save_scan_results, update_scan_status
 from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
+
+
+@st.cache_data(ttl="10m")
+def _get_market_pulse_snapshot(index_benchmarks):
+    """Cached pulse snapshot to reduce repeated benchmark downloads on reruns."""
+    out = {}
+    for name, symbol in index_benchmarks.items():
+        idx_data = get_stock_data(symbol, period="1y", interval="1d")
+        if idx_data.empty or "Close" not in idx_data:
+            continue
+        p_close = idx_data["Close"].iloc[-1]
+        p_ema = ta.ema(idx_data["Close"], 200).iloc[-1]
+        p_status = "🟢 BULL" if p_close > p_ema else "🔴 BEAR"
+        out[name] = {"close": p_close, "status": p_status}
+    return out
+
+
+@st.cache_data(ttl="10m")
+def _apply_advanced_scoring_cached(df, scoring_config):
+    """Cache heavy scoring pipeline for iterative UI reruns."""
+    return apply_advanced_scoring(df, scoring_config)
 
 def generate_action_link(row, broker_choice):
     qty = row.get("Position_Qty", 0)
@@ -82,8 +110,9 @@ def render_sidebar():
     )
 
     # Sidebar Multiselect for Dynamic Columns
+    default_full_list = list(ALL_COLUMNS.keys())
     if "selected_columns" not in st.session_state:
-        st.session_state["selected_columns"] = list(ALL_COLUMNS.keys())
+        st.session_state["selected_columns"] = default_full_list
     st.session_state["selected_columns"] = st.sidebar.multiselect(
         "Select Columns to Display",
         options=list(ALL_COLUMNS.keys()),
@@ -104,6 +133,8 @@ def render_sidebar():
     return portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice, scoring_config
 
 def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice, scoring_config):
+    if "smallcap_scan_state" not in st.session_state:
+        st.session_state["smallcap_scan_state"] = None
     # ---------------- SEARCH FEATURE ----------------
     search_symbol = st.text_input("🔍 Search Stock (Symbol)", placeholder="e.g., RELIANCE.NS")
     if search_symbol:
@@ -114,7 +145,7 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
         try:
             with st.spinner(f"Analyzing {search_symbol}..."):
                 search_tkr = yf.Ticker(search_symbol)
-                search_hist = yf.download(search_symbol, period="2y", progress=False)
+                search_hist = get_stock_data(search_symbol, period="2y", interval="1d")
 
             if not search_hist.empty:
                 search_res = check_institutional_fortress(search_symbol, search_hist, search_tkr, portfolio_val, risk_pct)
@@ -137,17 +168,80 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
     # ---------------- MARKET PULSE ----------------
     st.subheader("🌐 Market Pulse")
     pulse_cols = st.columns(len(INDEX_BENCHMARKS))
-    for i,(name,symbol) in enumerate(INDEX_BENCHMARKS.items()):
+    pulse_snapshot = _get_market_pulse_snapshot(INDEX_BENCHMARKS)
+    for i, (name, _) in enumerate(INDEX_BENCHMARKS.items()):
         try:
-            idx_data = yf.download(symbol, period="1y", progress=False)
-            p_close = idx_data["Close"].iloc[-1]
-            p_ema = ta.ema(idx_data["Close"],200).iloc[-1]
-            p_status = "🟢 BULL" if p_close>p_ema else "🔴 BEAR"
-            pulse_cols[i].metric(name,f"{p_close:,.0f}",p_status)
-        except: pass
+            row = pulse_snapshot.get(name)
+            if row:
+                pulse_cols[i].metric(name, f"{row['close']:,.0f}", row["status"])
+        except:
+            pass
 
     # ---------------- MAIN SCAN ----------------
-    if st.button("🚀 EXECUTE SYSTEM SCAN",type="primary",use_container_width=True):
+    execute_scan = st.button("🚀 EXECUTE SYSTEM SCAN", type="primary", use_container_width=True)
+    results = None
+
+    if execute_scan and selected_universe == "Nifty Smallcap 250":
+        tickers = TICKER_GROUPS[selected_universe]
+        chunk_size = 50
+        st.session_state["smallcap_scan_state"] = {
+            "universe": selected_universe,
+            "tickers": tickers,
+            "chunk_size": chunk_size,
+            "index": 0,
+            "results": [],
+            "errors": [],
+            "portfolio_val": portfolio_val,
+            "risk_pct": risk_pct,
+        }
+        st.rerun()
+
+    smallcap_state = st.session_state.get("smallcap_scan_state")
+    if smallcap_state and selected_universe == "Nifty Smallcap 250":
+        tickers = smallcap_state["tickers"]
+        chunk_size = smallcap_state["chunk_size"]
+        i = smallcap_state["index"]
+        num_chunks = max(1, (len(tickers) + chunk_size - 1) // chunk_size)
+        progress_bar = st.progress(min((i // chunk_size) / num_chunks, 1.0))
+        status_text = st.empty()
+
+        if i < len(tickers):
+            chunk = tickers[i:i + chunk_size]
+            try:
+                batch_data = get_stock_data(chunk, period="1y", interval="1d", group_by="ticker")
+                for ticker in chunk:
+                    try:
+                        tkr_obj = yf.Ticker(ticker)
+                        hist = batch_data[ticker].dropna() if len(chunk) > 1 else batch_data.dropna()
+                        if not hist.empty and len(hist) >= 210:
+                            res = check_institutional_fortress(
+                                ticker,
+                                hist,
+                                tkr_obj,
+                                smallcap_state["portfolio_val"],
+                                smallcap_state["risk_pct"],
+                                selected_universe=selected_universe,
+                            )
+                            if res and res["Score"] >= 60:
+                                smallcap_state["results"].append(res)
+                    except Exception as inner_e:
+                        smallcap_state["errors"].append(f"{ticker}: {inner_e}")
+            except Exception as e:
+                smallcap_state["errors"].append(f"Chunk {i}: {e}")
+
+            smallcap_state["index"] = i + chunk_size
+            scanned = min(smallcap_state["index"], len(tickers))
+            chunk_idx = min((smallcap_state["index"] + chunk_size - 1) // chunk_size, num_chunks)
+            progress_bar.progress(min(chunk_idx / num_chunks, 1.0))
+            status_text.text(f"Scanned {scanned}/{len(tickers)} tickers...")
+            st.session_state["smallcap_scan_state"] = smallcap_state
+            st.rerun()
+
+        results = smallcap_state["results"]
+        for err in smallcap_state["errors"]:
+            st.error(f"Batch Error: {err}")
+        st.session_state["smallcap_scan_state"] = None
+    elif execute_scan and selected_universe != "Nifty Smallcap 250":
         tickers = TICKER_GROUPS[selected_universe]
         results = []
         progress_bar = st.progress(0)
@@ -165,13 +259,20 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
             for i in range(0, len(tickers), chunk_size):
                 chunk = tickers[i : i + chunk_size]
                 try:
-                    batch_data = yf.download(chunk, period="1y", interval="1d", group_by="ticker", progress=False)
+                    batch_data = get_stock_data(chunk, period="1y", interval="1d", group_by="ticker")
                     for ticker in chunk:
                         try:
                             tkr_obj = yf.Ticker(ticker)
                             hist = batch_data[ticker].dropna() if len(chunk) > 1 else batch_data.dropna()
                             if not hist.empty and len(hist) >= 210:
-                                res = check_institutional_fortress(ticker, hist, tkr_obj, portfolio_val, risk_pct)
+                                res = check_institutional_fortress(
+                                    ticker,
+                                    hist,
+                                    tkr_obj,
+                                    portfolio_val,
+                                    risk_pct,
+                                    selected_universe=selected_universe,
+                                )
                                 if res and (selected_universe != "Nifty Smallcap 250" or res["Score"] >= 60):
                                     local_results.append(res)
                         except Exception as inner_e:
@@ -186,42 +287,26 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
 
         result_queue = queue.Queue()
         worker = threading.Thread(target=_scan_worker, args=(result_queue,), daemon=True)
+        worker.start()
+        done = False
+        while not done:
+            msg = result_queue.get()
+            if "progress" in msg:
+                scanned = msg["progress"]
+                progress_bar.progress(min(scanned / len(tickers), 1.0))
+                status_text.text(f"Scanned {scanned}/{len(tickers)} tickers...")
+            if msg.get("done"):
+                results.extend(msg.get("results", []))
+                for err in msg.get("errors", []):
+                    st.error(f"Batch Error: {err}")
+                done = True
 
-        if selected_universe == "Nifty Smallcap 250":
-            with st.spinner("Scanning Smallcap 250..."):
-                worker.start()
-                done = False
-                while not done:
-                    msg = result_queue.get()
-                    if "progress" in msg:
-                        scanned = msg["progress"]
-                        progress_bar.progress(min(scanned / len(tickers), 1.0))
-                        status_text.text(f"Scanned {scanned}/{len(tickers)} tickers...")
-                    if msg.get("done"):
-                        results.extend(msg.get("results", []))
-                        for err in msg.get("errors", []):
-                            st.error(f"Batch Error: {err}")
-                        done = True
-        else:
-            worker.start()
-            done = False
-            while not done:
-                msg = result_queue.get()
-                if "progress" in msg:
-                    scanned = msg["progress"]
-                    progress_bar.progress(min(scanned / len(tickers), 1.0))
-                    status_text.text(f"Scanned {scanned}/{len(tickers)} tickers...")
-                if msg.get("done"):
-                    results.extend(msg.get("results", []))
-                    for err in msg.get("errors", []):
-                        st.error(f"Batch Error: {err}")
-                    done = True
-
+    if results is not None:
         if results:
             df = pd.DataFrame(results)
 
 
-            df = apply_advanced_scoring(df, scoring_config).sort_values("Score",ascending=False)
+            df = _apply_advanced_scoring_cached(df, scoring_config).sort_values("Score",ascending=False)
             filtered_out_df = df[df.get("Quality_Gate_Pass", True) == False].copy()
             actionable_df = df[df.get("Quality_Gate_Pass", True) == True].copy()
             status_text.success(f"Scan Complete: {len(actionable_df[actionable_df['Score']>=60])} actionable setups.")
@@ -287,9 +372,16 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
             st.subheader("🎯 Strategic Picks")
             momentum_picks = df[df['Strategy'] == "Momentum Pick"]
             lt_picks = df[df['Strategy'] == "Long-Term Pick"]
+            if selected_universe == "Nifty Smallcap 250":
+                momentum_picks = momentum_picks[momentum_picks["Score"] >= 60]
+                lt_picks = lt_picks[lt_picks["Score"] >= 60]
 
             # Use all columns selected in the sidebar for these Strategic tables
-            display_cols = [c for c in st.session_state["selected_columns"] if c in df.columns]
+            default_full_list = list(ALL_COLUMNS.keys())
+            display_cols = [
+                c for c in st.session_state.get("selected_columns", default_full_list)
+                if c in df.columns
+            ]
             st_column_config = get_column_config(display_cols, broker_choice)
 
             if not momentum_picks.empty:
@@ -313,6 +405,14 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
             fetch_symbol_history.clear()
 
             log_audit("Scan Completed", selected_universe, f"Saved {len(df)} records to unified history (ID: {scan_id})")
+
+            st.markdown("#### 🧪 Backtesting Hooks")
+            if st.button("Run Backtest for This Scan", use_container_width=True):
+                bt_df = backtest_top_picks(timestamp)
+                if bt_df.empty:
+                    st.info("No backtest data available for selected scan timestamp.")
+                else:
+                    st.dataframe(bt_df, use_container_width=True, hide_index=True)
 
             # Ensure 'Actions' is available in display if selected
             # Note: selected_columns might contain 'Actions', so we ensure it exists in df (done above)

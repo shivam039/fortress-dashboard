@@ -75,7 +75,7 @@ def fetch_mf_snapshot(scheme_codes: list[str]) -> pd.DataFrame:
             scheme_name = f"Scheme {code}"
             if mf_client:
                 scheme_name, nav_from_mftool = _retry(lambda: _extract_name_and_nav(mf_client, str(code)), "mf_quote")
-                # Defensive sleep to respect mfapi.in rate limits
+                # Defensive delay to avoid AMFI (mfapi.in) rate-limit blocks
                 time.sleep(0.5)
                 if pd.notna(nav_from_mftool):
                     nav = float(nav_from_mftool)

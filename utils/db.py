@@ -1,6 +1,7 @@
 import sqlite3
 import pandas as pd
 import streamlit as st
+import json
 from datetime import datetime
 import logging
 
@@ -170,6 +171,8 @@ def _infer_sql_type(series):
         return "BOOLEAN"
     if pd.api.types.is_datetime64_any_dtype(dtype):
         return "TIMESTAMP"
+    if str(series.name).lower() == "sub_scores":
+        return "JSONB"
     return "TEXT"
 
 
@@ -180,6 +183,13 @@ def log_scan_results(df, table_name="scan_results"):
     """
     if df.empty:
         return
+
+    df = df.copy()
+    # Persist detailed score components as JSON payload for richer audit/backtest analysis.
+    if "sub_scores" in df.columns:
+        df["sub_scores"] = df["sub_scores"].apply(
+            lambda x: json.dumps(x) if isinstance(x, dict) else x
+        )
 
     try:
         with get_connection() as conn:
