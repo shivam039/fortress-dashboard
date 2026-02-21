@@ -1,54 +1,82 @@
 import json
 import sqlite3
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
 
 from utils.db import DB_NAME
 
+KEY_COLUMNS = [
+    "symbol",
+    "price",
+    "target_price",
+    "conviction_score",
+    "rsi",
+    "ema200",
+    "analyst_target_mean",
+    "regime",
+    "pick_type",
+    "scan_timestamp",
+]
 
-@st.cache_data(ttl=60)
-def get_unique_timestamps():
+
+@st.cache_data(ttl=1800)
+def get_unique_scan_timestamps():
     query = """
-    SELECT DISTINCT COALESCE(d.scan_timestamp, s.timestamp) AS scan_timestamp
-    FROM scan_history_details d
-    LEFT JOIN scans s ON d.scan_id = s.scan_id
-    WHERE COALESCE(d.scan_timestamp, s.timestamp) IS NOT NULL
+    SELECT DISTINCT scan_timestamp
+    FROM scan_history_details
+    WHERE scan_timestamp IS NOT NULL
     ORDER BY scan_timestamp DESC
+    LIMIT 50
     """
 
     try:
         conn = st.connection("neon", type="sql")
-        df = conn.query(query, ttl="5m")
+        df = conn.query(query, ttl="30m")
     except Exception:
+        fallback_query = """
+        SELECT DISTINCT COALESCE(d.scan_timestamp, s.timestamp) AS scan_timestamp
+        FROM scan_history_details d
+        LEFT JOIN scans s ON d.scan_id = s.scan_id
+        WHERE COALESCE(d.scan_timestamp, s.timestamp) IS NOT NULL
+        ORDER BY scan_timestamp DESC
+        LIMIT 50
+        """
         with sqlite3.connect(DB_NAME, timeout=10.0) as sqlite_conn:
-            df = pd.read_sql_query(query, sqlite_conn)
+            df = pd.read_sql_query(fallback_query, sqlite_conn)
 
     if df.empty:
         return []
 
-    ts_col = pd.to_datetime(df["scan_timestamp"], errors="coerce")
-    return [ts for ts in ts_col.dropna().tolist()]
+    ts_col = pd.to_datetime(df["scan_timestamp"], errors="coerce", utc=True).dropna()
+    return ts_col.tolist()
 
 
-@st.cache_data(ttl=60)
-def get_scan_data_for_timestamp(selected_ts):
+@st.cache_data(ttl=1800)
+def get_scan_data_for_timestamp(selected_timestamp):
     query = """
-    SELECT d.*, s.timestamp AS scan_timestamp_from_scans
-    FROM scan_history_details d
-    LEFT JOIN scans s ON d.scan_id = s.scan_id
-    WHERE COALESCE(d.scan_timestamp, s.timestamp) = :selected_ts
+    SELECT *
+    FROM scan_history_details
+    WHERE scan_timestamp = :ts
+    ORDER BY conviction_score DESC
     """
-    params = {"selected_ts": selected_ts}
+    params = {"ts": selected_timestamp}
 
     try:
         conn = st.connection("neon", type="sql")
-        raw_df = conn.query(query, params=params, ttl="5m")
+        raw_df = conn.query(query, params=params, ttl="30m")
     except Exception:
-        sqlite_query = query.replace(":selected_ts", "?")
+        sqlite_query = """
+        SELECT d.*, s.timestamp AS scan_timestamp_fallback
+        FROM scan_history_details d
+        LEFT JOIN scans s ON d.scan_id = s.scan_id
+        WHERE COALESCE(d.scan_timestamp, s.timestamp) = ?
+        ORDER BY d.conviction_score DESC
+        """
         with sqlite3.connect(DB_NAME, timeout=10.0) as sqlite_conn:
-            raw_df = pd.read_sql_query(sqlite_query, sqlite_conn, params=(selected_ts,))
+            raw_df = pd.read_sql_query(sqlite_query, sqlite_conn, params=(selected_timestamp,))
 
     if raw_df.empty:
         return pd.DataFrame()
@@ -65,167 +93,157 @@ def get_scan_data_for_timestamp(selected_ts):
             return {}
 
         normalized = pd.json_normalize(raw_df["raw_data"].apply(parse_raw))
-        passthrough_cols = [c for c in ["symbol", "scan_id", "scan_timestamp", "scan_timestamp_from_scans", "conviction_score", "category", "pick_type"] if c in raw_df.columns]
-        merged = pd.concat([normalized, raw_df[passthrough_cols]], axis=1)
-
-        # Ensure symbol and timestamp survive even if absent in raw_data
-        if "symbol" not in merged.columns and "symbol" in raw_df.columns:
-            merged["symbol"] = raw_df["symbol"]
-        if "scan_timestamp" not in merged.columns:
-            if "scan_timestamp" in raw_df.columns:
-                merged["scan_timestamp"] = raw_df["scan_timestamp"]
-            elif "scan_timestamp_from_scans" in raw_df.columns:
-                merged["scan_timestamp"] = raw_df["scan_timestamp_from_scans"]
-
+        merged = pd.concat([normalized, raw_df], axis=1)
+        merged = merged.loc[:, ~merged.columns.duplicated()]
         return merged
 
     return raw_df
 
 
-def _pick_type_mask(df: pd.DataFrame, target: str) -> pd.Series:
-    target_lower = target.lower()
-    candidates = []
-    for col in ["pick_type", "category", "Pick Type", "Category"]:
-        if col in df.columns:
-            candidates.append(df[col].astype(str).str.lower().str.contains(target_lower, na=False))
+def classify_long_term(df):
+    if df.empty:
+        return df
 
-    if not candidates:
+    scores = pd.to_numeric(df.get("conviction_score"), errors="coerce")
+    regime = df.get("regime", pd.Series("", index=df.index)).astype(str).str.lower()
+    price = pd.to_numeric(df.get("price"), errors="coerce")
+    analyst_target = pd.to_numeric(df.get("analyst_target_mean"), errors="coerce")
+    upside = analyst_target / price
+
+    return df[(scores >= 80) | ((regime == "bull") & (upside >= 1.25))].copy()
+
+
+def classify_momentum(df):
+    if df.empty:
+        return df
+    scores = pd.to_numeric(df.get("conviction_score"), errors="coerce")
+    return df[(scores >= 65) & (scores < 80)].copy()
+
+
+def classify_strategic(df):
+    if df.empty:
+        return df
+
+    long_idx = classify_long_term(df).index
+    momentum_idx = classify_momentum(df).index
+    return df[~df.index.isin(long_idx.union(momentum_idx))].copy()
+
+
+def _pick_type_mask(df: pd.DataFrame, patterns: list[str]) -> pd.Series:
+    if "pick_type" not in df.columns:
         return pd.Series([False] * len(df), index=df.index)
 
-    mask = candidates[0]
-    for extra in candidates[1:]:
-        mask = mask | extra
+    lower = df["pick_type"].astype(str).str.lower()
+    mask = pd.Series([False] * len(df), index=df.index)
+    for pattern in patterns:
+        mask = mask | lower.str.contains(pattern, na=False)
     return mask
 
 
-def get_long_term_picks(df):
-    explicit = _pick_type_mask(df, "long-term") | _pick_type_mask(df, "long term") | _pick_type_mask(df, "longterm")
-    if explicit.any():
-        return df[explicit].copy()
-
-    if "conviction_score" in df.columns:
-        return df[pd.to_numeric(df["conviction_score"], errors="coerce") >= 80].copy()
-
-    if "Conviction Score" in df.columns:
-        return df[pd.to_numeric(df["Conviction Score"], errors="coerce") >= 80].copy()
-
-    return pd.DataFrame(columns=df.columns)
+def _format_ts_for_display(ts):
+    parsed = pd.to_datetime(ts, errors="coerce", utc=True)
+    if pd.isna(parsed):
+        return str(ts)
+    return parsed.tz_convert(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S IST")
 
 
-def get_momentum_picks(df):
-    explicit = _pick_type_mask(df, "momentum")
-    if explicit.any():
-        return df[explicit].copy()
-
-    score_col = None
-    if "conviction_score" in df.columns:
-        score_col = "conviction_score"
-    elif "Conviction Score" in df.columns:
-        score_col = "Conviction Score"
-
-    if score_col:
-        scores = pd.to_numeric(df[score_col], errors="coerce")
-        return df[(scores >= 60) & (scores < 80)].copy()
-
-    return pd.DataFrame(columns=df.columns)
-
-
-def get_strategic_picks(df):
-    explicit = _pick_type_mask(df, "strategic")
-    if explicit.any():
-        return df[explicit].copy()
-    return df.copy()
-
-
-def _apply_symbol_filter(df: pd.DataFrame, symbol_query: str) -> pd.DataFrame:
-    if df.empty or not symbol_query:
+def _apply_symbol_filter(df: pd.DataFrame, search_term: str) -> pd.DataFrame:
+    if df.empty or not search_term:
         return df
-
-    symbol_col = None
-    for col in ["symbol", "Symbol"]:
-        if col in df.columns:
-            symbol_col = col
-            break
-
-    if symbol_col is None:
+    if "symbol" not in df.columns:
         return df.iloc[0:0]
+    return df[df["symbol"].astype(str).str.contains(search_term, case=False, na=False)].copy()
 
-    return df[df[symbol_col].astype(str).str.contains(symbol_query, case=False, na=False)].copy()
 
+def _display_pick_table(title: str, df: pd.DataFrame, selected_label: str, search_term: str):
+    with st.expander(title, expanded=True):
+        if df.empty:
+            st.info("No matches" if search_term else "No data available for this scan")
+            return
 
-def _display_pick_table(title: str, df: pd.DataFrame):
-    st.subheader(title)
-    if df.empty:
-        st.caption("No rows in this group for selected scan.")
-        return
+        display_cols = [c for c in KEY_COLUMNS if c in df.columns]
+        if not display_cols:
+            display_cols = [c for c in df.columns if c not in {"id", "scan_id", "raw_data"}]
 
-    hide_cols = [c for c in ["id", "scan_id", "raw_data"] if c in df.columns]
-    st.dataframe(df.drop(columns=hide_cols, errors="ignore"), use_container_width=True, hide_index=True)
-    st.download_button(
-        f"📥 Export {title} CSV",
-        df.to_csv(index=False).encode("utf-8"),
-        f"{title.lower().replace(' ', '_')}.csv",
-        "text/csv",
-    )
+        table_df = df[display_cols]
+        st.dataframe(table_df, use_container_width=True, hide_index=True)
+        st.download_button(
+            f"📥 Export {title} CSV",
+            table_df.to_csv(index=False).encode("utf-8"),
+            f"{title.lower().replace(' ', '_')}_{selected_label.replace(':', '-')}.csv",
+            "text/csv",
+        )
 
 
 def render():
     st.header("📜 Master Scan History")
 
-    timestamps = get_unique_timestamps()
+    timestamps = get_unique_scan_timestamps()
     if not timestamps:
-        st.info("No data for selected scan")
+        st.info("No data available for this scan")
         return
 
-    ts_options = [None] + timestamps
-
-    def _fmt(ts):
-        if ts is None:
-            return "Select a scan timestamp"
-        try:
-            return pd.to_datetime(ts).strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            return str(ts)
-
-    selected_timestamp = st.selectbox("Select Scan Timestamp", options=ts_options, format_func=_fmt)
+    options = [None] + timestamps
+    selected_timestamp = st.selectbox(
+        "Select Scan Timestamp",
+        options=options,
+        format_func=lambda ts: "Select a scan timestamp" if ts is None else _format_ts_for_display(ts),
+    )
     symbol_search = st.text_input("Search symbol across all tables", placeholder="e.g. RELIANCE")
 
     if selected_timestamp is None:
-        st.info("No data for selected scan")
+        st.info("Select a scan timestamp to view historical results")
         return
 
-    ts_param = selected_timestamp.isoformat() if isinstance(selected_timestamp, datetime) else str(selected_timestamp)
-    with st.spinner(f"Loading scan snapshot for { _fmt(selected_timestamp) }..."):
-        df = get_scan_data_for_timestamp(ts_param)
+    selected_timestamp_str = pd.to_datetime(selected_timestamp, utc=True).isoformat()
+    selected_label = _format_ts_for_display(selected_timestamp)
+
+    with st.spinner(f"Loading scan snapshot for {selected_label}..."):
+        df = get_scan_data_for_timestamp(selected_timestamp_str)
 
     if df.empty:
-        st.info("No data for selected scan")
+        st.info("No data available for this scan")
         return
 
-    long_term_df = _apply_symbol_filter(get_long_term_picks(df), symbol_search)
-    momentum_df = _apply_symbol_filter(get_momentum_picks(df), symbol_search)
-    strategic_df = _apply_symbol_filter(get_strategic_picks(df), symbol_search)
+    if "pick_type" in df.columns:
+        long_term = df[_pick_type_mask(df, ["long-term", "long term", "longterm"])].copy()
+        momentum = df[_pick_type_mask(df, ["momentum"])].copy()
+        strategic = df[_pick_type_mask(df, ["strategic", "actionable"])].copy()
 
-    _display_pick_table("Long-Term Picks", long_term_df)
-    _display_pick_table("Momentum Picks", momentum_df)
-    _display_pick_table("Strategic Picks", strategic_df)
+        # Keep unclassified rows visible in Strategic table
+        if strategic.empty:
+            used_idx = long_term.index.union(momentum.index)
+            strategic = df[~df.index.isin(used_idx)].copy()
+    else:
+        long_term = classify_long_term(df)
+        momentum = classify_momentum(df)
+        strategic = classify_strategic(df)
+
+    long_term = _apply_symbol_filter(long_term, symbol_search)
+    momentum = _apply_symbol_filter(momentum, symbol_search)
+    strategic = _apply_symbol_filter(strategic, symbol_search)
+
+    _display_pick_table("Long-Term Picks", long_term, selected_label, symbol_search)
+    _display_pick_table("Momentum Picks", momentum, selected_label, symbol_search)
+    _display_pick_table("Strategic Picks", strategic, selected_label, symbol_search)
 
     combined = pd.concat(
         [
-            long_term_df.assign(_table="Long-Term"),
-            momentum_df.assign(_table="Momentum"),
-            strategic_df.assign(_table="Strategic"),
+            long_term.assign(_table="Long-Term Picks"),
+            momentum.assign(_table="Momentum Picks"),
+            strategic.assign(_table="Strategic Picks"),
         ],
         ignore_index=True,
     )
-    st.download_button(
-        "📥 Export All Tables CSV",
-        combined.to_csv(index=False).encode("utf-8"),
-        f"scan_history_{_fmt(selected_timestamp).replace(':', '-')}.csv",
-        "text/csv",
-    )
+    if not combined.empty:
+        st.download_button(
+            "📥 Export Combined CSV",
+            combined.to_csv(index=False).encode("utf-8"),
+            f"scan_history_combined_{selected_label.replace(':', '-')}.csv",
+            "text/csv",
+        )
 
-    st.caption(
-        "Schema note: if pick_type/category is missing, fallback classification uses conviction_score >= 80 (Long-Term), "
-        "60-79 (Momentum), and all rows as Strategic."
+    st.code(
+        "ALTER TABLE scan_history_details ADD COLUMN IF NOT EXISTS pick_type TEXT;",
+        language="sql",
     )
