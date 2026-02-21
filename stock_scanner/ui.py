@@ -149,97 +149,43 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
         # Log Start
         log_audit("Scan Started", selected_universe, f"Scanning {len(tickers)} tickers")
 
-        if selected_universe == "Nifty Smallcap 250":
-            # --- CHUNKED PROCESSING FOR SMALLCAP 250 ---
-            CHUNK_SIZE = 50
-            total_tickers = len(tickers)
-            processed_count = 0
+        # --- CHUNKED PROCESSING LOGIC ---
+        chunk_size = 50 if selected_universe == "Nifty Smallcap 250" else len(tickers)
 
-            for i in range(0, total_tickers, CHUNK_SIZE):
-                chunk_tickers = tickers[i:i + CHUNK_SIZE]
-                status_text.text(f"Scanning batch {i+1}-{min(i+CHUNK_SIZE, total_tickers)} of {total_tickers}...")
+        for i in range(0, len(tickers), chunk_size):
+            chunk = tickers[i : i + chunk_size]
 
-                try:
-                    # Batch Download
-                    # yf.download with multiple tickers returns a MultiIndex dataframe if group_by='ticker' (default is 'column')
-                    # We use group_by='ticker' to easily access each ticker's dataframe
-                    batch_data = yf.download(chunk_tickers, period="2y", group_by='ticker', auto_adjust=True, progress=False)
+            # Batch Download for optimized network calls
+            try:
+                batch_data = yf.download(chunk, period="1y", interval="1d", group_by='ticker', progress=False)
 
-                    for ticker in chunk_tickers:
-                        try:
-                            # Extract single ticker data
-                            # If only one ticker is downloaded, yf returns a simple dataframe, not MultiIndex.
-                            # But here we pass a list, so if multiple valid, it's MultiIndex.
-                            # If all fail but one, it might be simple.
-                            # Safe extraction logic:
-                            if isinstance(batch_data.columns, pd.MultiIndex):
-                                if ticker in batch_data.columns.levels[0]:
-                                    hist = batch_data[ticker].dropna(how="all")
-                                else:
-                                    hist = pd.DataFrame()
-                            else:
-                                # Fallback if batch_data is not multi-index (e.g. only 1 ticker in chunk succeeded)
-                                # This is rare with 50 tickers but possible.
-                                # Check if the columns imply it's a single ticker DF matching our ticker?
-                                # yfinance is tricky here. If we requested list, but only 1 valid, it returns single-level DF.
-                                # But we can't be sure WHICH one it is without checking metadata or assuming.
-                                # Safer to just try fetching individual if batch structure is ambiguous or rely on 'ticker' in columns?
-                                # Actually, with group_by='ticker', level 0 is ticker.
-                                # If single ticker, it might NOT have levels.
-                                # Let's stick to safe individual access if batch access fails, or skip.
-                                hist = pd.DataFrame() # Default empty
-                                if not batch_data.empty:
-                                    # If the dataframe is not multi-index, it means only one ticker data is present.
-                                    # We need to know if it belongs to 'ticker'.
-                                    # Since we don't know easily, we skip this edge case in the fast loop
-                                    # or we can rely on yfinance's behavior.
-                                    # To be safe against yfinance quirks, let's treat the simple case:
-                                    pass
+                for j, ticker in enumerate(chunk):
+                    current_idx = i + j
+                    status_text.text(f"Scanning {ticker} ({current_idx + 1}/{len(tickers)})")
 
-                            if not hist.empty:
-                                # We need a ticker object for 'info' (fundamentals).
-                                # Creating yf.Ticker object is lazy (no network call until .info accessed)
-                                # But accessing .info triggers a call.
-                                # Doing this for 250 tickers will be slow even if price history is batched.
-                                # User priority is speed.
-                                # check_institutional_fortress uses tkr.info, tkr.news, tkr.calendar.
-                                # These require individual API calls.
-                                # The batch download ONLY optimizes Price History.
-                                # To truly optimize, we must accept the overhead of 250 info calls OR skip them?
-                                # The user approved "Batch Downloading" specifically for yf.download(tickers_list).
-                                # The user also said "remove per-ticker sleep".
-                                # This implies we proceed with individual property access without sleep.
-                                tkr = yf.Ticker(ticker)
-                                res = check_institutional_fortress(ticker, hist, tkr, portfolio_val, risk_pct)
-                                if res: results.append(res)
-                        except Exception as e:
-                            pass
+                    try:
+                        tkr_obj = yf.Ticker(ticker)
+                        # Handle batch_data indexing safe
+                        if len(chunk) > 1:
+                            hist = batch_data[ticker].dropna()
+                        else:
+                            hist = batch_data.dropna()
 
-                        processed_count += 1
-                        progress_bar.progress(min(processed_count / total_tickers, 1.0))
+                        if not hist.empty and len(hist) >= 210:
+                            res = check_institutional_fortress(ticker, hist, tkr_obj, portfolio_val, risk_pct)
+                            # Strictly filter Smallcap to Bullish results only as discussed
+                            if res and (selected_universe != "Nifty Smallcap 250" or res['Score'] >= 60):
+                                results.append(res)
+                    except: pass
 
-                    # Sleep after chunk
+                    progress_bar.progress((current_idx + 1) / len(tickers))
+
+                # Small cooling period between chunks
+                if selected_universe == "Nifty Smallcap 250":
                     time.sleep(1.2)
 
-                except Exception as e:
-                    st.error(f"Batch Error: {e}")
-                    # Advance progress even if batch fails to avoid stuck bar
-                    processed_count += len(chunk_tickers)
-                    progress_bar.progress(min(processed_count / total_tickers, 1.0))
-
-        else:
-            # --- STANDARD SEQUENTIAL SCAN (Existing Logic) ---
-            for i,ticker in enumerate(tickers):
-                status_text.text(f"Scanning {ticker} ({i+1}/{len(tickers)})")
-                try:
-                    tkr = yf.Ticker(ticker)
-                    hist = yf.download(ticker, period="2y", progress=False)
-                    if not hist.empty:
-                        res = check_institutional_fortress(ticker,hist,tkr,portfolio_val,risk_pct)
-                        if res: results.append(res)
-                    time.sleep(0.7)
-                except: pass
-                progress_bar.progress((i+1)/len(tickers))
+            except Exception as e:
+                st.error(f"Batch Error in chunk starting at {i}: {e}")
 
         if results:
             df = pd.DataFrame(results)
@@ -312,30 +258,22 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
                     hide_index=True
                 )
 
-            # --- STRATEGY PICKS ---
+            # --- UPDATED STRATEGIC PICKS (ALL COLUMNS) ---
             st.subheader("🎯 Strategic Picks")
-            c1, c2 = st.columns(2)
-
             momentum_picks = df[df['Strategy'] == "Momentum Pick"]
             lt_picks = df[df['Strategy'] == "Long-Term Pick"]
 
-            with c1:
-                st.markdown(f"#### 🚀 Momentum Picks ({len(momentum_picks)})")
-                if not momentum_picks.empty:
-                    st.dataframe(momentum_picks[['Symbol', 'Price', 'RSI', 'Target_10D', 'Score', 'Actions']], use_container_width=True, hide_index=True,
-                                 column_config={
-                                     "Actions": st.column_config.LinkColumn("Execute"),
-                                     "Target_10D": st.column_config.NumberColumn("10D Target", format="₹%.2f")
-                                 })
+            # Use all columns selected in the sidebar for these Strategic tables
+            display_cols = [c for c in selected_columns if c in df.columns]
+            st_column_config = get_column_config(display_cols, broker_choice)
 
-            with c2:
+            if not momentum_picks.empty:
+                st.markdown(f"#### 🚀 Momentum Picks ({len(momentum_picks)})")
+                st.dataframe(momentum_picks[display_cols], use_container_width=True, hide_index=True, column_config=st_column_config)
+
+            if not lt_picks.empty:
                 st.markdown(f"#### 💎 Long-Term Picks ({len(lt_picks)})")
-                if not lt_picks.empty:
-                    st.dataframe(lt_picks[['Symbol', 'Price', 'Target_10D', 'Dispersion_Alert', 'Score', 'Actions']], use_container_width=True, hide_index=True,
-                                 column_config={
-                                     "Actions": st.column_config.LinkColumn("Execute"),
-                                     "Target_10D": st.column_config.NumberColumn("10D Target", format="₹%.2f")
-                                 })
+                st.dataframe(lt_picks[display_cols], use_container_width=True, hide_index=True, column_config=st_column_config)
 
             # Log Logic
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
