@@ -78,6 +78,11 @@ def _read_df(sql: str, params: dict[str, Any] | None = None, ttl: str | None = N
         return pd.read_sql_query(sql, conn, params=params or {})
 
 
+def _sqlite_has_column(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(column[1] == column_name for column in columns)
+
+
 def _ensure_scan_history_table_neon():
     _exec(
         """
@@ -286,6 +291,8 @@ def init_db():
                 symbol TEXT
             )"""
         )
+        if not _sqlite_has_column(conn, "scan_history_details", "raw_data"):
+            c.execute("ALTER TABLE scan_history_details ADD COLUMN raw_data TEXT")
         c.execute(
             """CREATE TABLE IF NOT EXISTS scan_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
