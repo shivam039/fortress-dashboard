@@ -1,7 +1,9 @@
 import json
 import logging
 import os
+import random
 import sqlite3
+import time
 from datetime import datetime
 from typing import Any
 
@@ -20,7 +22,8 @@ DB_NAME = "fortress_history.db"
 
 
 def _sqlite_connection():
-    return sqlite3.connect(DB_NAME)
+    # When moving to Neon as the default backend, this SQLite connection remains fallback-only.
+    return sqlite3.connect(DB_NAME, timeout=10.0)
 
 
 def _sqlite_only_mode() -> bool:
@@ -325,7 +328,73 @@ def log_scan_results(df, table_name="scan_results"):
         return
 
     with _sqlite_connection() as conn:
-        df.to_sql(table_name, conn, if_exists="append", index=False)
+        ensure_table_exists(conn, table_name)
+
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        conn = _sqlite_connection()
+        try:
+            ensure_table_exists(conn, table_name)
+            df.to_sql(table_name, conn, if_exists="append", index=False, chunksize=1000)
+            conn.commit()
+            return
+        except sqlite3.OperationalError as exc:
+            conn.rollback()
+            logger.error(
+                "SQLite write failed for table '%s' (attempt %s/%s): %s",
+                table_name,
+                attempt,
+                max_retries,
+                exc,
+            )
+            if attempt == max_retries:
+                raise
+            time.sleep(random.uniform(1.0, 2.0))
+        except Exception as exc:
+            conn.rollback()
+            logger.error("Unexpected error writing to '%s': %s", table_name, exc)
+            raise
+        finally:
+            conn.close()
+
+
+def ensure_table_exists(conn: sqlite3.Connection, table_name: str):
+    table_check = pd.read_sql(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        conn,
+        params=[table_name],
+    )
+    if not table_check.empty:
+        return
+
+    if table_name == "scan_history_details":
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS scan_history_details (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER,
+                symbol TEXT,
+                conviction_score REAL,
+                regime TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                sub_scores TEXT,
+                raw_data TEXT
+            )
+            """
+        )
+        conn.commit()
+        return
+
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            raw_data TEXT
+        )
+        """
+    )
+    conn.commit()
 
 
 def register_scan(timestamp, universe="Mutual Funds", scan_type="MF", status="In Progress"):
