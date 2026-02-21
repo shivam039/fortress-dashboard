@@ -101,9 +101,36 @@ def _ensure_scan_history_table_neon():
     _exec("CREATE INDEX IF NOT EXISTS idx_scan_history_symbol ON scan_history (symbol)")
 
 
+def _postgres_has_column(table_name: str, column_name: str) -> bool:
+    query = """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = :table_name AND column_name = :column_name
+    """
+    # Use minimal TTL to ensure fresh schema check
+    df = _read_df(query, {"table_name": table_name, "column_name": column_name}, ttl=1)
+    return not df.empty
+
+
+def _ensure_scan_history_details_neon():
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS scan_history_details (
+            id BIGSERIAL PRIMARY KEY,
+            scan_id BIGINT,
+            symbol TEXT,
+            raw_data JSONB
+        )
+        """
+    )
+    if not _postgres_has_column("scan_history_details", "raw_data"):
+        _exec("ALTER TABLE scan_history_details ADD COLUMN raw_data JSONB")
+
+
 def init_db():
     if _can_use_neon():
         _ensure_scan_history_table_neon()
+        _ensure_scan_history_details_neon()
         _exec(
             """
             CREATE TABLE IF NOT EXISTS scans (
@@ -182,16 +209,6 @@ def init_db():
                 action TEXT,
                 details TEXT,
                 status TEXT
-            )
-            """
-        )
-        _exec(
-            """
-            CREATE TABLE IF NOT EXISTS scan_history_details (
-                id BIGSERIAL PRIMARY KEY,
-                scan_id BIGINT,
-                symbol TEXT,
-                raw_data JSONB
             )
             """
         )
