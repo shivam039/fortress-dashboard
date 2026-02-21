@@ -52,10 +52,10 @@ st.sidebar.markdown("---")
 if selected_view == "🚀 Live Scanner":
     # Sidebar: Stock Scanner Specifics
     # We call the scanner's sidebar renderer here
-    portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice = stock_scanner.ui.render_sidebar()
+    portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice, scoring_config = stock_scanner.ui.render_sidebar()
 
     # Main Content
-    stock_scanner.ui.render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice)
+    stock_scanner.ui.render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice, scoring_config)
 
 elif selected_view == "🛡️ MF Consistency Lab":
     # Sidebar handled internally by mf_lab.ui.render() (Asset Class, View Mode, Admin Tools)

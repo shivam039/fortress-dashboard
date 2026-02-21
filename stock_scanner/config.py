@@ -27,5 +27,22 @@ ALL_COLUMNS = {
     "Resilience": {"label": "War/News Resilience"},
     "Gap_Integrity": {"label": "Gap Integrity"},
     "Velocity": {"label": "Momentum Velocity", "format": "%.2f%%"},
-    "Ret_7D": {"label": "7D Return", "format": "%.2f%%"}
+    "Ret_7D": {"label": "7D Return", "format": "%.2f%%"},
+    "Technical_Score": {"label":"Technical", "type":"progress", "min":0, "max":100},
+    "Fundamental_Score": {"label":"Fundamental", "type":"progress", "min":0, "max":100},
+    "Sentiment_Score": {"label":"Sentiment", "type":"progress", "min":0, "max":100},
+    "Context_Score": {"label":"Context/RS/MTF", "type":"progress", "min":0, "max":100},
+    "Score_Pre_Regime": {"label":"Pre-Regime Score", "format":"%.2f"},
+    "Regime": {"label":"Market Regime"},
+    "Regime_Multiplier": {"label":"Regime x", "format":"%.2f"},
+    "India_VIX": {"label":"India VIX", "format":"%.2f"},
+    "RS_Rank": {"label":"RS Rank %", "format":"%.2f"},
+    "RS_3M": {"label":"RS 3M", "format":"%.3f"},
+    "RS_6M": {"label":"RS 6M", "format":"%.3f"},
+    "RS_12M": {"label":"RS 12M", "format":"%.3f"},
+    "RS_Composite": {"label":"RS Composite", "format":"%.3f"},
+    "Vol_Adj_Mom": {"label":"Vol Adj Mom", "format":"%.2f"},
+    "EMA200_Extension_Pct": {"label":"EMA200 Extension", "format":"%.2f%%"},
+    "Quality_Gate_Failures": {"label":"Quality Gates"},
+    "Avoid_Flag": {"label":"Avoid"}
 }
