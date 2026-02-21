@@ -37,14 +37,13 @@ def get_unique_scan_timestamps():
         df = conn.query(query, ttl="30m")
     except Exception:
         fallback_query = """
-        SELECT DISTINCT COALESCE(d.scan_timestamp, s.timestamp) AS scan_timestamp
-        FROM scan_history_details d
-        LEFT JOIN scans s ON d.scan_id = s.scan_id
-        WHERE COALESCE(d.scan_timestamp, s.timestamp) IS NOT NULL
+        SELECT DISTINCT scan_timestamp
+        FROM scan_history
+        WHERE scan_timestamp IS NOT NULL
         ORDER BY scan_timestamp DESC
         LIMIT 50
         """
-        with sqlite3.connect(DB_NAME, timeout=10.0) as sqlite_conn:
+        with sqlite3.connect(DB_NAME, timeout=15.0) as sqlite_conn:
             df = pd.read_sql_query(fallback_query, sqlite_conn)
 
     if df.empty:
@@ -75,7 +74,7 @@ def get_scan_data_for_timestamp(selected_timestamp):
         WHERE COALESCE(d.scan_timestamp, s.timestamp) = ?
         ORDER BY d.conviction_score DESC
         """
-        with sqlite3.connect(DB_NAME, timeout=10.0) as sqlite_conn:
+        with sqlite3.connect(DB_NAME, timeout=15.0) as sqlite_conn:
             raw_df = pd.read_sql_query(sqlite_query, sqlite_conn, params=(selected_timestamp,))
 
     if raw_df.empty:

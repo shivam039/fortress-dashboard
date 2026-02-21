@@ -9,12 +9,26 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 try:
     from sqlalchemy import text
+    from sqlalchemy.exc import InterfaceError, OperationalError, ProgrammingError, TimeoutError as SATimeoutError
 except ModuleNotFoundError:  # pragma: no cover - defensive fallback for local env bootstrapping
     def text(sql: str) -> str:
         return sql
+
+    class OperationalError(Exception):
+        pass
+
+    class InterfaceError(Exception):
+        pass
+
+    class ProgrammingError(Exception):
+        pass
+
+    class SATimeoutError(Exception):
+        pass
 
 
 logger = logging.getLogger(__name__)
@@ -23,7 +37,7 @@ DB_NAME = "fortress_history.db"
 
 def _sqlite_connection():
     # When moving to Neon as the default backend, this SQLite connection remains fallback-only.
-    return sqlite3.connect(DB_NAME, timeout=10.0)
+    return sqlite3.connect(DB_NAME, timeout=15.0)
 
 
 def _sqlite_only_mode() -> bool:
@@ -33,7 +47,23 @@ def _sqlite_only_mode() -> bool:
 
 @st.cache_resource
 def get_neon_conn():
-    return st.connection("neon", type="sql")
+    return st.connection(
+        "neon",
+        type="sql",
+        pool_size=15,
+        max_overflow=30,
+        pool_timeout=60,
+        pool_recycle=300,
+    )
+
+
+def _should_retry_db_error(exc: Exception) -> bool:
+    if isinstance(exc, (OperationalError, InterfaceError, SATimeoutError, TimeoutError)):
+        return True
+    if isinstance(exc, ProgrammingError):
+        message = str(exc).lower()
+        return "undefinedtable" in message or 'relation "scan_history_details" does not exist' in message
+    return False
 
 
 def _can_use_neon() -> bool:
@@ -61,6 +91,12 @@ def get_table_name_from_universe(u):
     return "scan_entries"
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    retry=retry_if_exception(_should_retry_db_error),
+    reraise=True,
+)
 def _exec(sql: str, params: dict[str, Any] | None = None):
     if _can_use_neon():
         conn = get_neon_conn()
@@ -113,21 +149,62 @@ def _postgres_has_column(table_name: str, column_name: str) -> bool:
 
 
 def _ensure_scan_history_details_neon():
-    _exec(
-        """
-        CREATE TABLE IF NOT EXISTS scan_history_details (
-            id BIGSERIAL PRIMARY KEY,
-            scan_id BIGINT,
-            symbol TEXT,
-            raw_data JSONB
-        )
-        """
-    )
-    if not _postgres_has_column("scan_history_details", "raw_data"):
+    table_exists_query = """
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = :table_name
+        LIMIT 1
+    """
+    exists_df = _read_df(table_exists_query, {"table_name": "scan_history_details"}, ttl="1s")
+    if exists_df.empty:
         try:
-            _exec("ALTER TABLE scan_history_details ADD COLUMN raw_data JSONB")
+            _exec(
+                """
+                CREATE TABLE IF NOT EXISTS scan_history_details (
+                    id BIGSERIAL PRIMARY KEY,
+                    scan_id BIGINT,
+                    symbol TEXT,
+                    scan_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    conviction_score NUMERIC,
+                    regime TEXT,
+                    sub_scores JSONB,
+                    raw_data JSONB,
+                    price REAL,
+                    target_price REAL,
+                    rsi REAL,
+                    ema200 REAL,
+                    analyst_target_mean REAL,
+                    volume REAL,
+                    pick_type TEXT
+                )
+                """
+            )
+            logger.info("Created scan_history_details table in Neon with full schema.")
         except Exception as exc:
-            logger.warning("Could not add raw_data column to scan_history_details: %s", exc)
+            logger.exception("Failed to create scan_history_details table in Neon: %s", exc)
+            raise
+
+    required_columns = {
+        "scan_timestamp": "TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        "conviction_score": "NUMERIC",
+        "regime": "TEXT",
+        "sub_scores": "JSONB",
+        "raw_data": "JSONB",
+        "price": "REAL",
+        "target_price": "REAL",
+        "rsi": "REAL",
+        "ema200": "REAL",
+        "analyst_target_mean": "REAL",
+        "volume": "REAL",
+        "pick_type": "TEXT",
+    }
+    for column_name, column_type in required_columns.items():
+        if not _postgres_has_column("scan_history_details", column_name):
+            try:
+                _exec(f"ALTER TABLE scan_history_details ADD COLUMN IF NOT EXISTS {column_name} {column_type}")
+                logger.info("Ensured column %s exists on scan_history_details.", column_name)
+            except Exception as exc:
+                logger.warning("Could not ensure column %s on scan_history_details: %s", column_name, exc)
 
 
 def init_db():
