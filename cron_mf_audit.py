@@ -14,7 +14,7 @@ from mf_lab.services.metrics import calculate_metrics
 from mf_lab.services.scoring import calculate_composite_score, normalize_batch_scores
 from mf_lab.services.alerts import check_integrity_rules, generate_smart_alerts, send_telegram_alert
 from mf_lab.logic import get_category
-from utils.db import init_db, register_scan, update_scan_status, bulk_insert_results, log_audit
+from utils.db import init_db, register_scan, update_scan_status, bulk_insert_results, log_audit, get_db_backend
 
 # --- CORE LOGIC ---
 
@@ -34,6 +34,7 @@ def run_audit(limit=None):
 
         # Init DB (ensure tables exist)
         init_db()
+        logger.info(f"DB backend: {get_db_backend()}")
 
         # Register Scan
         scan_id = register_scan(timestamp, universe="Mutual Funds", status="In Progress")

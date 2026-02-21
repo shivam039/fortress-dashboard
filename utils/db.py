@@ -1,518 +1,519 @@
+import json
+import logging
+import os
 import sqlite3
+from datetime import datetime
+from typing import Any
+
 import pandas as pd
 import streamlit as st
-from datetime import datetime
-import logging
+from sqlalchemy import text
 
-# Configure basic logging for DB operations (will be overridden by main app config)
 logger = logging.getLogger(__name__)
+DB_NAME = "fortress_history.db"
 
-DB_NAME = 'fortress_history.db'
 
-# ---------------- HELPER FUNCTIONS ----------------
-
-def get_connection():
+def _sqlite_connection():
     return sqlite3.connect(DB_NAME)
 
+
+def _sqlite_only_mode() -> bool:
+    backend = os.getenv("FORTRESS_DB_BACKEND", "").strip().lower()
+    return backend in {"sqlite", "local"}
+
+
+@st.cache_resource
+def get_neon_conn():
+    return st.connection("neon", type="sql")
+
+
+def _can_use_neon() -> bool:
+    if _sqlite_only_mode():
+        return False
+    try:
+        _ = st.secrets["connections"]["neon"]["url"]
+        conn = get_neon_conn()
+        conn.session.execute(text("SELECT 1"))
+        return True
+    except Exception as exc:
+        logger.warning("Neon unavailable, falling back to SQLite: %s", exc)
+        return False
+
+
+def get_db_backend() -> str:
+    return "neon" if _can_use_neon() else "sqlite"
+
+
 def get_table_name_from_universe(u):
-    # Legacy support
-    if "Mutual Funds" == u: return "scan_mf"
-    if "Commodities" == u: return "scan_commodities"
+    if "Mutual Funds" == u:
+        return "scan_mf"
+    if "Commodities" == u:
+        return "scan_commodities"
     return "scan_entries"
 
-# ---------------- DB INITIALIZATION ----------------
+
+def _exec(sql: str, params: dict[str, Any] | None = None):
+    if _can_use_neon():
+        conn = get_neon_conn()
+        conn.session.execute(text(sql), params or {})
+        conn.session.commit()
+        return
+    with _sqlite_connection() as conn:
+        conn.execute(sql, params or {})
+
+
+def _read_df(sql: str, params: dict[str, Any] | None = None, ttl: str | None = None) -> pd.DataFrame:
+    if _can_use_neon():
+        return get_neon_conn().query(sql, params=params or {}, ttl=ttl or "5m")
+    with _sqlite_connection() as conn:
+        return pd.read_sql_query(sql, conn, params=params or {})
+
+
+def _ensure_scan_history_table_neon():
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS scan_history (
+            id BIGSERIAL PRIMARY KEY,
+            scan_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            symbol TEXT,
+            conviction_score NUMERIC,
+            regime TEXT,
+            sub_scores JSONB,
+            raw_data JSONB
+        )
+        """
+    )
+    _exec("CREATE INDEX IF NOT EXISTS idx_scan_history_timestamp ON scan_history (scan_timestamp DESC)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_scan_history_symbol ON scan_history (symbol)")
+
+
 def init_db():
-    """Initializes the database with the new Enterprise Schema."""
-    try:
-        with get_connection() as conn:
-            c = conn.cursor()
+    if _can_use_neon():
+        _ensure_scan_history_table_neon()
+        _exec(
+            """
+            CREATE TABLE IF NOT EXISTS scans (
+                scan_id BIGSERIAL PRIMARY KEY,
+                timestamp TIMESTAMPTZ NOT NULL,
+                universe TEXT,
+                scan_type TEXT,
+                status TEXT
+            )
+            """
+        )
+        _exec(
+            """
+            CREATE TABLE IF NOT EXISTS scan_entries (
+                id BIGSERIAL PRIMARY KEY,
+                scan_id BIGINT,
+                symbol TEXT,
+                scheme_code TEXT,
+                category TEXT,
+                score NUMERIC,
+                price NUMERIC,
+                integrity_label TEXT,
+                drift_status TEXT,
+                drift_message TEXT
+            )
+            """
+        )
+        _exec(
+            """
+            CREATE TABLE IF NOT EXISTS fund_metrics (
+                id BIGSERIAL PRIMARY KEY,
+                scan_id BIGINT,
+                symbol TEXT,
+                alpha NUMERIC,
+                beta NUMERIC,
+                te NUMERIC,
+                sortino NUMERIC,
+                max_dd NUMERIC,
+                win_rate NUMERIC,
+                upside NUMERIC,
+                downside NUMERIC,
+                cagr NUMERIC
+            )
+            """
+        )
+        _exec(
+            """
+            CREATE TABLE IF NOT EXISTS alerts (
+                id BIGSERIAL PRIMARY KEY,
+                scan_id BIGINT,
+                symbol TEXT,
+                alert_type TEXT,
+                severity TEXT,
+                message TEXT,
+                timestamp TIMESTAMPTZ
+            )
+            """
+        )
+        _exec(
+            """
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                timestamp TIMESTAMPTZ,
+                action TEXT,
+                universe TEXT,
+                details TEXT
+            )
+            """
+        )
+        _exec(
+            """
+            CREATE TABLE IF NOT EXISTS algo_trade_log (
+                id BIGSERIAL PRIMARY KEY,
+                timestamp TIMESTAMPTZ NOT NULL,
+                strategy_name TEXT,
+                symbol TEXT,
+                action TEXT,
+                details TEXT,
+                status TEXT
+            )
+            """
+        )
+        _exec(
+            """
+            CREATE TABLE IF NOT EXISTS scan_history_details (
+                id BIGSERIAL PRIMARY KEY,
+                scan_id BIGINT,
+                symbol TEXT,
+                raw_data JSONB
+            )
+            """
+        )
+        return
 
-            # 1. Scans Metadata Table
-            # Added scan_type column for unified tracking
-            c.execute('''CREATE TABLE IF NOT EXISTS scans (
-                            scan_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            timestamp TEXT NOT NULL,
-                            universe TEXT,
-                            scan_type TEXT,
-                            status TEXT
-                        )''')
+    with _sqlite_connection() as conn:
+        c = conn.cursor()
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS scans (
+                scan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                universe TEXT,
+                scan_type TEXT,
+                status TEXT
+            )"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS scan_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER,
+                symbol TEXT,
+                scheme_code TEXT,
+                category TEXT,
+                score REAL,
+                price REAL,
+                integrity_label TEXT,
+                drift_status TEXT,
+                drift_message TEXT
+            )"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS fund_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER,
+                symbol TEXT,
+                alpha REAL,
+                beta REAL,
+                te REAL,
+                sortino REAL,
+                max_dd REAL,
+                win_rate REAL,
+                upside REAL,
+                downside REAL,
+                cagr REAL
+            )"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER,
+                symbol TEXT,
+                alert_type TEXT,
+                severity TEXT,
+                message TEXT,
+                timestamp TEXT
+            )"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS benchmark_history (
+                ticker TEXT,
+                date TEXT,
+                close REAL,
+                ret REAL,
+                PRIMARY KEY (ticker, date)
+            )"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS scan_commodities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER,
+                symbol TEXT,
+                global_price REAL,
+                local_price REAL,
+                usd_inr REAL,
+                parity_price REAL,
+                spread REAL,
+                arb_yield REAL,
+                action_label TEXT
+            )"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS algo_trade_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                strategy_name TEXT,
+                symbol TEXT,
+                action TEXT,
+                details TEXT,
+                status TEXT
+            )"""
+        )
+        c.execute("""CREATE TABLE IF NOT EXISTS audit_logs (timestamp TEXT, action TEXT, universe TEXT, details TEXT)""")
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS scan_history_details (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id INTEGER,
+                symbol TEXT
+            )"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS scan_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_timestamp TEXT,
+                symbol TEXT,
+                conviction_score REAL,
+                regime TEXT,
+                sub_scores TEXT,
+                raw_data TEXT
+            )"""
+        )
+        c.execute("CREATE INDEX IF NOT EXISTS idx_scan_history_timestamp ON scan_history(scan_timestamp)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_scan_history_symbol ON scan_history(symbol)")
 
-            # Ensure scan_type column exists (Schema Evolution for existing DBs)
-            try:
-                c.execute("SELECT scan_type FROM scans LIMIT 1")
-            except sqlite3.OperationalError:
-                c.execute("ALTER TABLE scans ADD COLUMN scan_type TEXT")
-
-            # 2. Scan Results (Fact Table) - RENAMED TO scan_entries TO AVOID COLLISION
-            # scan_id links to scans.id
-            c.execute('''CREATE TABLE IF NOT EXISTS scan_entries (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            scan_id INTEGER,
-                            symbol TEXT,
-                            scheme_code TEXT,
-                            category TEXT,
-                            score REAL,
-                            price REAL,
-                            integrity_label TEXT,
-                            drift_status TEXT,
-                            drift_message TEXT,
-                            FOREIGN KEY(scan_id) REFERENCES scans(scan_id)
-                        )''')
-
-            # 3. Fund Metrics (Details)
-            c.execute('''CREATE TABLE IF NOT EXISTS fund_metrics (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            scan_id INTEGER,
-                            symbol TEXT,
-                            alpha REAL,
-                            beta REAL,
-                            te REAL,
-                            sortino REAL,
-                            max_dd REAL,
-                            win_rate REAL,
-                            upside REAL,
-                            downside REAL,
-                            cagr REAL,
-                            FOREIGN KEY(scan_id) REFERENCES scans(scan_id)
-                        )''')
-
-            # 4. Alerts
-            c.execute('''CREATE TABLE IF NOT EXISTS alerts (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            scan_id INTEGER,
-                            symbol TEXT,
-                            alert_type TEXT,
-                            severity TEXT,
-                            message TEXT,
-                            timestamp TEXT,
-                            FOREIGN KEY(scan_id) REFERENCES scans(scan_id)
-                        )''')
-
-            # 5. Benchmark History (Caching)
-            # Composite PK: ticker + date
-            c.execute('''CREATE TABLE IF NOT EXISTS benchmark_history (
-                            ticker TEXT,
-                            date TEXT,
-                            close REAL,
-                            ret REAL,
-                            PRIMARY KEY (ticker, date)
-                        )''')
-
-            # 6. Commodity Scans (Auto-created if missing)
-            c.execute('''CREATE TABLE IF NOT EXISTS scan_commodities (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            scan_id INTEGER,
-                            symbol TEXT,
-                            global_price REAL,
-                            local_price REAL,
-                            usd_inr REAL,
-                            parity_price REAL,
-                            spread REAL,
-                            arb_yield REAL,
-                            action_label TEXT,
-                            FOREIGN KEY(scan_id) REFERENCES scans(scan_id)
-                        )''')
-
-            # 7. Algo Trade Log (Auto-created if missing)
-            c.execute('''CREATE TABLE IF NOT EXISTS algo_trade_log (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            timestamp TEXT NOT NULL,
-                            strategy_name TEXT,
-                            symbol TEXT,
-                            action TEXT,
-                            details TEXT,
-                            status TEXT
-                        )''')
-
-            # 8. Audit Logs
-            c.execute('''CREATE TABLE IF NOT EXISTS audit_logs (
-                            timestamp TEXT,
-                            action TEXT,
-                            universe TEXT,
-                            details TEXT
-                        )''')
-
-            # 9. Unified Scan History Details
-            # Stores heterogenous results (Stocks, Options, Commodities) using automated schema evolution
-            c.execute('''CREATE TABLE IF NOT EXISTS scan_history_details (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            scan_id INTEGER,
-                            symbol TEXT,
-                            FOREIGN KEY(scan_id) REFERENCES scans(scan_id)
-                        )''')
-
-            # Legacy Tables Support (Optional: keep them if needed or let them be)
-            # c.execute('''CREATE TABLE IF NOT EXISTS scan_results ...''') # Old flat table
-
-            conn.commit()
-
-            # Create Indexes for Performance
-            c.execute("CREATE INDEX IF NOT EXISTS idx_scans_ts ON scans(timestamp)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_scan_history_scan_id ON scan_history_details(scan_id)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_entries_scan_sym ON scan_entries(scan_id, symbol)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_metrics_scan_sym ON fund_metrics(scan_id, symbol)")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(timestamp)")
-
-            # Commit handled by context manager on exit (if no error)? No, sqlite3 context manager commits on success.
-            # But explicit commit is safer if doing DDL sometimes.
-            # The pattern `with conn:` automatically commits.
-
-    except Exception as e:
-        print(f"Database initialization error: {e}")
 
 def log_scan_results(df, table_name="scan_results"):
-    """
-    Logs scan results to SQLite with automated schema evolution.
-    Checks for new columns in df and adds them to the table if missing.
-    """
-    if df.empty: return
+    if df.empty:
+        return
+    if _can_use_neon() and table_name == "scan_history":
+        for row in df.to_dict(orient="records"):
+            _exec(
+                """
+                INSERT INTO scan_history (scan_timestamp, symbol, conviction_score, regime, sub_scores, raw_data)
+                VALUES (COALESCE(:scan_timestamp, NOW()), :symbol, :conviction_score, :regime, CAST(:sub_scores AS JSONB), CAST(:raw_data AS JSONB))
+                """,
+                {
+                    "scan_timestamp": row.get("scan_timestamp"),
+                    "symbol": row.get("symbol") or row.get("Symbol"),
+                    "conviction_score": row.get("conviction_score") or row.get("Conviction Score") or row.get("Score"),
+                    "regime": row.get("regime") or row.get("Regime"),
+                    "sub_scores": json.dumps(row.get("sub_scores", {})),
+                    "raw_data": json.dumps(row),
+                },
+            )
+        return
 
-    try:
-        with get_connection() as conn:
-            c = conn.cursor()
+    if _can_use_neon():
+        engine = get_neon_conn().session.get_bind()
+        df.to_sql(table_name, engine, if_exists="append", index=False)
+        return
 
-            # Check if table exists
-            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
-            table_exists = c.fetchone()
+    with _sqlite_connection() as conn:
+        df.to_sql(table_name, conn, if_exists="append", index=False)
 
-            if not table_exists:
-                df.to_sql(table_name, conn, if_exists='replace', index=False)
-            else:
-                # Get existing columns
-                c.execute(f"PRAGMA table_info({table_name})") # PRAGMA doesn't support ? params easily
-                existing_cols = {row[1] for row in c.fetchall()}
-
-                # Find new columns
-                new_cols = [col for col in df.columns if col not in existing_cols]
-
-                for col in new_cols:
-                    # Determine type roughly
-                    dtype = df[col].dtype
-                    sql_type = "TEXT"
-                    if pd.api.types.is_float_dtype(dtype):
-                        sql_type = "REAL"
-                    elif pd.api.types.is_integer_dtype(dtype):
-                        sql_type = "INTEGER"
-
-                    try:
-                        # Column names should be quoted to handle spaces/special chars
-                        c.execute(f'ALTER TABLE {table_name} ADD COLUMN "{col}" {sql_type}')
-                        print(f"Schema Evolution: Added column '{col}' to '{table_name}'")
-                    except Exception as e:
-                        print(f"Error adding column {col}: {e}")
-
-                # Append data
-                df.to_sql(table_name, conn, if_exists='append', index=False)
-
-            # Commit is automatic with context manager, but df.to_sql might commit internally?
-            # df.to_sql uses the connection. If we are in a transaction, it joins it.
-            # sqlite3 connection context manager handles the transaction.
-    except Exception as e:
-        print(f"Error logging scan results: {e}")
-
-# --- NEW INSERTION LOGIC ---
 
 def register_scan(timestamp, universe="Mutual Funds", scan_type="MF", status="In Progress"):
-    """Creates a new scan record and returns the scan_id."""
-    with get_connection() as conn:
-        c = conn.cursor()
-        c.execute("INSERT INTO scans (timestamp, universe, scan_type, status) VALUES (?, ?, ?, ?)",
-                  (timestamp, universe, scan_type, status))
-        scan_id = c.lastrowid
-        # Transaction committed on exit
-    return scan_id
+    if _can_use_neon():
+        conn = get_neon_conn()
+        res = conn.session.execute(
+            text(
+                """
+                INSERT INTO scans (timestamp, universe, scan_type, status)
+                VALUES (:timestamp, :universe, :scan_type, :status)
+                RETURNING scan_id
+                """
+            ),
+            {"timestamp": timestamp, "universe": universe, "scan_type": scan_type, "status": status},
+        )
+        conn.session.commit()
+        return int(res.scalar_one())
+
+    with _sqlite_connection() as conn:
+        cur = conn.execute(
+            "INSERT INTO scans (timestamp, universe, scan_type, status) VALUES (?, ?, ?, ?)",
+            (timestamp, universe, scan_type, status),
+        )
+        return cur.lastrowid
+
 
 def save_scan_results(scan_id, df):
-    """
-    Unified function to save any scan result dataframe to scan_history_details.
-    Adds scan_id to the dataframe and uses log_scan_results for schema evolution.
-    """
-    if df.empty: return
-
-    # Ensure scan_id is in the dataframe
-    # Make a copy to avoid modifying original DF reference if used elsewhere
+    if df.empty:
+        return
     df_to_save = df.copy()
-    df_to_save['scan_id'] = scan_id
+    df_to_save["scan_id"] = scan_id
 
-    # Use existing schema evolution logic
+    if _can_use_neon():
+        for row in df_to_save.to_dict(orient="records"):
+            _exec(
+                "INSERT INTO scan_history_details (scan_id, symbol, raw_data) VALUES (:scan_id, :symbol, CAST(:raw_data AS JSONB))",
+                {
+                    "scan_id": scan_id,
+                    "symbol": row.get("symbol") or row.get("Symbol"),
+                    "raw_data": json.dumps(row),
+                },
+            )
+        return
+
     log_scan_results(df_to_save, table_name="scan_history_details")
 
+
 def update_scan_status(scan_id, status):
-    with get_connection() as conn:
-        c = conn.cursor()
-        c.execute("UPDATE scans SET status = ? WHERE scan_id = ?", (status, scan_id))
+    _exec("UPDATE scans SET status = :status WHERE scan_id = :scan_id", {"status": status, "scan_id": scan_id})
+
 
 def bulk_insert_results(results_df, metrics_df, alerts_df=None):
-    """
-    Inserts data into scan_entries, fund_metrics, and alerts tables.
-    Expects DFs to have 'scan_id' column.
-    """
-    try:
-        with get_connection() as conn:
-            if not results_df.empty:
-                results_df.to_sql('scan_entries', conn, if_exists='append', index=False)
+    if not results_df.empty:
+        log_scan_results(results_df, table_name="scan_entries")
+    if not metrics_df.empty:
+        log_scan_results(metrics_df, table_name="fund_metrics")
+    if alerts_df is not None and not alerts_df.empty:
+        alerts_df = alerts_df.rename(columns={"type": "alert_type"})
+        log_scan_results(alerts_df, table_name="alerts")
 
-            if not metrics_df.empty:
-                metrics_df.to_sql('fund_metrics', conn, if_exists='append', index=False)
-
-            if alerts_df is not None and not alerts_df.empty:
-                alerts_df.to_sql('alerts', conn, if_exists='append', index=False)
-            # Commit on exit
-    except Exception as e:
-        print(f"Bulk insert error: {e}")
-
-# --- BENCHMARK CACHING ---
 
 def get_cached_benchmark(ticker, start_date=None):
-    """Retrieves benchmark data from SQLite."""
-    with get_connection() as conn:
-        query = "SELECT date, close, ret FROM benchmark_history WHERE ticker = ?"
-        params = [ticker]
+    query = "SELECT date, close, ret FROM benchmark_history WHERE ticker = :ticker"
+    params = {"ticker": ticker}
+    if start_date:
+        query += " AND date >= :start_date"
+        params["start_date"] = start_date
+    query += " ORDER BY date"
+    try:
+        df = _read_df(query, params=params)
+        if not df.empty:
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.set_index("date")
+        return df
+    except Exception:
+        return pd.DataFrame()
 
-        if start_date:
-            query += " AND date >= ?"
-            params.append(start_date)
-
-        query += " ORDER BY date"
-
-        try:
-            df = pd.read_sql(query, conn, params=params)
-            if not df.empty:
-                df['date'] = pd.to_datetime(df['date'])
-                df = df.set_index('date')
-            return df
-        except Exception:
-            return pd.DataFrame()
 
 def save_benchmark_data(ticker, df):
-    """Saves benchmark data to SQLite (Upsert)."""
-    if df.empty: return
-
-    # Prepare data
-    data_to_insert = []
+    if df.empty:
+        return
+    if _can_use_neon():
+        return
+    rows = []
     for date, row in df.iterrows():
-        # Handle cases where ret might be NaN (start of series)
-        ret = row['ret'] if pd.notna(row['ret']) else 0.0
-        # If 'Close' is missing, skip or use 0?
-        close = row['Close'] if 'Close' in row else 0.0
+        rows.append((ticker, date.strftime("%Y-%m-%d"), row.get("Close", 0.0), row.get("ret", 0.0) or 0.0))
+    with _sqlite_connection() as conn:
+        conn.executemany("INSERT OR REPLACE INTO benchmark_history (ticker, date, close, ret) VALUES (?, ?, ?, ?)", rows)
 
-        date_str = date.strftime('%Y-%m-%d')
-        data_to_insert.append((ticker, date_str, close, ret))
 
-    try:
-        with get_connection() as conn:
-            c = conn.cursor()
-            c.executemany("INSERT OR REPLACE INTO benchmark_history (ticker, date, close, ret) VALUES (?, ?, ?, ?)", data_to_insert)
-    except Exception as e:
-        print(f"Error saving benchmark {ticker}: {e}")
-
-# --- DATA FETCHING (UI Support) ---
-
-# Legacy Wrapper for UI compatibility with new Schema
 @st.cache_data(ttl=60)
 def fetch_timestamps(table_name="scan_mf", scan_type=None):
-    """
-    Fetches available scan timestamps.
-    Now reads from 'scans' table (filtered by scan_type if provided) but falls back to 'scan_mf' for legacy.
-    """
-    timestamps = []
-
-    # 1. Try New Schema
+    query = "SELECT timestamp FROM scans WHERE status='Completed'"
+    params = {}
+    if scan_type:
+        query += " AND scan_type = :scan_type"
+        params["scan_type"] = scan_type
+    query += " ORDER BY timestamp DESC"
     try:
-        with get_connection() as conn:
-            query = "SELECT timestamp FROM scans WHERE status='Completed'"
-            params = []
-            if scan_type:
-                query += " AND scan_type = ?"
-                params.append(scan_type)
+        df = _read_df(query, params=params, ttl="5m")
+        return df["timestamp"].tolist() if not df.empty else []
+    except Exception:
+        return []
 
-            query += " ORDER BY timestamp DESC"
-
-            new_scans = pd.read_sql(query, conn, params=params)
-            if not new_scans.empty:
-                timestamps.extend(new_scans['timestamp'].tolist())
-    except Exception as e:
-        pass
-
-    # 2. Try Old Schema (Legacy) - Only if scan_type matches legacy types or is None
-    try:
-        with get_connection() as conn:
-            old_scans = pd.read_sql("SELECT DISTINCT timestamp FROM scan_mf ORDER BY timestamp DESC", conn)
-            if not old_scans.empty:
-                # Avoid duplicates
-                existing = set(timestamps)
-                legacy = [t for t in old_scans['timestamp'].tolist() if t not in existing]
-                timestamps.extend(legacy)
-    except Exception as e:
-        logger.error(f"db error: {e}")
-
-    # Sort Descending
-    timestamps.sort(reverse=True)
-    return timestamps
 
 @st.cache_data(ttl=60)
 def fetch_history_data(table_name, timestamp, scan_type=None):
+    scan_info = _read_df("SELECT scan_id, scan_type FROM scans WHERE timestamp = :timestamp", {"timestamp": timestamp}, ttl="5m")
+    if scan_info.empty:
+        return pd.DataFrame()
+
+    scan_id = scan_info.iloc[0]["scan_id"]
+    db_scan_type = scan_info.iloc[0].get("scan_type")
+
+    if db_scan_type in ["STOCK", "OPTIONS", "COMMODITY"]:
+        df = _read_df("SELECT raw_data FROM scan_history_details WHERE scan_id = :scan_id", {"scan_id": scan_id}, ttl="5m")
+        if "raw_data" in df.columns and not df.empty:
+            return pd.json_normalize(df["raw_data"].apply(lambda x: x if isinstance(x, dict) else json.loads(x)))
+        return df
+
+    query = """
+    SELECT
+        r.symbol as Symbol,
+        r.scheme_code as "Scheme Code",
+        r.category as Category,
+        r.score as Score,
+        r.price as Price,
+        r.integrity_label as Integrity,
+        r.drift_status as "Drift Status",
+        r.drift_message as "Drift Message",
+        m.alpha as "Alpha (True)",
+        m.beta as Beta,
+        m.te as "Tracking Error",
+        m.sortino as Sortino,
+        m.max_dd as "Max Drawdown",
+        m.win_rate as "Win Rate",
+        m.upside as "Upside Cap",
+        m.downside as "Downside Cap",
+        m.cagr as cagr
+    FROM scan_entries r
+    LEFT JOIN fund_metrics m ON r.scan_id = m.scan_id AND r.symbol = m.symbol
+    WHERE r.scan_id = :scan_id
     """
-    Fetches scan data for a specific timestamp.
-    Performs a JOIN between scan_entries and fund_metrics if data is in new schema.
-    Falls back to legacy table if not found in new schema.
-    """
-    with get_connection() as conn:
-        # 1. Check if this timestamp exists in 'scans' table
-        scan_info = pd.read_sql("SELECT scan_id, scan_type FROM scans WHERE timestamp = ?", conn, params=(timestamp,))
+    df = _read_df(query, {"scan_id": scan_id}, ttl="5m")
+    if not df.empty and "Score" in df.columns:
+        df["Fortress Score"] = df["Score"]
+    return df
 
-        if not scan_info.empty:
-            scan_id = scan_info.iloc[0]['scan_id']
-            # If scan_type was passed, ensure it matches? Or just use what DB says.
-            db_scan_type = scan_info.iloc[0].get('scan_type')
-
-            # Logic for unified history
-            if db_scan_type in ['STOCK', 'OPTIONS', 'COMMODITY']:
-                 try:
-                     # Fetch from unified scan_history_details
-                     df = pd.read_sql("SELECT * FROM scan_history_details WHERE scan_id = ?", conn, params=(scan_id,))
-                     return df
-                 except Exception as e:
-                     print(f"Error fetching unified history data: {e}")
-
-            if table_name == "scan_commodities" and (db_scan_type is None or db_scan_type == 'COMMODITY'):
-                # Backward compatibility or specific table usage
-                try:
-                    df = pd.read_sql("SELECT * FROM scan_commodities WHERE scan_id = ?", conn, params=(scan_id,))
-                    return df
-                except Exception as e:
-                    print(f"Error fetching commodity data: {e}")
-
-            # Default MF Logic (JOIN Query)
-            query = """
-            SELECT
-                r.symbol as Symbol,
-                r.scheme_code as 'Scheme Code',
-                r.category as Category,
-                r.score as Score,
-                r.price as Price,
-                r.integrity_label as Integrity,
-                r.drift_status as 'Drift Status',
-                r.drift_message as 'Drift Message',
-                m.alpha as 'Alpha (True)',
-                m.beta as Beta,
-                m.te as 'Tracking Error',
-                m.sortino as Sortino,
-                m.max_dd as 'Max Drawdown',
-                m.win_rate as 'Win Rate',
-                m.upside as 'Upside Cap',
-                m.downside as 'Downside Cap',
-                m.cagr as cagr
-            FROM scan_entries r
-            LEFT JOIN fund_metrics m ON r.scan_id = m.scan_id AND r.symbol = m.symbol
-            WHERE r.scan_id = ?
-            """
-            try:
-                df = pd.read_sql(query, conn, params=(scan_id,))
-
-                # Post-processing to match expected UI columns
-                # The new 'Score' is the 'Fortress Score' (already normalized in engine)
-                if not df.empty and 'Score' in df.columns:
-                    df['Fortress Score'] = df['Score']
-
-                return df
-            except Exception as e:
-                # Fallback to scan_history_details if MF logic fails (maybe it was stored there?)
-                 try:
-                     df = pd.read_sql("SELECT * FROM scan_history_details WHERE scan_id = ?", conn, params=(scan_id,))
-                     return df
-                 except:
-                     print(f"Error fetching joined data: {e}")
-
-        # 2. Fallback to Legacy 'scan_mf'
-        try:
-            df = pd.read_sql(f"SELECT * FROM scan_mf WHERE timestamp=?", conn, params=(timestamp,))
-            return df
-        except:
-            return pd.DataFrame()
 
 @st.cache_data(ttl=60)
 def fetch_symbol_history(table_name, symbol):
+    query = """
+    SELECT s.timestamp, r.score as Score, r.price as Price, m.alpha as "Alpha (True)", m.beta as Beta, m.te as "Tracking Error"
+    FROM scan_entries r
+    JOIN scans s ON r.scan_id = s.scan_id
+    LEFT JOIN fund_metrics m ON r.scan_id = m.scan_id AND r.symbol = m.symbol
+    WHERE r.symbol = :symbol
+    ORDER BY s.timestamp
     """
-    Fetches history for a symbol across all scans.
-    Unifies data from new schema and old schema.
-    """
-    with get_connection() as conn:
-        # New Schema History
-        query_new = """
-        SELECT
-            s.timestamp,
-            r.score as Score,
-            r.price as Price,
-            m.alpha as 'Alpha (True)',
-            m.beta as Beta,
-            m.te as 'Tracking Error'
-        FROM scan_entries r
-        JOIN scans s ON r.scan_id = s.scan_id
-        LEFT JOIN fund_metrics m ON r.scan_id = m.scan_id AND r.symbol = m.symbol
-        WHERE r.symbol = ?
-        ORDER BY s.timestamp
-        """
+    return _read_df(query, {"symbol": symbol}, ttl="5m")
 
-        df_new = pd.DataFrame()
-        try:
-            df_new = pd.read_sql(query_new, conn, params=(symbol,))
-        except Exception as e:
-            logger.error(f"db error: {e}")
 
-        # Old Schema History
-        df_old = pd.DataFrame()
-        try:
-            # Check columns of scan_mf first? Assumes standard
-            # We need to map old columns to new names if they differ
-            # Old: Score, Price, Alpha (True) [if saved? logic saves 'Alpha (True)' key in json but maybe column name?]
-            # logic.py saves: "Alpha (True)": metrics['alpha']
-            df_old = pd.read_sql("SELECT timestamp, Score, Price, `Alpha (True)`, Beta, `Tracking Error` FROM scan_mf WHERE Symbol = ?", conn, params=(symbol,))
-        except Exception as e:
-            logger.error(f"db error: {e}")
-
-    # Combine
-    if not df_new.empty and not df_old.empty:
-        # Filter old to remove duplicates (timestamps present in new)
-        existing_ts = set(df_new['timestamp'])
-        df_old = df_old[~df_old['timestamp'].isin(existing_ts)]
-        return pd.concat([df_old, df_new]).sort_values('timestamp')
-    elif not df_new.empty:
-        return df_new
-    elif not df_old.empty:
-        return df_old
-
-    return pd.DataFrame()
-
-# ---------------- LOGGING ----------------
 def log_audit(action, universe="Global", details=""):
-    try:
-        with get_connection() as conn:
-            c = conn.cursor()
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            c.execute("INSERT INTO audit_logs VALUES (?,?,?,?)", (ts, action, universe, details))
-    except Exception as e:
-        logger.error(f"db error: {e}")
+    _exec(
+        "INSERT INTO audit_logs (timestamp, action, universe, details) VALUES (:timestamp, :action, :universe, :details)",
+        {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "action": action,
+            "universe": universe,
+            "details": details,
+        },
+    )
+
 
 def log_algo_trade(strategy, symbol, action, details, status="Active"):
-    try:
-        with get_connection() as conn:
-            c = conn.cursor()
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            c.execute("INSERT INTO algo_trade_log (timestamp, strategy_name, symbol, action, details, status) VALUES (?, ?, ?, ?, ?, ?)",
-                      (ts, strategy, symbol, action, details, status))
-    except Exception as e:
-        print(f"Error logging trade: {e}")
+    _exec(
+        """
+        INSERT INTO algo_trade_log (timestamp, strategy_name, symbol, action, details, status)
+        VALUES (:timestamp, :strategy, :symbol, :action, :details, :status)
+        """,
+        {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "strategy": strategy,
+            "symbol": symbol,
+            "action": action,
+            "details": details,
+            "status": status,
+        },
+    )
+
 
 def fetch_active_trades():
-    try:
-        with get_connection() as conn:
-            return pd.read_sql("SELECT * FROM algo_trade_log WHERE status='Active'", conn)
-    except:
-        return pd.DataFrame()
+    return _read_df("SELECT * FROM algo_trade_log WHERE status='Active'", ttl="5m")
+
 
 def close_all_trades():
-    """Marks all active trades as Closed."""
-    with get_connection() as conn:
-        c = conn.cursor()
-        c.execute("UPDATE algo_trade_log SET status='Closed' WHERE status='Active'")
+    _exec("UPDATE algo_trade_log SET status='Closed' WHERE status='Active'")
