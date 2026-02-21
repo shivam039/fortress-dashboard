@@ -104,6 +104,9 @@ def fetch_mf_snapshot(scheme_codes: list[str]) -> pd.DataFrame:
                     "Rolling Std": rolling_std,
                 }
             )
+            # Defensive sleep to respect mfapi.in rate limits
+            time.sleep(0.5)
+
         except Exception as e:
             logger.error(f"mf_lab error: {e}")
 

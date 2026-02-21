@@ -79,14 +79,21 @@ def render_sidebar():
         f"Regime: {regime['Market_Regime']} | Multiplier: {regime['Regime_Multiplier']:.2f} | India VIX: {regime['VIX']:.2f}"
     )
 
-    # Sidebar Multiselect for Dynamic Columns
+    # Sidebar Multiselect for Dynamic Columns (Persisted via session_state)
+    if 'selected_columns' not in st.session_state:
+        st.session_state['selected_columns'] = list(ALL_COLUMNS.keys())
+
     selected_columns = st.sidebar.multiselect(
-        "Select Columns to Display", options=list(ALL_COLUMNS.keys()), default=list(ALL_COLUMNS.keys())
+        "Select Columns to Display",
+        options=list(ALL_COLUMNS.keys()),
+        default=st.session_state['selected_columns']
     )
+    st.session_state['selected_columns'] = selected_columns
 
     scoring_config = {
         "weights": weights,
         "enable_regime": enable_regime,
+        "regime_multiplier": regime["Regime_Multiplier"],
         "liquidity_cr_min": liquidity_cr_min,
         "market_cap_cr_min": market_cap_cr_min,
         "price_min": price_min,
@@ -140,6 +147,11 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
         except: pass
 
     # ---------------- MAIN SCAN ----------------
+    execute_scan_fragment(portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice, scoring_config)
+
+
+@st.fragment
+def execute_scan_fragment(portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice, scoring_config):
     if st.button("🚀 EXECUTE SYSTEM SCAN",type="primary",use_container_width=True):
         tickers = TICKER_GROUPS[selected_universe]
         results = []
@@ -152,6 +164,7 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
         # --- CHUNKED PROCESSING LOGIC ---
         chunk_size = 50 if selected_universe == "Nifty Smallcap 250" else len(tickers)
 
+        # Using st.fragment for non-blocking scan (Streamlit >=1.37)
         for i in range(0, len(tickers), chunk_size):
             chunk = tickers[i : i + chunk_size]
 
@@ -172,7 +185,10 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
                             hist = batch_data.dropna()
 
                         if not hist.empty and len(hist) >= 210:
-                            res = check_institutional_fortress(ticker, hist, tkr_obj, portfolio_val, risk_pct)
+                            # Pass regime_multiplier to logic
+                            reg_mult = scoring_config.get("regime_multiplier", 1.0)
+                            res = check_institutional_fortress(ticker, hist, tkr_obj, portfolio_val, risk_pct, regime_multiplier=reg_mult)
+
                             # Strictly filter Smallcap to Bullish results only as discussed
                             if res and (selected_universe != "Nifty Smallcap 250" or res['Score'] >= 60):
                                 results.append(res)
@@ -190,11 +206,8 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
         if results:
             df = pd.DataFrame(results)
 
-            # Sector rotation bonus (top 3 sectors by 3M perf proxy = avg Ret_90D)
-            sector_perf = df.groupby("Sector", as_index=False)["Ret_90D"].mean().sort_values("Ret_90D", ascending=False)
-            top_sectors = set(sector_perf.head(3)["Sector"].tolist())
-            df["Sector_Rotation_Bonus"] = df["Sector"].isin(top_sectors).astype(int) * 10
-            df["Context_Raw"] = pd.to_numeric(df.get("Context_Raw", 0), errors="coerce").fillna(0) + df["Sector_Rotation_Bonus"]
+            # Sector Rotation Bonus moved to logic.py (apply_advanced_scoring)
+            # We just apply advanced scoring which now handles the bonus calculation internally
 
             df = apply_advanced_scoring(df, scoring_config).sort_values("Score",ascending=False)
             filtered_out_df = df[df.get("Quality_Gate_Pass", True) == False].copy()

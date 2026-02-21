@@ -332,6 +332,55 @@ def init_db():
 def log_scan_results(df, table_name="scan_results"):
     if df.empty:
         return
+
+    # Bulk Schema Check & ALTER
+    # Ensure all columns in df exist in the DB table before insertion
+    try:
+        if _can_use_neon():
+            # Postgres / Neon Logic
+            existing_cols_df = _read_df(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = :table_name",
+                {"table_name": table_name},
+                ttl=1
+            )
+            # Only proceed if table exists (has columns)
+            if not existing_cols_df.empty:
+                existing_cols = set(existing_cols_df["column_name"].str.lower().tolist())
+                # Identify missing columns
+                missing_cols = [col for col in df.columns if col.lower() not in existing_cols]
+
+                if missing_cols:
+                    alter_stmts = []
+                    for col in missing_cols:
+                        # Map pandas types to SQL types
+                        sql_type = "NUMERIC" if pd.api.types.is_numeric_dtype(df[col]) else "TEXT"
+                        # Quote column name to handle special chars/case
+                        alter_stmts.append(f'ADD COLUMN "{col}" {sql_type}')
+
+                    if alter_stmts:
+                        # Postgres supports multiple ADD COLUMN in one statement
+                        full_sql = f'ALTER TABLE {table_name} {", ".join(alter_stmts)}'
+                        _exec(full_sql)
+
+        else:
+            # SQLite Logic
+            with _sqlite_connection() as conn:
+                # Check if table exists
+                res = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,)).fetchone()
+                if res:
+                    existing_info = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+                    existing_cols = {info[1] for info in existing_info}
+                    missing_cols = [col for col in df.columns if col not in existing_cols]
+
+                    if missing_cols:
+                        # SQLite requires separate statements for ADD COLUMN (standard compliance)
+                        for col in missing_cols:
+                            sql_type = "REAL" if pd.api.types.is_numeric_dtype(df[col]) else "TEXT"
+                            conn.execute(f'ALTER TABLE {table_name} ADD COLUMN "{col}" {sql_type}')
+                        conn.commit()
+    except Exception as e:
+        logger.warning(f"Schema evolution failed for {table_name}: {e}")
+
     if _can_use_neon() and table_name == "scan_history":
         for row in df.to_dict(orient="records"):
             _exec(

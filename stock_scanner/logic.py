@@ -3,7 +3,7 @@ import pandas as pd
 import pandas_ta as ta
 import datetime
 import yfinance as yf
-from fortress_config import SECTOR_MAP, NIFTY_SYMBOL
+from fortress_config import SECTOR_MAP, NIFTY_SYMBOL, TICKER_GROUPS, SMALLCAP_LIQUIDITY_MIN_CR
 from datetime import datetime
 
 _BENCHMARK_CACHE = {}
@@ -157,6 +157,15 @@ def apply_advanced_scoring(df, scoring_config=None):
 
     df = df.copy()
 
+    # Sector rotation bonus (moved from UI to Core Logic)
+    # Calculate top sectors based on 3M perf proxy (Ret_90D) directly from the current dataframe
+    if "Sector" in df.columns and "Ret_90D" in df.columns:
+        sector_perf = df.groupby("Sector")["Ret_90D"].mean().sort_values(ascending=False)
+        top_sectors = set(sector_perf.head(3).index.tolist())
+        df["Sector_Rotation_Bonus"] = df["Sector"].isin(top_sectors).astype(int) * 10
+        # Add to Context_Raw before normalization
+        df["Context_Raw"] = pd.to_numeric(df.get("Context_Raw", 0), errors="coerce").fillna(0) + df["Sector_Rotation_Bonus"]
+
     # Normalize category sub-scores within scan universe
     df["Technical_Score"] = _normalize_series(df.get("Technical_Raw", 50)).round(2)
     df["Fundamental_Score"] = _normalize_series(df.get("Fundamental_Raw", 50)).round(2)
@@ -230,7 +239,7 @@ def apply_advanced_scoring(df, scoring_config=None):
     df["Context_Score"] = df["Context_Score"]
     return df
 
-def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk_per_trade):
+def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk_per_trade, regime_multiplier=1.0):
     try:
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
@@ -238,6 +247,17 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
 
         close, high, low, open_price = data["Close"], data["High"], data["Low"], data["Open"]
         volume = data.get("Volume", pd.Series(0, index=data.index, dtype=float)).fillna(0)
+
+        price = _safe_float(close.iloc[-1])
+        avg_volume_20 = _safe_float(volume.tail(20).mean())
+
+        # --- Small-Cap Liquidity Guard ---
+        # If in Smallcap universe and liquidity < threshold, fail early
+        if ticker in TICKER_GROUPS.get("Nifty Smallcap 250", []):
+            avg_val_cr = (avg_volume_20 * price) / 1e7
+            if avg_val_cr < SMALLCAP_LIQUIDITY_MIN_CR:
+                 # Early exit for illiquid smallcaps
+                 return None
 
         ema200 = _safe_float(ta.ema(close,200).iloc[-1])
         ema50 = _safe_float(ta.ema(close,50).iloc[-1])
@@ -247,12 +267,12 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         st_df = ta.supertrend(high,low,close,10,3)
         trend_col = [c for c in st_df.columns if c.startswith("SUPERTd")][0]
         trend_dir = int(_safe_float(st_df[trend_col].iloc[-1]))
-        price = _safe_float(close.iloc[-1])
+
         prev_close = _safe_float(close.iloc[-2])
         curr_open = _safe_float(open_price.iloc[-1])
         curr_low = _safe_float(low.iloc[-1])
         current_volume = _safe_float(volume.iloc[-1])
-        avg_volume_20 = _safe_float(volume.tail(20).mean())
+
         vol_surge_ratio = (current_volume / avg_volume_20) if avg_volume_20 > 0 else 0.0
         vol_surge = vol_surge_ratio > 1.5
 
@@ -262,7 +282,14 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         tech_base = price>ema200 and trend_dir==1
         mtf_aligned = price > weekly_ema30 if weekly_ema30 > 0 else False
 
-        sl_distance = atr*1.5
+        # Regime-aware ATR Scaling
+        # Tighter stops in Bear to reduce stop-outs
+        safe_regime_mult = max(0.5, min(2.0, float(regime_multiplier)))
+        sl_mult_factor = 1.5 / safe_regime_mult
+        # Clamp multiplier between 1.0 and 2.0 to avoid extreme values as requested
+        sl_mult_factor = max(1.0, min(2.0, sl_mult_factor))
+
+        sl_distance = atr * sl_mult_factor
         sl_price = round(price-sl_distance,2)
         target_10d = round(price + atr*1.8,2)
         risk_amount = portfolio_value*risk_per_trade
