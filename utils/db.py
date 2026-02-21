@@ -160,55 +160,67 @@ def init_db():
     except Exception as e:
         print(f"Database initialization error: {e}")
 
+def _infer_sql_type(series):
+    dtype = series.dtype
+    if pd.api.types.is_float_dtype(dtype):
+        return "REAL"
+    if pd.api.types.is_integer_dtype(dtype):
+        return "INTEGER"
+    if pd.api.types.is_bool_dtype(dtype):
+        return "BOOLEAN"
+    if pd.api.types.is_datetime64_any_dtype(dtype):
+        return "TIMESTAMP"
+    return "TEXT"
+
+
 def log_scan_results(df, table_name="scan_results"):
     """
-    Logs scan results to SQLite with automated schema evolution.
-    Checks for new columns in df and adds them to the table if missing.
+    Logs scan results with automated schema evolution.
+    Uses bulk schema inspection + ALTER before appending rows.
     """
-    if df.empty: return
+    if df.empty:
+        return
 
     try:
         with get_connection() as conn:
-            c = conn.cursor()
+            with conn:
+                c = conn.cursor()
+                is_sqlite = isinstance(conn, sqlite3.Connection)
 
-            # Check if table exists
-            c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
-            table_exists = c.fetchone()
+                if is_sqlite:
+                    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
+                    table_exists = c.fetchone()
+                    if not table_exists:
+                        df.to_sql(table_name, conn, if_exists="replace", index=False)
+                        return
 
-            if not table_exists:
-                df.to_sql(table_name, conn, if_exists='replace', index=False)
-            else:
-                # Get existing columns
-                c.execute(f"PRAGMA table_info({table_name})") # PRAGMA doesn't support ? params easily
-                existing_cols = {row[1] for row in c.fetchall()}
+                    c.execute(f"PRAGMA table_info({table_name})")
+                    existing_cols = {row[1] for row in c.fetchall()}
+                else:
+                    c.execute(
+                        """
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public' AND table_name = %s
+                        """,
+                        (table_name,),
+                    )
+                    existing_cols = {row[0] for row in c.fetchall()}
 
-                # Find new columns
-                new_cols = [col for col in df.columns if col not in existing_cols]
+                missing_cols = [col for col in df.columns if col not in existing_cols]
 
-                for col in new_cols:
-                    # Determine type roughly
-                    dtype = df[col].dtype
-                    sql_type = "TEXT"
-                    if pd.api.types.is_float_dtype(dtype):
-                        sql_type = "REAL"
-                    elif pd.api.types.is_integer_dtype(dtype):
-                        sql_type = "INTEGER"
+                if missing_cols:
+                    add_clauses = [
+                        f'ADD COLUMN "{col}" {_infer_sql_type(df[col])}'
+                        for col in missing_cols
+                    ]
+                    alter_sql = f'ALTER TABLE "{table_name}" ' + ", ".join(add_clauses)
+                    c.execute(alter_sql)
 
-                    try:
-                        # Column names should be quoted to handle spaces/special chars
-                        c.execute(f'ALTER TABLE {table_name} ADD COLUMN "{col}" {sql_type}')
-                        print(f"Schema Evolution: Added column '{col}' to '{table_name}'")
-                    except Exception as e:
-                        print(f"Error adding column {col}: {e}")
-
-                # Append data
-                df.to_sql(table_name, conn, if_exists='append', index=False)
-
-            # Commit is automatic with context manager, but df.to_sql might commit internally?
-            # df.to_sql uses the connection. If we are in a transaction, it joins it.
-            # sqlite3 connection context manager handles the transaction.
+                df.to_sql(table_name, conn, if_exists="append", index=False)
     except Exception as e:
         print(f"Error logging scan results: {e}")
+
 
 # --- NEW INSERTION LOGIC ---
 

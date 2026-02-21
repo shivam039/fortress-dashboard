@@ -3,7 +3,14 @@ import pandas as pd
 import pandas_ta as ta
 import datetime
 import yfinance as yf
-from fortress_config import SECTOR_MAP, NIFTY_SYMBOL
+from fortress_config import (
+    SECTOR_MAP,
+    NIFTY_SYMBOL,
+    SECTOR_ROTATION_BONUS_POINTS,
+    TOP_SECTOR_COUNT,
+    SMALLCAP_LIQUIDITY_MIN_CR,
+    TICKER_GROUPS,
+)
 from datetime import datetime
 
 _BENCHMARK_CACHE = {}
@@ -67,6 +74,22 @@ def _safe_info_float(info, key, default=0.0):
 
 def _extract_sector(symbol):
     return SECTOR_MAP.get(symbol, "General")
+
+
+def _compute_sector_rotation_bonus(df):
+    if df is None or df.empty or "Sector" not in df.columns:
+        return pd.Series(0.0, index=df.index if df is not None else pd.Index([]))
+
+    sector_ret = pd.to_numeric(df.get("Ret_90D", np.nan), errors="coerce")
+    sector_perf = (
+        pd.DataFrame({"Sector": df["Sector"], "Ret_90D": sector_ret})
+        .dropna(subset=["Sector"])
+        .groupby("Sector", as_index=False)["Ret_90D"]
+        .mean()
+        .sort_values("Ret_90D", ascending=False)
+    )
+    top_sectors = set(sector_perf.head(TOP_SECTOR_COUNT)["Sector"].tolist())
+    return df["Sector"].isin(top_sectors).astype(float) * float(SECTOR_ROTATION_BONUS_POINTS)
 
 
 def _normalize_series(series):
@@ -136,6 +159,7 @@ def _apply_quality_gates(df, cfg):
         gate_conditions[f"MCap<{cfg['market_cap_cr_min']}Cr"] = pd.to_numeric(df.get(market_cap_col), errors="coerce") <= cfg["market_cap_cr_min"]
     if debt_col:
         gate_conditions[f"Debt/Equity>{cfg['max_debt_to_equity']}"] = pd.to_numeric(df.get(debt_col), errors="coerce") >= cfg["max_debt_to_equity"]
+    gate_conditions["LowLiquidityFlag"] = df.get("Liquidity_Flag", "").astype(str).eq("Low Liquidity - Avoid")
 
     gate_frame = pd.DataFrame({k: v.fillna(False) for k, v in gate_conditions.items()}, index=df.index)
     df["Quality_Gate_Pass"] = ~gate_frame.any(axis=1)
@@ -156,6 +180,10 @@ def apply_advanced_scoring(df, scoring_config=None):
         cfg["weights"] = _normalize_weight_map(cfg["weights"])
 
     df = df.copy()
+
+    sector_rotation_bonus = _compute_sector_rotation_bonus(df)
+    df["Sector_Rotation_Bonus"] = sector_rotation_bonus.round(2)
+    df["Context_Raw"] = pd.to_numeric(df.get("Context_Raw", 0), errors="coerce").fillna(0) + df["Sector_Rotation_Bonus"]
 
     # Normalize category sub-scores within scan universe
     df["Technical_Score"] = _normalize_series(df.get("Technical_Raw", 50)).round(2)
@@ -253,6 +281,24 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         curr_low = _safe_float(low.iloc[-1])
         current_volume = _safe_float(volume.iloc[-1])
         avg_volume_20 = _safe_float(volume.tail(20).mean())
+        avg_value_20d_cr = (avg_volume_20 * price) / 1e7 if price > 0 else 0.0
+        smallcap_universe = set(TICKER_GROUPS.get("Nifty Smallcap 250", []))
+        is_smallcap = ticker in smallcap_universe
+        if is_smallcap and avg_value_20d_cr < SMALLCAP_LIQUIDITY_MIN_CR:
+            return {
+                "Symbol": ticker,
+                "Verdict": "🚨 AVOID",
+                "Score": 0,
+                "Price": round(price, 2),
+                "Conviction": -1000,
+                "Liquidity_Flag": "Low Liquidity - Avoid",
+                "Avg_Value_20D_Cr": round(avg_value_20d_cr, 2),
+                "Sector": SECTOR_MAP.get(ticker, "General"),
+                "Technical_Raw": 0.0,
+                "Fundamental_Raw": 0.0,
+                "Sentiment_Raw": 0.0,
+                "Context_Raw": 0.0,
+            }
         vol_surge_ratio = (current_volume / avg_volume_20) if avg_volume_20 > 0 else 0.0
         vol_surge = vol_surge_ratio > 1.5
 
@@ -262,7 +308,10 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         tech_base = price>ema200 and trend_dir==1
         mtf_aligned = price > weekly_ema30 if weekly_ema30 > 0 else False
 
-        sl_distance = atr*1.5
+        regime_multiplier = float(detect_market_regime().get("Regime_Multiplier", 1.0))
+        regime_multiplier = float(np.clip(regime_multiplier, 1.0, 2.0))
+        # Regime-aware: tighter stops in Bear to reduce stop-outs
+        sl_distance = atr * (1.5 / regime_multiplier)
         sl_price = round(price-sl_distance,2)
         target_10d = round(price + atr*1.8,2)
         risk_amount = portfolio_value*risk_per_trade
@@ -511,7 +560,7 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             "Extension_Pct": round(extension_pct, 2),
             "Is_Coiling": is_coiling,
             "Avg_Volume_20D": round(avg_volume_20, 0),
-            "Avg_Value_20D_Cr": round((avg_volume_20 * price) / 1e7, 2),
+            "Avg_Value_20D_Cr": round(avg_value_20d_cr, 2),
             "Market_Cap_Cr": round(market_cap_cr, 2),
             "Debt_To_Equity": round(debt_to_equity, 2),
             "Interest_Coverage": round(interest_coverage, 2),
@@ -526,6 +575,7 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             "Technical_Raw": round(technical_raw, 2),
             "Fundamental_Raw": round(fundamental_raw, 2),
             "Sentiment_Raw": round(sentiment_raw, 2),
-            "Context_Raw": round(context_raw, 2)
+            "Context_Raw": round(context_raw, 2),
+            "Regime_Multiplier": round(regime_multiplier, 2)
         }
     except: return None

@@ -3,6 +3,8 @@ import pandas as pd
 import yfinance as yf
 import pandas_ta as ta
 import time
+import threading
+import queue
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
@@ -80,9 +82,14 @@ def render_sidebar():
     )
 
     # Sidebar Multiselect for Dynamic Columns
-    selected_columns = st.sidebar.multiselect(
-        "Select Columns to Display", options=list(ALL_COLUMNS.keys()), default=list(ALL_COLUMNS.keys())
+    if "selected_columns" not in st.session_state:
+        st.session_state["selected_columns"] = list(ALL_COLUMNS.keys())
+    st.session_state["selected_columns"] = st.sidebar.multiselect(
+        "Select Columns to Display",
+        options=list(ALL_COLUMNS.keys()),
+        default=st.session_state["selected_columns"],
     )
+    selected_columns = st.session_state["selected_columns"]
 
     scoring_config = {
         "weights": weights,
@@ -116,7 +123,7 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
                     search_df["Actions"] = search_df.apply(lambda row: generate_action_link(row, broker_choice), axis=1)
 
                     # Show columns based on sidebar selection
-                    search_cols = [c for c in selected_columns if c in search_df.columns]
+                    search_cols = [c for c in st.session_state["selected_columns"] if c in search_df.columns]
                     search_config = get_column_config(search_cols, broker_choice)
 
                     st.dataframe(search_df[search_cols], use_container_width=True, hide_index=True, column_config=search_config)
@@ -152,49 +159,67 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
         # --- CHUNKED PROCESSING LOGIC ---
         chunk_size = 50 if selected_universe == "Nifty Smallcap 250" else len(tickers)
 
-        for i in range(0, len(tickers), chunk_size):
-            chunk = tickers[i : i + chunk_size]
+        def _scan_worker(result_queue):
+            local_results = []
+            errors = []
+            for i in range(0, len(tickers), chunk_size):
+                chunk = tickers[i : i + chunk_size]
+                try:
+                    batch_data = yf.download(chunk, period="1y", interval="1d", group_by="ticker", progress=False)
+                    for ticker in chunk:
+                        try:
+                            tkr_obj = yf.Ticker(ticker)
+                            hist = batch_data[ticker].dropna() if len(chunk) > 1 else batch_data.dropna()
+                            if not hist.empty and len(hist) >= 210:
+                                res = check_institutional_fortress(ticker, hist, tkr_obj, portfolio_val, risk_pct)
+                                if res and (selected_universe != "Nifty Smallcap 250" or res["Score"] >= 60):
+                                    local_results.append(res)
+                        except Exception as inner_e:
+                            errors.append(f"{ticker}: {inner_e}")
+                    if selected_universe == "Nifty Smallcap 250":
+                        time.sleep(1.2)
+                except Exception as e:
+                    errors.append(f"Chunk {i}: {e}")
+                result_queue.put({"progress": min(i + chunk_size, len(tickers))})
 
-            # Batch Download for optimized network calls
-            try:
-                batch_data = yf.download(chunk, period="1y", interval="1d", group_by='ticker', progress=False)
+            result_queue.put({"done": True, "results": local_results, "errors": errors})
 
-                for j, ticker in enumerate(chunk):
-                    current_idx = i + j
-                    status_text.text(f"Scanning {ticker} ({current_idx + 1}/{len(tickers)})")
+        result_queue = queue.Queue()
+        worker = threading.Thread(target=_scan_worker, args=(result_queue,), daemon=True)
 
-                    try:
-                        tkr_obj = yf.Ticker(ticker)
-                        # Handle batch_data indexing safe
-                        if len(chunk) > 1:
-                            hist = batch_data[ticker].dropna()
-                        else:
-                            hist = batch_data.dropna()
-
-                        if not hist.empty and len(hist) >= 210:
-                            res = check_institutional_fortress(ticker, hist, tkr_obj, portfolio_val, risk_pct)
-                            # Strictly filter Smallcap to Bullish results only as discussed
-                            if res and (selected_universe != "Nifty Smallcap 250" or res['Score'] >= 60):
-                                results.append(res)
-                    except: pass
-
-                    progress_bar.progress((current_idx + 1) / len(tickers))
-
-                # Small cooling period between chunks
-                if selected_universe == "Nifty Smallcap 250":
-                    time.sleep(1.2)
-
-            except Exception as e:
-                st.error(f"Batch Error in chunk starting at {i}: {e}")
+        if selected_universe == "Nifty Smallcap 250":
+            with st.spinner("Scanning Smallcap 250..."):
+                worker.start()
+                done = False
+                while not done:
+                    msg = result_queue.get()
+                    if "progress" in msg:
+                        scanned = msg["progress"]
+                        progress_bar.progress(min(scanned / len(tickers), 1.0))
+                        status_text.text(f"Scanned {scanned}/{len(tickers)} tickers...")
+                    if msg.get("done"):
+                        results.extend(msg.get("results", []))
+                        for err in msg.get("errors", []):
+                            st.error(f"Batch Error: {err}")
+                        done = True
+        else:
+            worker.start()
+            done = False
+            while not done:
+                msg = result_queue.get()
+                if "progress" in msg:
+                    scanned = msg["progress"]
+                    progress_bar.progress(min(scanned / len(tickers), 1.0))
+                    status_text.text(f"Scanned {scanned}/{len(tickers)} tickers...")
+                if msg.get("done"):
+                    results.extend(msg.get("results", []))
+                    for err in msg.get("errors", []):
+                        st.error(f"Batch Error: {err}")
+                    done = True
 
         if results:
             df = pd.DataFrame(results)
 
-            # Sector rotation bonus (top 3 sectors by 3M perf proxy = avg Ret_90D)
-            sector_perf = df.groupby("Sector", as_index=False)["Ret_90D"].mean().sort_values("Ret_90D", ascending=False)
-            top_sectors = set(sector_perf.head(3)["Sector"].tolist())
-            df["Sector_Rotation_Bonus"] = df["Sector"].isin(top_sectors).astype(int) * 10
-            df["Context_Raw"] = pd.to_numeric(df.get("Context_Raw", 0), errors="coerce").fillna(0) + df["Sector_Rotation_Bonus"]
 
             df = apply_advanced_scoring(df, scoring_config).sort_values("Score",ascending=False)
             filtered_out_df = df[df.get("Quality_Gate_Pass", True) == False].copy()
@@ -264,7 +289,7 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
             lt_picks = df[df['Strategy'] == "Long-Term Pick"]
 
             # Use all columns selected in the sidebar for these Strategic tables
-            display_cols = [c for c in selected_columns if c in df.columns]
+            display_cols = [c for c in st.session_state["selected_columns"] if c in df.columns]
             st_column_config = get_column_config(display_cols, broker_choice)
 
             if not momentum_picks.empty:
@@ -291,7 +316,7 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
 
             # Ensure 'Actions' is available in display if selected
             # Note: selected_columns might contain 'Actions', so we ensure it exists in df (done above)
-            display_cols = [c for c in selected_columns if c in df.columns]
+            display_cols = [c for c in st.session_state["selected_columns"] if c in df.columns]
             display_df = df[display_cols]
 
             # --- FILTERING FOR SMALLCAP 250 ---
