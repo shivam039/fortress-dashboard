@@ -8,7 +8,7 @@ import seaborn as sns
 from datetime import datetime
 
 from fortress_config import TICKER_GROUPS, INDEX_BENCHMARKS
-from .logic import check_institutional_fortress, apply_advanced_scoring, DEFAULT_SCORING_CONFIG
+from .logic import check_institutional_fortress, apply_advanced_scoring, DEFAULT_SCORING_CONFIG, detect_market_regime
 from .config import ALL_COLUMNS
 from utils.db import log_audit, get_table_name_from_universe, log_scan_results, fetch_timestamps, fetch_history_data, fetch_symbol_history, register_scan, save_scan_results, update_scan_status
 from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
@@ -50,23 +50,34 @@ def render_sidebar():
     selected_universe = st.sidebar.selectbox("Select Index", list(TICKER_GROUPS.keys()))
 
     st.sidebar.markdown("---")
-    st.sidebar.subheader("⚙️ Advanced Scoring")
-    tech_w = st.sidebar.slider("Technical Weight", 0.0, 1.0, 0.50, 0.05)
-    fund_w = st.sidebar.slider("Fundamental Weight", 0.0, 1.0, 0.25, 0.05)
-    sent_w = st.sidebar.slider("Sentiment Weight", 0.0, 1.0, 0.15, 0.05)
-    ctx_w = st.sidebar.slider("Context / RS / MTF Weight", 0.0, 1.0, 0.10, 0.05)
+    st.sidebar.subheader("⚙️ Advanced Scoring Weights")
+    tech_w = st.sidebar.slider("Technical Weight %", 0, 100, 50, 1)
+    fund_w = st.sidebar.slider("Fundamental Weight %", 0, 100, 25, 1)
+    sent_w = st.sidebar.slider("Sentiment Weight %", 0, 100, 15, 1)
+    ctx_w = st.sidebar.slider("Market Context / RS / MTF Weight %", 0, 100, 10, 1)
     total = tech_w + fund_w + sent_w + ctx_w
     if total <= 0:
-        total = 1.0
+        total = 100.0
     weights = {
         "technical": tech_w / total,
         "fundamental": fund_w / total,
         "sentiment": sent_w / total,
         "context": ctx_w / total,
     }
+    st.sidebar.caption(
+        f"Normalized Weights → Tech {weights['technical']*100:.1f}% | Fund {weights['fundamental']*100:.1f}% | "
+        f"Sent {weights['sentiment']*100:.1f}% | Context {weights['context']*100:.1f}%"
+    )
 
     enable_regime = st.sidebar.checkbox("Enable regime scaling", value=True)
     liquidity_cr_min = st.sidebar.number_input("Liquidity gate (₹ Cr, 20D avg)", min_value=0.0, value=8.0, step=0.5)
+    market_cap_cr_min = st.sidebar.number_input("Market cap gate (₹ Cr)", min_value=0.0, value=1500.0, step=50.0)
+    price_min = st.sidebar.number_input("Minimum price gate (₹)", min_value=0.0, value=80.0, step=5.0)
+
+    regime = detect_market_regime() if enable_regime else {"Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0}
+    st.sidebar.info(
+        f"Regime: {regime['Market_Regime']} | Multiplier: {regime['Regime_Multiplier']:.2f} | India VIX: {regime['VIX']:.2f}"
+    )
 
     # Sidebar Multiselect for Dynamic Columns
     selected_columns = st.sidebar.multiselect(
@@ -77,8 +88,8 @@ def render_sidebar():
         "weights": weights,
         "enable_regime": enable_regime,
         "liquidity_cr_min": liquidity_cr_min,
-        "market_cap_cr_min": DEFAULT_SCORING_CONFIG["market_cap_cr_min"],
-        "price_min": DEFAULT_SCORING_CONFIG["price_min"],
+        "market_cap_cr_min": market_cap_cr_min,
+        "price_min": price_min,
         "max_debt_to_equity": DEFAULT_SCORING_CONFIG["max_debt_to_equity"],
         "min_interest_coverage": DEFAULT_SCORING_CONFIG["min_interest_coverage"],
     }
@@ -160,7 +171,9 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
             df["Context_Raw"] = pd.to_numeric(df.get("Context_Raw", 0), errors="coerce").fillna(0) + df["Sector_Rotation_Bonus"]
 
             df = apply_advanced_scoring(df, scoring_config).sort_values("Score",ascending=False)
-            status_text.success(f"Scan Complete: {len(df[df['Score']>=60])} actionable setups.")
+            filtered_out_df = df[df.get("Quality_Gate_Pass", True) == False].copy()
+            actionable_df = df[df.get("Quality_Gate_Pass", True) == True].copy()
+            status_text.success(f"Scan Complete: {len(actionable_df[actionable_df['Score']>=60])} actionable setups.")
 
             # --- GENERATE ACTIONS COLUMN ---
             # Universal Action Links: Enabled for all scan results (No Verdict Gate)
@@ -266,6 +279,11 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
             st_column_config = get_column_config(display_cols, broker_choice)
 
             st.dataframe(display_df,use_container_width=True,height=600,column_config=st_column_config)
+
+            if not filtered_out_df.empty:
+                with st.expander(f"Filtered Out ({len(filtered_out_df)}) - Hard Quality Gates", expanded=False):
+                    filtered_cols = [c for c in display_cols if c in filtered_out_df.columns]
+                    st.dataframe(filtered_out_df[filtered_cols], use_container_width=True, hide_index=True)
 
             csv = display_df.to_csv(index=False).encode("utf-8")
             st.download_button("📥 Export Trades to CSV",data=csv,
