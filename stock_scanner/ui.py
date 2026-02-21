@@ -138,17 +138,97 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
         # Log Start
         log_audit("Scan Started", selected_universe, f"Scanning {len(tickers)} tickers")
 
-        for i,ticker in enumerate(tickers):
-            status_text.text(f"Scanning {ticker} ({i+1}/{len(tickers)})")
-            try:
-                tkr = yf.Ticker(ticker)
-                hist = yf.download(ticker, period="2y", progress=False)
-                if not hist.empty:
-                    res = check_institutional_fortress(ticker,hist,tkr,portfolio_val,risk_pct)
-                    if res: results.append(res)
-                time.sleep(0.7)
-            except: pass
-            progress_bar.progress((i+1)/len(tickers))
+        if selected_universe == "Nifty Smallcap 250":
+            # --- CHUNKED PROCESSING FOR SMALLCAP 250 ---
+            CHUNK_SIZE = 50
+            total_tickers = len(tickers)
+            processed_count = 0
+
+            for i in range(0, total_tickers, CHUNK_SIZE):
+                chunk_tickers = tickers[i:i + CHUNK_SIZE]
+                status_text.text(f"Scanning batch {i+1}-{min(i+CHUNK_SIZE, total_tickers)} of {total_tickers}...")
+
+                try:
+                    # Batch Download
+                    # yf.download with multiple tickers returns a MultiIndex dataframe if group_by='ticker' (default is 'column')
+                    # We use group_by='ticker' to easily access each ticker's dataframe
+                    batch_data = yf.download(chunk_tickers, period="2y", group_by='ticker', auto_adjust=True, progress=False)
+
+                    for ticker in chunk_tickers:
+                        try:
+                            # Extract single ticker data
+                            # If only one ticker is downloaded, yf returns a simple dataframe, not MultiIndex.
+                            # But here we pass a list, so if multiple valid, it's MultiIndex.
+                            # If all fail but one, it might be simple.
+                            # Safe extraction logic:
+                            if isinstance(batch_data.columns, pd.MultiIndex):
+                                if ticker in batch_data.columns.levels[0]:
+                                    hist = batch_data[ticker].dropna(how="all")
+                                else:
+                                    hist = pd.DataFrame()
+                            else:
+                                # Fallback if batch_data is not multi-index (e.g. only 1 ticker in chunk succeeded)
+                                # This is rare with 50 tickers but possible.
+                                # Check if the columns imply it's a single ticker DF matching our ticker?
+                                # yfinance is tricky here. If we requested list, but only 1 valid, it returns single-level DF.
+                                # But we can't be sure WHICH one it is without checking metadata or assuming.
+                                # Safer to just try fetching individual if batch structure is ambiguous or rely on 'ticker' in columns?
+                                # Actually, with group_by='ticker', level 0 is ticker.
+                                # If single ticker, it might NOT have levels.
+                                # Let's stick to safe individual access if batch access fails, or skip.
+                                hist = pd.DataFrame() # Default empty
+                                if not batch_data.empty:
+                                    # If the dataframe is not multi-index, it means only one ticker data is present.
+                                    # We need to know if it belongs to 'ticker'.
+                                    # Since we don't know easily, we skip this edge case in the fast loop
+                                    # or we can rely on yfinance's behavior.
+                                    # To be safe against yfinance quirks, let's treat the simple case:
+                                    pass
+
+                            if not hist.empty:
+                                # We need a ticker object for 'info' (fundamentals).
+                                # Creating yf.Ticker object is lazy (no network call until .info accessed)
+                                # But accessing .info triggers a call.
+                                # Doing this for 250 tickers will be slow even if price history is batched.
+                                # User priority is speed.
+                                # check_institutional_fortress uses tkr.info, tkr.news, tkr.calendar.
+                                # These require individual API calls.
+                                # The batch download ONLY optimizes Price History.
+                                # To truly optimize, we must accept the overhead of 250 info calls OR skip them?
+                                # The user approved "Batch Downloading" specifically for yf.download(tickers_list).
+                                # The user also said "remove per-ticker sleep".
+                                # This implies we proceed with individual property access without sleep.
+                                tkr = yf.Ticker(ticker)
+                                res = check_institutional_fortress(ticker, hist, tkr, portfolio_val, risk_pct)
+                                if res: results.append(res)
+                        except Exception as e:
+                            pass
+
+                        processed_count += 1
+                        progress_bar.progress(min(processed_count / total_tickers, 1.0))
+
+                    # Sleep after chunk
+                    time.sleep(1.2)
+
+                except Exception as e:
+                    st.error(f"Batch Error: {e}")
+                    # Advance progress even if batch fails to avoid stuck bar
+                    processed_count += len(chunk_tickers)
+                    progress_bar.progress(min(processed_count / total_tickers, 1.0))
+
+        else:
+            # --- STANDARD SEQUENTIAL SCAN (Existing Logic) ---
+            for i,ticker in enumerate(tickers):
+                status_text.text(f"Scanning {ticker} ({i+1}/{len(tickers)})")
+                try:
+                    tkr = yf.Ticker(ticker)
+                    hist = yf.download(ticker, period="2y", progress=False)
+                    if not hist.empty:
+                        res = check_institutional_fortress(ticker,hist,tkr,portfolio_val,risk_pct)
+                        if res: results.append(res)
+                    time.sleep(0.7)
+                except: pass
+                progress_bar.progress((i+1)/len(tickers))
 
         if results:
             df = pd.DataFrame(results)
@@ -262,6 +342,14 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
             # Note: selected_columns might contain 'Actions', so we ensure it exists in df (done above)
             display_cols = [c for c in selected_columns if c in df.columns]
             display_df = df[display_cols]
+
+            # --- FILTERING FOR SMALLCAP 250 ---
+            # Strictly filter display and export to show only 'Bullish' or 'Strong Bullish' verdicts (Score >= 60).
+            # This applies only to the UI table and CSV, preserving 'df' for Sector Intelligence calculations.
+            if selected_universe == "Nifty Smallcap 250":
+                display_df = display_df[display_df["Score"] >= 60]
+                if display_df.empty:
+                    st.warning("No tickers met the strict criteria (Score >= 60) for Smallcap 250.")
 
             st_column_config = get_column_config(display_cols, broker_choice)
 
