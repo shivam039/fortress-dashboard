@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pandas_ta as ta
 import datetime
@@ -15,6 +16,12 @@ DEFAULT_SCORING_CONFIG = {
     "max_debt_to_equity": 2.0,
     "min_interest_coverage": 3.0,
     "enable_regime": True,
+}
+
+REGIME_LABELS = {
+    "Bull": "🟢 Bull",
+    "Range": "🟡 Range",
+    "Bear": "🔴 Bear",
 }
 
 
@@ -82,6 +89,19 @@ def _normalize_series(series):
     return ((clipped - min_v) / (max_v - min_v) * 100).fillna(50.0)
 
 
+def _normalize_weight_map(weight_map):
+    merged = {
+        "technical": _safe_float(weight_map.get("technical", DEFAULT_SCORING_CONFIG["weights"]["technical"]), 0.0),
+        "fundamental": _safe_float(weight_map.get("fundamental", DEFAULT_SCORING_CONFIG["weights"]["fundamental"]), 0.0),
+        "sentiment": _safe_float(weight_map.get("sentiment", DEFAULT_SCORING_CONFIG["weights"]["sentiment"]), 0.0),
+        "context": _safe_float(weight_map.get("context", DEFAULT_SCORING_CONFIG["weights"]["context"]), 0.0),
+    }
+    total = sum(max(v, 0.0) for v in merged.values())
+    if total <= 0:
+        return DEFAULT_SCORING_CONFIG["weights"].copy()
+    return {k: max(v, 0.0) / total for k, v in merged.items()}
+
+
 def detect_market_regime():
     try:
         nifty = yf.download(NIFTY_SYMBOL, period="1y", interval="1d", progress=False, auto_adjust=False)
@@ -97,12 +117,30 @@ def detect_market_regime():
         vix_value = _safe_float(vix.get("Close", pd.Series(dtype=float)).dropna().iloc[-1], default=20.0)
 
         if nifty_now > nifty_ema200 and vix_value < 18:
-            return {"Regime": "Bull", "Regime_Multiplier": 1.15, "VIX": vix_value}
+            return {"Market_Regime": "Bull", "Regime_Multiplier": 1.15, "VIX": vix_value}
         if nifty_now < nifty_ema200 or vix_value > 25:
-            return {"Regime": "Bear", "Regime_Multiplier": 0.80, "VIX": vix_value}
-        return {"Regime": "Neutral", "Regime_Multiplier": 1.00, "VIX": vix_value}
+            return {"Market_Regime": "Bear", "Regime_Multiplier": 0.85, "VIX": vix_value}
+        return {"Market_Regime": "Range", "Regime_Multiplier": 1.00, "VIX": vix_value}
     except:
-        return {"Regime": "Neutral", "Regime_Multiplier": 1.00, "VIX": 20.0}
+        return {"Market_Regime": "Range", "Regime_Multiplier": 1.00, "VIX": 20.0}
+
+
+def _apply_quality_gates(df, cfg):
+    market_cap_col = "Market_Cap_Cr" if "Market_Cap_Cr" in df.columns else None
+    debt_col = "Debt_To_Equity" if "Debt_To_Equity" in df.columns else None
+    gate_conditions = {
+        f"Liquidity<{cfg['liquidity_cr_min']}Cr": pd.to_numeric(df.get("Avg_Value_20D_Cr", np.nan), errors="coerce") <= cfg["liquidity_cr_min"],
+        f"Price<{cfg['price_min']}": pd.to_numeric(df.get("Price", np.nan), errors="coerce") <= cfg["price_min"],
+    }
+    if market_cap_col:
+        gate_conditions[f"MCap<{cfg['market_cap_cr_min']}Cr"] = pd.to_numeric(df.get(market_cap_col), errors="coerce") <= cfg["market_cap_cr_min"]
+    if debt_col:
+        gate_conditions[f"Debt/Equity>{cfg['max_debt_to_equity']}"] = pd.to_numeric(df.get(debt_col), errors="coerce") >= cfg["max_debt_to_equity"]
+
+    gate_frame = pd.DataFrame({k: v.fillna(False) for k, v in gate_conditions.items()}, index=df.index)
+    df["Quality_Gate_Pass"] = ~gate_frame.any(axis=1)
+    df["Quality_Gate_Failures"] = gate_frame.apply(lambda row: "|".join(row.index[row.values]), axis=1)
+    return df
 
 
 def apply_advanced_scoring(df, scoring_config=None):
@@ -113,35 +151,57 @@ def apply_advanced_scoring(df, scoring_config=None):
     if scoring_config:
         cfg.update({k: v for k, v in scoring_config.items() if k != "weights"})
         if "weights" in scoring_config:
-            cfg["weights"] = scoring_config["weights"]
+            cfg["weights"] = _normalize_weight_map(scoring_config["weights"])
+    else:
+        cfg["weights"] = _normalize_weight_map(cfg["weights"])
 
     df = df.copy()
 
     # Normalize category sub-scores within scan universe
-    df["Technical_Score"] = _normalize_series(df.get("Technical_Raw", 0)).round(2)
-    df["Fundamental_Score"] = _normalize_series(df.get("Fundamental_Raw", 0)).round(2)
-    df["Sentiment_Score"] = _normalize_series(df.get("Sentiment_Raw", 0)).round(2)
-    df["Context_Score"] = _normalize_series(df.get("Context_Raw", 0)).round(2)
+    df["Technical_Score"] = _normalize_series(df.get("Technical_Raw", 50)).round(2)
+    df["Fundamental_Score"] = _normalize_series(df.get("Fundamental_Raw", 50)).round(2)
+    df["Sentiment_Score"] = _normalize_series(df.get("Sentiment_Raw", 50)).round(2)
+    df["Context_Score"] = _normalize_series(df.get("Context_Raw", 50)).round(2)
+
+    # Why: RSI tiers reduce false positives by rewarding healthy momentum instead of exhaustion.
+    rsi = pd.to_numeric(df.get("RSI", np.nan), errors="coerce")
+    rsi_bonus = np.select(
+        [rsi.between(45, 65, inclusive="both"), rsi.between(40, 72, inclusive="both")],
+        [15, 8],
+        default=0,
+    )
+    df["Technical_Score"] = (df["Technical_Score"] + rsi_bonus).clip(lower=0, upper=100)
 
     # RS ranking and top quartile bonus
-    df["RS_Rank"] = pd.to_numeric(df.get("RS_Composite", 0), errors="coerce").rank(method="average", pct=True) * 100
+    rs_base = pd.to_numeric(df.get("RS_6M", df.get("RS_Composite", np.nan)), errors="coerce")
+    df["RS_Rank"] = (rs_base.rank(method="average", pct=True) * 100).fillna(50)
     rs_gate = (pd.to_numeric(df.get("RS_Composite", 0), errors="coerce") > 1.0) | (df["RS_Rank"] >= 75)
     df.loc[rs_gate.fillna(False), "Context_Score"] = (df.loc[rs_gate.fillna(False), "Context_Score"] + 20).clip(upper=100)
 
+    sentiment = pd.to_numeric(df.get("sentiment_score", df.get("Sentiment_Raw", np.nan)), errors="coerce")
+    if "news_date" in df.columns:
+        news_ts = pd.to_datetime(df["news_date"], errors="coerce")
+        days_old = (pd.Timestamp.now().normalize() - news_ts).dt.days.clip(lower=0)
+        decay = np.exp(-(days_old.fillna(0) / 5.0))
+        sentiment = sentiment.fillna(50) * decay
+    if "Sector" in df.columns:
+        sector_avg = sentiment.groupby(df["Sector"]).transform("mean")
+        sentiment = sentiment - sector_avg.fillna(0)
+    df["Sentiment_Score"] = _normalize_series(sentiment.fillna(50)).round(2)
+
     # Regime handling
-    regime = detect_market_regime() if cfg.get("enable_regime", True) else {"Regime": "Neutral", "Regime_Multiplier": 1.0, "VIX": 20.0}
-    df["Regime"] = regime["Regime"]
+    regime = detect_market_regime() if cfg.get("enable_regime", True) else {"Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0}
+    df["Market_Regime"] = regime["Market_Regime"]
+    df["Regime"] = regime["Market_Regime"]
     df["Regime_Multiplier"] = regime["Regime_Multiplier"]
+    df["Regime_Tag"] = REGIME_LABELS.get(regime["Market_Regime"], f"🟡 {regime['Market_Regime']}")
     df["India_VIX"] = round(regime["VIX"], 2)
 
-    if regime["Regime"] == "Bull":
-        df["Technical_Score"] = (df["Technical_Score"] * 1.10).clip(upper=100)
-        df["Context_Score"] = (df["Context_Score"] * 1.15).clip(upper=100)
-    elif regime["Regime"] == "Bear":
-        df["Technical_Score"] = (df["Technical_Score"] * 0.90).clip(lower=0)
-        df["Fundamental_Score"] = (df["Fundamental_Score"] * 1.10).clip(upper=100)
-
     w = cfg["weights"]
+    df["Weight_Technical"] = round(w["technical"] * 100, 2)
+    df["Weight_Fundamental"] = round(w["fundamental"] * 100, 2)
+    df["Weight_Sentiment"] = round(w["sentiment"] * 100, 2)
+    df["Weight_Context"] = round(w["context"] * 100, 2)
     df["Score_Pre_Regime"] = (
         df["Technical_Score"] * w["technical"]
         + df["Fundamental_Score"] * w["fundamental"]
@@ -150,26 +210,9 @@ def apply_advanced_scoring(df, scoring_config=None):
     )
     df["Score"] = (df["Score_Pre_Regime"] * df["Regime_Multiplier"]).clip(lower=0, upper=100).round(2)
 
-    # Hard quality gates / avoid-list penalties
-    df["Quality_Gate_Failures"] = ""
-    gates = [
-        (pd.to_numeric(df.get("Avg_Value_20D_Cr", 0), errors="coerce") <= cfg["liquidity_cr_min"], f"Liquidity<{cfg['liquidity_cr_min']}Cr"),
-        (pd.to_numeric(df.get("Market_Cap_Cr", 0), errors="coerce") <= cfg["market_cap_cr_min"], f"MCap<{cfg['market_cap_cr_min']}Cr"),
-        (pd.to_numeric(df.get("Price", 0), errors="coerce") <= cfg["price_min"], f"Price<{cfg['price_min']}"),
-    ]
-
-    debt = pd.to_numeric(df.get("Debt_To_Equity", 0), errors="coerce")
-    icr = pd.to_numeric(df.get("Interest_Coverage", 0), errors="coerce")
-    bad_balance_sheet = (debt >= cfg["max_debt_to_equity"]) & (icr <= cfg["min_interest_coverage"])
-    gates.append((bad_balance_sheet.fillna(False), "WeakBalanceSheet"))
-    gates.append((df.get("Negative_Earnings_Surprise", False) == True, "NegEarningsSurprise"))
-
-    for cond, label in gates:
-        idx = cond.fillna(False)
-        df.loc[idx, "Quality_Gate_Failures"] = df.loc[idx, "Quality_Gate_Failures"].apply(lambda x: f"{x}|{label}" if x else label)
-
-    fail_mask = df["Quality_Gate_Failures"].str.len() > 0
-    df.loc[fail_mask, "Score"] = (df.loc[fail_mask, "Score"] - 60).clip(lower=0)
+    df = _apply_quality_gates(df, cfg)
+    fail_mask = ~df["Quality_Gate_Pass"]
+    df.loc[fail_mask, "Score"] = (df.loc[fail_mask, "Score"] - 1000).clip(lower=0)
 
     avoid_mask = (df.get("Black_Swan_Flag", 0).astype(float) > 0) | (df.get("News") == "🚨 BLACK SWAN")
     df.loc[avoid_mask.fillna(False), "Score"] = (df.loc[avoid_mask.fillna(False), "Score"] - 50).clip(lower=0)
@@ -179,6 +222,12 @@ def apply_advanced_scoring(df, scoring_config=None):
     df["Verdict"] = df["Score"].apply(lambda x: "🔥 HIGH" if x >= 85 else "🚀 PASS" if x >= 60 else "🟡 WATCH")
     df.loc[fail_mask, "Verdict"] = "❌ FAIL"
     df.loc[df["Avoid_Flag"], "Verdict"] = "🚨 AVOID"
+
+    # Backward-compatible aliases + transparency columns requested by desk users.
+    df["Tech_Score"] = df["Technical_Score"]
+    df["Fund_Score"] = df["Fundamental_Score"]
+    df["Sent_Score"] = df["Sentiment_Score"]
+    df["Context_Score"] = df["Context_Score"]
     return df
 
 def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk_per_trade):

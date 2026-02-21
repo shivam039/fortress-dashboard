@@ -29,11 +29,16 @@ ALL_COLUMNS = {
     "Velocity": {"label": "Momentum Velocity", "format": "%.2f%%"},
     "Ret_7D": {"label": "7D Return", "format": "%.2f%%"},
     "Technical_Score": {"label":"Technical", "type":"progress", "min":0, "max":100},
+    "Tech_Score": {"label":"Tech Score", "type":"progress", "min":0, "max":100},
     "Fundamental_Score": {"label":"Fundamental", "type":"progress", "min":0, "max":100},
+    "Fund_Score": {"label":"Fund Score", "type":"progress", "min":0, "max":100},
     "Sentiment_Score": {"label":"Sentiment", "type":"progress", "min":0, "max":100},
+    "Sent_Score": {"label":"Sent Score", "type":"progress", "min":0, "max":100},
     "Context_Score": {"label":"Context/RS/MTF", "type":"progress", "min":0, "max":100},
     "Score_Pre_Regime": {"label":"Pre-Regime Score", "format":"%.2f"},
     "Regime": {"label":"Market Regime"},
+    "Market_Regime": {"label":"Market Regime"},
+    "Regime_Tag": {"label":"Regime Tag"},
     "Regime_Multiplier": {"label":"Regime x", "format":"%.2f"},
     "India_VIX": {"label":"India VIX", "format":"%.2f"},
     "RS_Rank": {"label":"RS Rank %", "format":"%.2f"},
@@ -44,5 +49,6 @@ ALL_COLUMNS = {
     "Vol_Adj_Mom": {"label":"Vol Adj Mom", "format":"%.2f"},
     "EMA200_Extension_Pct": {"label":"EMA200 Extension", "format":"%.2f%%"},
     "Quality_Gate_Failures": {"label":"Quality Gates"},
+    "Quality_Gate_Pass": {"label":"Quality Pass"},
     "Avoid_Flag": {"label":"Avoid"}
 }
