@@ -7,7 +7,13 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import text
+
+try:
+    from sqlalchemy import text
+except ModuleNotFoundError:  # pragma: no cover - defensive fallback for local env bootstrapping
+    def text(sql: str) -> str:
+        return sql
+
 
 logger = logging.getLogger(__name__)
 DB_NAME = "fortress_history.db"
