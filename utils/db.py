@@ -343,7 +343,8 @@ def fetch_timestamps(table_name="scan_mf", scan_type=None):
                 existing = set(timestamps)
                 legacy = [t for t in old_scans['timestamp'].tolist() if t not in existing]
                 timestamps.extend(legacy)
-    except: pass
+    except Exception as e:
+        logger.error(f"db error: {e}")
 
     # Sort Descending
     timestamps.sort(reverse=True)
@@ -456,7 +457,8 @@ def fetch_symbol_history(table_name, symbol):
         df_new = pd.DataFrame()
         try:
             df_new = pd.read_sql(query_new, conn, params=(symbol,))
-        except: pass
+        except Exception as e:
+            logger.error(f"db error: {e}")
 
         # Old Schema History
         df_old = pd.DataFrame()
@@ -466,7 +468,8 @@ def fetch_symbol_history(table_name, symbol):
             # Old: Score, Price, Alpha (True) [if saved? logic saves 'Alpha (True)' key in json but maybe column name?]
             # logic.py saves: "Alpha (True)": metrics['alpha']
             df_old = pd.read_sql("SELECT timestamp, Score, Price, `Alpha (True)`, Beta, `Tracking Error` FROM scan_mf WHERE Symbol = ?", conn, params=(symbol,))
-        except: pass
+        except Exception as e:
+            logger.error(f"db error: {e}")
 
     # Combine
     if not df_new.empty and not df_old.empty:
@@ -488,7 +491,8 @@ def log_audit(action, universe="Global", details=""):
             c = conn.cursor()
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             c.execute("INSERT INTO audit_logs VALUES (?,?,?,?)", (ts, action, universe, details))
-    except: pass
+    except Exception as e:
+        logger.error(f"db error: {e}")
 
 def log_algo_trade(strategy, symbol, action, details, status="Active"):
     try:

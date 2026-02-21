@@ -1,264 +1,107 @@
+import logging
 import math
-import pandas as pd
-import numpy as np
-import yfinance as yf
-from datetime import datetime, timedelta
+import time
+from datetime import datetime
 
-# Black-Scholes Math
+import numpy as np
+import pandas as pd
+import yfinance as yf
+
+logger = logging.getLogger(__name__)
+
+
+def _retry(operation, module_name: str, retries: int = 3, base_delay: float = 1.0):
+    last_error = None
+    for attempt in range(retries):
+        try:
+            return operation()
+        except Exception as e:
+            last_error = e
+            logger.error(f"{module_name} error: {e}")
+            time.sleep(base_delay * (2 ** attempt))
+    raise RuntimeError(f"{module_name} failed after retries") from last_error
+
+
 def norm_cdf(x):
     return 0.5 * (1 + math.erf(x / math.sqrt(2)))
 
-def norm_pdf(x):
-    return (1 / math.sqrt(2 * math.pi)) * math.exp(-0.5 * x**2)
 
-def calculate_greeks(S, K, T, r, sigma, option_type="CE"):
-    """
-    S: Spot Price
-    K: Strike Price
-    T: Time to Expiry (years)
-    r: Risk-free rate (decimal)
-    sigma: Volatility (decimal)
-    option_type: "CE" or "PE"
-    """
-    if T <= 0 or sigma <= 0:
-        return {"Delta": 0, "Gamma": 0, "Theta": 0, "Vega": 0}
-
-    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
-    d2 = d1 - sigma * math.sqrt(T)
-
-    N_d1 = norm_cdf(d1)
-    N_d2 = norm_cdf(d2)
-    N_neg_d1 = norm_cdf(-d1)
-    N_neg_d2 = norm_cdf(-d2)
-    n_d1 = norm_pdf(d1)
-
-    if option_type == "CE":
-        delta = N_d1
-        theta = (- (S * sigma * n_d1) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * N_d2) / 365.0
+def calculate_greeks(spot: float, strike: float, t: float, rate: float, iv: float, kind: str):
+    if spot <= 0 or strike <= 0 or t <= 0 or iv <= 0:
+        return {"Delta": 0.0, "Gamma": 0.0, "Theta": 0.0, "Vega": 0.0}
+    d1 = (math.log(spot / strike) + (rate + 0.5 * iv * iv) * t) / (iv * math.sqrt(t))
+    d2 = d1 - iv * math.sqrt(t)
+    pdf = math.exp(-0.5 * d1 * d1) / math.sqrt(2 * math.pi)
+    if kind == "CE":
+        delta = norm_cdf(d1)
+        theta = (-(spot * pdf * iv) / (2 * math.sqrt(t)) - rate * strike * math.exp(-rate * t) * norm_cdf(d2)) / 365
     else:
-        delta = N_d1 - 1
-        theta = (- (S * sigma * n_d1) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * N_neg_d2) / 365.0
+        delta = norm_cdf(d1) - 1
+        theta = (-(spot * pdf * iv) / (2 * math.sqrt(t)) + rate * strike * math.exp(-rate * t) * norm_cdf(-d2)) / 365
+    gamma = pdf / (spot * iv * math.sqrt(t))
+    vega = (spot * math.sqrt(t) * pdf) / 100
+    return {"Delta": round(delta, 3), "Gamma": round(gamma, 4), "Theta": round(theta, 3), "Vega": round(vega, 3)}
 
-    gamma = n_d1 / (S * sigma * math.sqrt(T))
-    vega = (S * math.sqrt(T) * n_d1) / 100.0 # Per 1% change in vol
 
-    return {
-        "Delta": round(delta, 3),
-        "Gamma": round(gamma, 4),
-        "Theta": round(theta, 3),
-        "Vega": round(vega, 3)
-    }
-
-def get_available_expiries(symbol):
-    """Fetches available expiry dates for a symbol."""
+def get_available_expiries(symbol: str) -> list[str]:
     try:
-        tkr = yf.Ticker(symbol)
-        # Check if options is empty or raises error
-        exps = tkr.options
-        if not exps:
-            return []
-        return list(exps)
-    except Exception as e:
-        print(f"Error fetching expirations for {symbol}: {e}")
+        exps = _retry(lambda: list(yf.Ticker(symbol).options), "options_expiries")
+    except Exception:
         return []
+    return exps[:3]
 
-def fetch_option_chain(symbol, expiry_date_str=None):
-    try:
-        tkr = yf.Ticker(symbol)
-        expirations = tkr.options
-        if not expirations:
-            return None, None, 0
 
-        # Use provided expiry or default to first
-        target_expiry = expiry_date_str
-        if not target_expiry or target_expiry not in expirations:
-            target_expiry = expirations[0]
+def fetch_option_chain(symbol: str, expiry: str):
+    def _load_chain():
+        return yf.Ticker(symbol).option_chain(expiry)
 
-        try:
-            chain = tkr.option_chain(target_expiry)
-        except Exception as e:
-            print(f"Error fetching chain for {target_expiry}: {e}")
-            return None, None, 0
+    chain = _retry(_load_chain, "options_chain")
+    spot_data = _retry(lambda: yf.download(symbol, period="2d", progress=False), "options_spot")
+    spot = float(spot_data["Close"].dropna().iloc[-1]) if not spot_data.empty else 0.0
+    t = max((datetime.strptime(expiry, "%Y-%m-%d") - datetime.now()).days / 365.0, 1 / 365)
 
-        # Calculate T (Time to Expiry)
-        expiry_date = datetime.strptime(target_expiry, "%Y-%m-%d")
-        now = datetime.now()
-        T = (expiry_date - now).days / 365.0
-        if T < 0.002: T = 0.002 # Min 1 day
+    call_df = chain.calls.copy()
+    put_df = chain.puts.copy()
+    call_df["Type"] = "CE"
+    put_df["Type"] = "PE"
+    combined = pd.concat([call_df, put_df], ignore_index=True)
+    combined = combined.rename(columns={"strike": "Strike", "openInterest": "OI", "impliedVolatility": "IV", "lastPrice": "Premium"})
+    combined["IV"] = pd.to_numeric(combined["IV"], errors="coerce").fillna(0.2).clip(0.01, 3)
+    greeks = combined.apply(lambda r: calculate_greeks(spot, float(r["Strike"]), t, 0.06, float(r["IV"]), r["Type"]), axis=1).apply(pd.Series)
+    combined = pd.concat([combined, greeks], axis=1)
+    combined["OI"] = pd.to_numeric(combined["OI"], errors="coerce").fillna(0)
+    combined["Premium"] = pd.to_numeric(combined["Premium"], errors="coerce").fillna(0)
+    return combined[["Strike", "Type", "IV", "Delta", "Gamma", "Theta", "Vega", "OI", "Premium", "contractSymbol"]], spot, t
 
-        # Get Underlying Spot
-        # Try fast info
-        spot = 0
-        try:
-             spot = tkr.fast_info['last_price']
-        except:
-             hist = tkr.history(period='1d')
-             if not hist.empty:
-                 spot = hist['Close'].iloc[-1]
 
-        return chain, T, spot
-    except Exception as e:
-        print(f"Error fetching options: {e}")
-        return None, None, 0
+def scan_strategies(chain_df: pd.DataFrame, oi_threshold: int = 10000, iv_threshold: float = 0.2):
+    if chain_df.empty:
+        return pd.DataFrame()
+    eligible = chain_df[(chain_df["OI"] >= oi_threshold) & (chain_df["IV"] >= iv_threshold)]
+    ce = eligible[eligible["Type"] == "CE"]
+    pe = eligible[eligible["Type"] == "PE"]
+    if ce.empty or pe.empty:
+        return pd.DataFrame()
 
-def resolve_strategy_legs(template, symbol, expiry_date=None):
-    # Fetch chain
-    chain, T, spot = fetch_option_chain(symbol, expiry_date)
-    if chain is None or spot == 0:
-        return []
+    atm_strike = chain_df.iloc[(chain_df["Strike"] - chain_df["Strike"].median()).abs().argsort()].iloc[0]["Strike"]
+    ce_atm = ce.iloc[(ce["Strike"] - atm_strike).abs().argsort()].head(1)
+    pe_atm = pe.iloc[(pe["Strike"] - atm_strike).abs().argsort()].head(1)
+    if ce_atm.empty or pe_atm.empty:
+        return pd.DataFrame()
 
-    r = 0.06 # Risk free rate
-    legs = []
+    straddle_premium = float(ce_atm["Premium"].iloc[0] + pe_atm["Premium"].iloc[0])
+    strangle_ce = ce[ce["Strike"] > atm_strike].sort_values("Strike").head(1)
+    strangle_pe = pe[pe["Strike"] < atm_strike].sort_values("Strike", ascending=False).head(1)
+    strangle_premium = float(strangle_ce["Premium"].sum() + strangle_pe["Premium"].sum())
 
-    strikes = sorted(list(set(chain.calls['strike'].tolist() + chain.puts['strike'].tolist())))
-    if not strikes: return []
+    return pd.DataFrame([
+        {"Strategy": "Short Straddle", "Strike": atm_strike, "Premium": straddle_premium, "IV": float((ce_atm["IV"].iloc[0] + pe_atm["IV"].iloc[0]) / 2)},
+        {"Strategy": "Short Strangle", "Strike": f"{strangle_pe['Strike'].iloc[0]} / {strangle_ce['Strike'].iloc[0]}", "Premium": strangle_premium, "IV": float((strangle_ce["IV"].iloc[0] + strangle_pe["IV"].iloc[0]) / 2)},
+    ])
 
-    atm_strike = min(strikes, key=lambda x: abs(x - spot))
-    atm_idx = strikes.index(atm_strike)
 
-    for leg in template:
-        # Determine Option Type
-        opt_type = leg['option'] # CE, PE, STOCK
-
-        strike_logic = leg['strike']
-        selected_strike = atm_strike
-
-        iv = 0.2 # Default
-
-        if opt_type == "STOCK":
-            selected_strike = 0 # Spot
-        else:
-            # Logic
-            if strike_logic == "ATM":
-                selected_strike = atm_strike
-            elif strike_logic == "ITM":
-                # Call ITM = Lower, Put ITM = Higher
-                step = 1
-                if opt_type == "CE": idx = max(0, atm_idx - step)
-                else: idx = min(len(strikes)-1, atm_idx + step)
-                selected_strike = strikes[idx]
-            elif strike_logic == "OTM":
-                # Call OTM = Higher, Put OTM = Lower
-                step = 1
-                if opt_type == "CE": idx = min(len(strikes)-1, atm_idx + step)
-                else: idx = max(0, atm_idx - step)
-                selected_strike = strikes[idx]
-            elif "OTM_20_Delta" in strike_logic:
-                # Need to find delta.
-                # Use IV from chain.
-                target_delta = 0.20
-                best_s = atm_strike
-                min_diff = 999
-
-                df = chain.calls if opt_type=="CE" else chain.puts
-
-                for _, row in df.iterrows():
-                    s = row['strike']
-                    i_vol = 0.2
-                    if 'impliedVolatility' in row:
-                        val = row['impliedVolatility']
-                        if val is not None and not np.isnan(val) and val > 0:
-                            i_vol = val
-
-                    greeks = calculate_greeks(spot, s, T, r, i_vol, opt_type)
-                    d = abs(greeks['Delta'])
-                    if abs(d - target_delta) < min_diff:
-                        min_diff = abs(d - target_delta)
-                        best_s = s
-                selected_strike = best_s
-            elif "Wings" in strike_logic:
-                # Far OTM (e.g. 3 strikes)
-                step = 4
-                if opt_type == "CE": idx = min(len(strikes)-1, atm_idx + step)
-                else: idx = max(0, atm_idx - step)
-                selected_strike = strikes[idx]
-            elif "Hedge" in strike_logic:
-                 # 2 strikes OTM
-                step = 2
-                if opt_type == "CE": idx = min(len(strikes)-1, atm_idx + step)
-                else: idx = max(0, atm_idx - step)
-                selected_strike = strikes[idx]
-            elif "SPOT" == strike_logic:
-                pass
-
-        # Get Price and Greeks
-        price = spot
-        contract_symbol = symbol
-        greeks = {"Delta":1, "Gamma":0, "Theta":0, "Vega":0}
-
-        if opt_type != "STOCK":
-            df = chain.calls if opt_type=="CE" else chain.puts
-            row = df[df['strike'] == selected_strike]
-            if not row.empty:
-                price = row.iloc[0]['lastPrice']
-                contract_symbol = row.iloc[0]['contractSymbol']
-
-                iv = 0.2
-                if 'impliedVolatility' in row.columns:
-                    val = row.iloc[0]['impliedVolatility']
-                    if val is not None and not np.isnan(val) and val > 0:
-                        iv = val
-                    else:
-                        iv = 0.2  # Robust fallback
-                else:
-                    iv = 0.2 # Robust fallback
-
-                greeks = calculate_greeks(spot, selected_strike, T, r, iv, opt_type)
-            else:
-                price = 0 # Should not happen if strike is from list
-
-        legs.append({
-            "leg_id": leg['leg'],
-            "action": leg['type'], # BUY/SELL
-            "type": opt_type,
-            "strike": selected_strike,
-            "qty_mult": leg['qty_mult'],
-            "price": price,
-            "contractSymbol": contract_symbol,
-            "greeks": greeks,
-            "iv": iv if opt_type != "STOCK" else 0
-        })
-
-    return legs, spot, T
-
-def check_synthetic_future_arb(spot, chain, T, r=0.06):
-    # Conversion Arb: Buy Stock, Sell Call, Buy Put
-    # Cost = S + P - C
-    # Profit = K - Cost
-
-    # Find ATM Call and Put
-    if chain is None: return None
-
-    strikes = sorted(list(set(chain.calls['strike'].tolist() + chain.puts['strike'].tolist())))
-    if not strikes: return None
-
-    atm_strike = min(strikes, key=lambda x: abs(x - spot))
-
-    call_row = chain.calls[chain.calls['strike'] == atm_strike]
-    put_row = chain.puts[chain.puts['strike'] == atm_strike]
-
-    if call_row.empty or put_row.empty: return None
-
-    C = call_row.iloc[0]['lastPrice']
-    P = put_row.iloc[0]['lastPrice']
-    K = atm_strike
-    S = spot
-
-    # Cost to enter Conversion
-    Cost = S + P - C
-
-    Profit = K - Cost
-    Yield_Abs = (Profit / Cost)
-    Yield_Ann = Yield_Abs * (1/T) * 100
-
-    return {
-        "Strategy": "Conversion Reversal",
-        "Strike": K,
-        "Stock": S,
-        "Call": C,
-        "Put": P,
-        "Cost": Cost,
-        "Locked_Value": K,
-        "Profit": Profit,
-        "Yield_Ann": Yield_Ann
-    }
+def payoff_curve(strikes: np.ndarray, strategy: str, premium: float, atm: float):
+    if strategy == "Short Straddle":
+        return premium - np.abs(strikes - atm)
+    width = max(1, int(atm * 0.01))
+    return premium - np.maximum(0, strikes - (atm + width)) - np.maximum(0, (atm - width) - strikes)
