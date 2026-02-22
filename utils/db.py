@@ -70,9 +70,9 @@ def get_db_engine():
         db_url,
         pool_pre_ping=True,
         pool_recycle=300,
-        pool_size=15,
-        max_overflow=30,
-        pool_timeout=60,
+        pool_size=5,
+        max_overflow=10,
+        pool_timeout=30,
     )
 
 
@@ -195,7 +195,29 @@ def _ensure_scan_history_table_neon():
     _exec("CREATE INDEX IF NOT EXISTS idx_scan_history_symbol ON scan_history (symbol)")
 
 
+def _postgres_has_table(table_name: str) -> bool:
+    query = """
+    SELECT EXISTS (
+        SELECT FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = :table_name
+    );
+    """
+    try:
+        df = _read_df_uncached(query, {"table_name": table_name.lower()})
+        if not df.empty:
+            return bool(df.iloc[0, 0])
+        return False
+    except Exception as e:
+        if "does not exist" in str(e).lower() or "closed" in str(e).lower():
+            return False
+        raise
+
+
 def _postgres_has_column(table_name: str, column_name: str) -> bool:
+    if not _postgres_has_table(table_name):
+        return False
+
     query = """
         SELECT column_name
         FROM information_schema.columns
@@ -215,38 +237,45 @@ def _postgres_has_column(table_name: str, column_name: str) -> bool:
 def _ensure_scan_history_details_neon():
     logger.info("Ensuring scan_history_details table...")
 
-    # 1. Create with Full Schema (safe to run always)
-    try:
-        _exec(
-            """
-            CREATE TABLE IF NOT EXISTS scan_history_details (
-                id BIGSERIAL PRIMARY KEY,
-                scan_timestamp TIMESTAMPTZ DEFAULT NOW(),
-                symbol TEXT NOT NULL,
-                conviction_score NUMERIC,
-                regime TEXT,
-                sub_scores JSONB,
-                raw_data JSONB,
-                price REAL,
-                target_price REAL,
-                rsi REAL,
-                ema200 REAL,
-                analyst_target_mean REAL,
-                volume REAL,
-                quality_gate_pass BOOLEAN DEFAULT TRUE,
-                liquidity_flag TEXT,
-                sector TEXT,
-                mcap_cr REAL,
-                avg_volume_cr REAL,
-                debt_to_equity REAL,
-                scan_id BIGINT,
-                pick_type TEXT
+    # OPTIMIZATION: Check if table exists first to avoid unnecessary CREATE calls
+    # and to potentially skip column checks if we just created it.
+    table_exists = _postgres_has_table("scan_history_details")
+
+    if not table_exists:
+        # 1. Create with Full Schema
+        try:
+            _exec(
+                """
+                CREATE TABLE IF NOT EXISTS scan_history_details (
+                    id BIGSERIAL PRIMARY KEY,
+                    scan_timestamp TIMESTAMPTZ DEFAULT NOW(),
+                    symbol TEXT NOT NULL,
+                    conviction_score NUMERIC,
+                    regime TEXT,
+                    sub_scores JSONB,
+                    raw_data JSONB,
+                    price REAL,
+                    target_price REAL,
+                    rsi REAL,
+                    ema200 REAL,
+                    analyst_target_mean REAL,
+                    volume REAL,
+                    quality_gate_pass BOOLEAN DEFAULT TRUE,
+                    liquidity_flag TEXT,
+                    sector TEXT,
+                    mcap_cr REAL,
+                    avg_volume_cr REAL,
+                    debt_to_equity REAL,
+                    scan_id BIGINT,
+                    pick_type TEXT
+                )
+                """
             )
-            """
-        )
-    except Exception as exc:
-        logger.error(f"Schema create failed: {exc}")
-        raise
+            # If we just created the table with full schema, we assume it has all columns.
+            return
+        except Exception as exc:
+            logger.error(f"Schema create failed: {exc}")
+            raise
 
     # 2. Validate Schema & Evolve (Handle missing columns)
     required_columns = {
