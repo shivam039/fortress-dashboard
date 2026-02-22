@@ -1,3 +1,4 @@
+print("Loading utils.db ...")
 import json
 import logging
 import os

@@ -1,3 +1,4 @@
+print("Loading commodities.logic ...")
 import logging
 import time
 
