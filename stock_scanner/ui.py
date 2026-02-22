@@ -28,25 +28,43 @@ from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
 def _get_market_pulse_snapshot(index_benchmarks):
     """Cached pulse snapshot to reduce repeated benchmark downloads on reruns."""
     out = {}
+    symbols = list(index_benchmarks.values())
+    try:
+        # Parallel Bulk Download
+        all_data = yf.download(symbols, period="1y", interval="1d", group_by='ticker', threads=True, progress=False, auto_adjust=False)
+    except Exception:
+        return out
+
     for name, symbol in index_benchmarks.items():
-        idx_data = get_stock_data(symbol, period="1y", interval="1d")
-        if idx_data.empty or "Close" not in idx_data:
-            continue
-        p_close = idx_data["Close"].iloc[-1]
-
-        p_status = "⚪ N/A"
-        # Ensure sufficient data for 200 EMA
-        if len(idx_data) >= 200:
-            ema_series = ta.ema(idx_data["Close"], length=200)
-            if ema_series is not None and not ema_series.empty:
-                p_ema = ema_series.iloc[-1]
-                p_status = "🟢 BULL" if p_close > p_ema else "🔴 BEAR"
+        try:
+            # Handle single vs multi-ticker structure from yfinance
+            if len(symbols) > 1:
+                idx_data = all_data[symbol]
             else:
-                p_status = "🟡 ND" # Not enough data for signal
-        else:
-            p_status = "🟡 ND"
+                idx_data = all_data
 
-        out[name] = {"close": p_close, "status": p_status}
+            idx_data = idx_data.dropna()
+            if idx_data.empty or "Close" not in idx_data:
+                continue
+
+            p_close = idx_data["Close"].iloc[-1]
+            p_status = "⚪ N/A"
+
+            # Ensure sufficient data for 200 EMA
+            if len(idx_data) >= 200:
+                ema_series = ta.ema(idx_data["Close"], length=200)
+                if ema_series is not None and not ema_series.empty:
+                    p_ema = ema_series.iloc[-1]
+                    p_status = "🟢 BULL" if p_close > p_ema else "🔴 BEAR"
+                else:
+                    p_status = "🟡 ND"
+            else:
+                p_status = "🟡 ND"
+
+            out[name] = {"close": p_close, "status": p_status}
+        except Exception:
+            continue
+
     return out
 
 
