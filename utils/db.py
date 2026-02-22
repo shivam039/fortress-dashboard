@@ -33,6 +33,11 @@ except ModuleNotFoundError:  # pragma: no cover - defensive fallback for local e
 
 
 logger = logging.getLogger(__name__)
+
+# Force DB_MODE detection early
+DB_MODE = "postgres" if "DATABASE_URL" in os.environ else "sqlite"
+logger.info(f"DB mode detected: {DB_MODE}")
+
 DB_NAME = "fortress_history.db"
 
 
@@ -70,6 +75,9 @@ def _should_retry_db_error(exc: Exception) -> bool:
 def _can_use_neon() -> bool:
     if _sqlite_only_mode():
         return False
+    # Check env var priority for Streamlit Cloud
+    if "DATABASE_URL" in os.environ:
+        return True
     try:
         # Check if secrets are available
         if "connections" not in st.secrets or "neon" not in st.secrets["connections"]:
@@ -436,9 +444,11 @@ def init_db():
                 raw_data TEXT
             )"""
         )
+        # TEMP DISABLE SQLITE SCHEMA ALTER - waiting for _sqlite_has_column fix
         try:
-            if not _sqlite_has_column(conn, "scan_history_details", "raw_data"):
-                c.execute("ALTER TABLE scan_history_details ADD COLUMN raw_data TEXT")
+            # if not _sqlite_has_column(conn, "scan_history_details", "raw_data"):
+            #    c.execute("ALTER TABLE scan_history_details ADD COLUMN raw_data TEXT")
+            pass
         except Exception as e:
             logger.warning(f"SQLite column check/add failed: {e}")
         c.execute(
