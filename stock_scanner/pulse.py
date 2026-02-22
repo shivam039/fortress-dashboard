@@ -3,6 +3,7 @@ import pandas as pd
 import pandas_ta as ta
 import yfinance as yf
 from datetime import datetime
+import pytz
 from fortress_config import INDEX_BENCHMARKS, NIFTY_SYMBOL
 
 @st.cache_data(ttl="60s")
@@ -12,10 +13,15 @@ def fetch_market_pulse_data():
     Returns a dict with:
       - 'snapshot': dict of {name: {close, change_pct, status, rsi, ...}} for tiles
       - 'regime': dict of {Market_Regime, Regime_Multiplier, VIX} for scanner
+      - 'timestamp': str formatted as "HH:MM IST"
     """
+    ist = pytz.timezone('Asia/Kolkata')
+    now_ist = datetime.now(ist).strftime("%H:%M IST")
+
     out = {
         "snapshot": {},
-        "regime": {"Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0}
+        "regime": {"Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0},
+        "timestamp": now_ist
     }
 
     # 1. Define symbols to fetch
