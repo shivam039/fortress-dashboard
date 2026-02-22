@@ -117,11 +117,6 @@ def _read_df(sql: str, params: dict[str, Any] | None = None, ttl: str | None = N
         return pd.read_sql_query(sql, conn, params=params or {})
 
 
-def _sqlite_has_column(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
-    columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    return any(column[1] == column_name for column in columns)
-
-
 def _ensure_scan_history_table_neon():
     _exec(
         """
@@ -208,6 +203,13 @@ def _ensure_scan_history_details_neon():
                 logger.info("Ensured column %s exists on scan_history_details.", column_name)
             except Exception as exc:
                 logger.warning("Could not ensure column %s on scan_history_details: %s", column_name, exc)
+
+
+# Missing SQLite helper restored - checks column existence via PRAGMA
+def _sqlite_has_column(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    """Helper for SQLite fallback - checks if column exists in table."""
+    columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(column[1] == column_name for column in columns)
 
 
 def init_db():
@@ -392,8 +394,11 @@ def init_db():
                 raw_data TEXT
             )"""
         )
-        if not _sqlite_has_column(conn, "scan_history_details", "raw_data"):
-            c.execute("ALTER TABLE scan_history_details ADD COLUMN raw_data TEXT")
+        try:
+            if not _sqlite_has_column(conn, "scan_history_details", "raw_data"):
+                c.execute("ALTER TABLE scan_history_details ADD COLUMN raw_data TEXT")
+        except Exception as e:
+            logger.warning(f"SQLite column check/add failed: {e}")
         c.execute(
             """CREATE TABLE IF NOT EXISTS scan_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
