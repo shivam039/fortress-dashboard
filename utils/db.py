@@ -13,7 +13,7 @@ import streamlit as st
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 try:
-    from sqlalchemy import text
+    from sqlalchemy import create_engine, text
     from sqlalchemy.exc import InterfaceError, OperationalError, ProgrammingError, TimeoutError as SATimeoutError
 except ModuleNotFoundError:  # pragma: no cover - defensive fallback for local env bootstrapping
     def text(sql: str) -> str:
@@ -51,15 +51,28 @@ def _sqlite_only_mode() -> bool:
     return backend in {"sqlite", "local"}
 
 
+def _get_neon_url() -> str:
+    if "DATABASE_URL" in os.environ:
+        return os.environ["DATABASE_URL"]
+    if "connections" in st.secrets and "neon" in st.secrets["connections"]:
+        return st.secrets["connections"]["neon"]["url"]
+    raise ValueError("Neon DB URL not found in environment or secrets")
+
+
 @st.cache_resource
-def get_neon_conn():
-    return st.connection(
-        "neon",
-        type="sql",
+def get_db_engine():
+    """
+    Creates a SQLAlchemy engine with connection pooling best practices for Neon/Postgres.
+    pool_pre_ping=True is critical to prevent 'SSL connection closed unexpectedly' errors.
+    """
+    db_url = _get_neon_url()
+    return create_engine(
+        db_url,
+        pool_pre_ping=True,
+        pool_recycle=300,
         pool_size=15,
         max_overflow=30,
         pool_timeout=60,
-        pool_recycle=300,
     )
 
 
@@ -75,16 +88,14 @@ def _should_retry_db_error(exc: Exception) -> bool:
 def _can_use_neon() -> bool:
     if _sqlite_only_mode():
         return False
-    # Check env var priority for Streamlit Cloud
-    if "DATABASE_URL" in os.environ:
-        return True
     try:
-        # Check if secrets are available
-        if "connections" not in st.secrets or "neon" not in st.secrets["connections"]:
-             return False
-        _ = st.secrets["connections"]["neon"]["url"]
-        conn = get_neon_conn()
-        conn.session.execute(text("SELECT 1"))
+        # Verify configuration and connectivity
+        _ = _get_neon_url()
+        # Optional: We could test connection here, but lazy loading is often better.
+        # However, to maintain existing behavior of fallback if connection fails:
+        engine = get_db_engine()
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
         return True
     except Exception as exc:
         logger.warning("Neon unavailable, falling back to SQLite: %s", exc)
@@ -111,21 +122,57 @@ def get_table_name_from_universe(u):
 )
 def _exec(sql: str, params: dict[str, Any] | None = None):
     if _can_use_neon():
-        conn = get_neon_conn()
-        try:
-            conn.session.execute(text(sql), params or {})
-            conn.session.commit()
-        except Exception:
-            conn.session.rollback()
-            raise
+        engine = get_db_engine()
+        with engine.begin() as conn:
+            conn.execute(text(sql), params or {})
         return
     with _sqlite_connection() as conn:
         conn.execute(sql, params or {})
 
 
+@st.cache_data(ttl=300)
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    retry=retry_if_exception(_should_retry_db_error),
+    reraise=True,
+)
+def _read_df_cached(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
+    """Cached read for standard queries (default 5m TTL)."""
+    engine = get_db_engine()
+    return pd.read_sql(sql, engine, params=params or {})
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    retry=retry_if_exception(_should_retry_db_error),
+    reraise=True,
+)
+def _read_df_uncached(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
+    """Direct read for schema checks and fresh data."""
+    engine = get_db_engine()
+    return pd.read_sql(sql, engine, params=params or {})
+
+
 def _read_df(sql: str, params: dict[str, Any] | None = None, ttl: str | None = None) -> pd.DataFrame:
     if _can_use_neon():
-        return get_neon_conn().query(sql, params=params or {}, ttl=ttl or "5m")
+        # Dispatch based on TTL
+        use_cache = True
+        if ttl is not None:
+            try:
+                seconds = pd.Timedelta(ttl).total_seconds() if isinstance(ttl, str) else float(ttl)
+                # If TTL is very short (< 60s), assume fresh data required -> uncached
+                if seconds < 60:
+                    use_cache = False
+            except Exception:
+                pass  # Fallback to cache if parse fails
+
+        if use_cache:
+            return _read_df_cached(sql, params)
+        else:
+            return _read_df_uncached(sql, params)
+
     with _sqlite_connection() as conn:
         return pd.read_sql_query(sql, conn, params=params or {})
 
@@ -154,8 +201,8 @@ def _postgres_has_column(table_name: str, column_name: str) -> bool:
         FROM information_schema.columns
         WHERE table_name = :table_name AND column_name = :column_name
     """
-    # Use minimal TTL to ensure fresh schema check
-    df = _read_df(query, {"table_name": table_name, "column_name": column_name}, ttl=1)
+    # Use uncached read for schema check
+    df = _read_df_uncached(query, {"table_name": table_name, "column_name": column_name})
     return not df.empty
 
 
@@ -168,56 +215,40 @@ def _postgres_has_column(table_name: str, column_name: str) -> bool:
 def _ensure_scan_history_details_neon():
     logger.info("Ensuring scan_history_details table...")
 
-    # 1. Check existence
-    exists_query = """
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_name = 'scan_history_details'
-        )
-    """
+    # 1. Create with Full Schema (safe to run always)
     try:
-        exists_df = _read_df(exists_query, ttl="1s")
-        table_exists = exists_df.iloc[0, 0] if not exists_df.empty else False
-    except Exception as e:
-        logger.warning(f"Error checking table existence, assuming False: {e}")
-        table_exists = False
-
-    # 2. Create if missing (Full Schema)
-    if not table_exists:
-        try:
-            _exec(
-                """
-                CREATE TABLE IF NOT EXISTS scan_history_details (
-                    id BIGSERIAL PRIMARY KEY,
-                    scan_timestamp TIMESTAMPTZ DEFAULT NOW(),
-                    symbol TEXT NOT NULL,
-                    conviction_score NUMERIC,
-                    regime TEXT,
-                    sub_scores JSONB,
-                    raw_data JSONB,
-                    price REAL,
-                    target_price REAL,
-                    rsi REAL,
-                    ema200 REAL,
-                    analyst_target_mean REAL,
-                    volume REAL,
-                    quality_gate_pass BOOLEAN DEFAULT TRUE,
-                    liquidity_flag TEXT,
-                    sector TEXT,
-                    mcap_cr REAL,
-                    avg_volume_cr REAL,
-                    debt_to_equity REAL,
-                    scan_id BIGINT,
-                    pick_type TEXT
-                )
-                """
+        _exec(
+            """
+            CREATE TABLE IF NOT EXISTS scan_history_details (
+                id BIGSERIAL PRIMARY KEY,
+                scan_timestamp TIMESTAMPTZ DEFAULT NOW(),
+                symbol TEXT NOT NULL,
+                conviction_score NUMERIC,
+                regime TEXT,
+                sub_scores JSONB,
+                raw_data JSONB,
+                price REAL,
+                target_price REAL,
+                rsi REAL,
+                ema200 REAL,
+                analyst_target_mean REAL,
+                volume REAL,
+                quality_gate_pass BOOLEAN DEFAULT TRUE,
+                liquidity_flag TEXT,
+                sector TEXT,
+                mcap_cr REAL,
+                avg_volume_cr REAL,
+                debt_to_equity REAL,
+                scan_id BIGINT,
+                pick_type TEXT
             )
-            logger.info("Created table with full schema")
-        except Exception as exc:
-            logger.error(f"Schema ensure failed: {exc}")
-            raise
+            """
+        )
+    except Exception as exc:
+        logger.error(f"Schema create failed: {exc}")
+        raise
 
-    # 3. Validate Schema & Evolve
+    # 2. Validate Schema & Evolve (Handle missing columns)
     required_columns = {
         "scan_timestamp": "TIMESTAMPTZ DEFAULT NOW()",
         "symbol": "TEXT NOT NULL",
@@ -243,6 +274,7 @@ def _ensure_scan_history_details_neon():
 
     added_cols = []
     for column_name, column_type in required_columns.items():
+        # Check if column exists, if not ADD it
         if not _postgres_has_column("scan_history_details", column_name):
             try:
                 _exec(f"ALTER TABLE scan_history_details ADD COLUMN IF NOT EXISTS {column_name} {column_type}")
@@ -490,10 +522,9 @@ def log_scan_results(df, table_name="scan_results"):
     try:
         if _can_use_neon():
             # Postgres / Neon Logic
-            existing_cols_df = _read_df(
+            existing_cols_df = _read_df_uncached(
                 "SELECT column_name FROM information_schema.columns WHERE table_name = :table_name",
-                {"table_name": table_name},
-                ttl=1
+                {"table_name": table_name}
             )
             # Only proceed if table exists (has columns)
             if not existing_cols_df.empty:
@@ -556,7 +587,7 @@ def log_scan_results(df, table_name="scan_results"):
         return
 
     if _can_use_neon():
-        engine = get_neon_conn().session.get_bind()
+        engine = get_db_engine()
         df.to_sql(table_name, engine, if_exists="append", index=False)
         return
 
@@ -644,19 +675,19 @@ def ensure_table_exists(conn: sqlite3.Connection, table_name: str):
 
 def register_scan(timestamp, universe="Mutual Funds", scan_type="MF", status="In Progress"):
     if _can_use_neon():
-        conn = get_neon_conn()
-        res = conn.session.execute(
-            text(
-                """
-                INSERT INTO scans (timestamp, universe, scan_type, status)
-                VALUES (:timestamp, :universe, :scan_type, :status)
-                RETURNING scan_id
-                """
-            ),
-            {"timestamp": timestamp, "universe": universe, "scan_type": scan_type, "status": status},
-        )
-        conn.session.commit()
-        return int(res.scalar_one())
+        engine = get_db_engine()
+        with engine.begin() as conn:
+            res = conn.execute(
+                text(
+                    """
+                    INSERT INTO scans (timestamp, universe, scan_type, status)
+                    VALUES (:timestamp, :universe, :scan_type, :status)
+                    RETURNING scan_id
+                    """
+                ),
+                {"timestamp": timestamp, "universe": universe, "scan_type": scan_type, "status": status},
+            )
+            return int(res.scalar_one())
 
     with _sqlite_connection() as conn:
         cur = conn.execute(
