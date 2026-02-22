@@ -150,26 +150,38 @@ def _postgres_has_column(table_name: str, column_name: str) -> bool:
     return not df.empty
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    retry=retry_if_exception(_should_retry_db_error),
+    reraise=True,
+)
 def _ensure_scan_history_details_neon():
+    logger.info("Ensuring scan_history_details table...")
+
     # 1. Check existence
-    table_exists_query = """
-        SELECT 1
-        FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = :table_name
-        LIMIT 1
+    exists_query = """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'scan_history_details'
+        )
     """
-    exists_df = _read_df(table_exists_query, {"table_name": "scan_history_details"}, ttl="1s")
+    try:
+        exists_df = _read_df(exists_query, ttl="1s")
+        table_exists = exists_df.iloc[0, 0] if not exists_df.empty else False
+    except Exception as e:
+        logger.warning(f"Error checking table existence, assuming False: {e}")
+        table_exists = False
 
     # 2. Create if missing (Full Schema)
-    if exists_df.empty:
+    if not table_exists:
         try:
             _exec(
                 """
                 CREATE TABLE IF NOT EXISTS scan_history_details (
                     id BIGSERIAL PRIMARY KEY,
-                    scan_id BIGINT,
-                    symbol TEXT NOT NULL,
                     scan_timestamp TIMESTAMPTZ DEFAULT NOW(),
+                    symbol TEXT NOT NULL,
                     conviction_score NUMERIC,
                     regime TEXT,
                     sub_scores JSONB,
@@ -186,18 +198,20 @@ def _ensure_scan_history_details_neon():
                     mcap_cr REAL,
                     avg_volume_cr REAL,
                     debt_to_equity REAL,
+                    scan_id BIGINT,
                     pick_type TEXT
                 )
                 """
             )
-            logger.info("Created scan_history_details table in Neon with full schema.")
+            logger.info("Created table with full schema")
         except Exception as exc:
-            logger.exception("Failed to create scan_history_details table in Neon: %s", exc)
+            logger.error(f"Schema ensure failed: {exc}")
             raise
 
     # 3. Validate Schema & Evolve
     required_columns = {
         "scan_timestamp": "TIMESTAMPTZ DEFAULT NOW()",
+        "symbol": "TEXT NOT NULL",
         "conviction_score": "NUMERIC",
         "regime": "TEXT",
         "sub_scores": "JSONB",
@@ -214,8 +228,8 @@ def _ensure_scan_history_details_neon():
         "mcap_cr": "REAL",
         "avg_volume_cr": "REAL",
         "debt_to_equity": "REAL",
-        "pick_type": "TEXT",
         "scan_id": "BIGINT",
+        "pick_type": "TEXT",
     }
 
     added_cols = []
@@ -228,9 +242,8 @@ def _ensure_scan_history_details_neon():
                 logger.warning("Could not ensure column %s on scan_history_details: %s", column_name, exc)
 
     if added_cols:
-        msg = f"Missing columns added to scan_history_details: {added_cols}"
-        print(msg)
-        st.toast(msg, icon="🛠️")
+        logger.info(f"Added missing columns: {added_cols}")
+        st.toast(f"Added missing columns: {added_cols}", icon="🛠️")
 
 
 # Missing SQLite helper restored - checks column existence via PRAGMA
