@@ -94,52 +94,78 @@ def get_table_name_from_universe(u):
     return "scan_entries"
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=4),
-    retry=retry_if_exception(_should_retry_db_error),
-    reraise=True,
-)
-def _exec(sql: str, params: dict[str, Any] | None = None):
-    if _can_use_neon():
-        conn = get_neon_conn()
-        conn.session.execute(text(sql), params or {})
-        conn.session.commit()
+def _infer_sql_type(series):
+    dtype = series.dtype
+    if pd.api.types.is_float_dtype(dtype):
+        return "REAL"
+    if pd.api.types.is_integer_dtype(dtype):
+        return "INTEGER"
+    if pd.api.types.is_bool_dtype(dtype):
+        return "BOOLEAN"
+    if pd.api.types.is_datetime64_any_dtype(dtype):
+        return "TIMESTAMP"
+    if str(series.name).lower() == "sub_scores":
+        return "JSONB"
+    return "TEXT"
+
+
+def log_scan_results(df, table_name="scan_results"):
+    """
+    Logs scan results with automated schema evolution.
+    Uses bulk schema inspection + ALTER before appending rows.
+    """
+    if df.empty:
         return
-    with _sqlite_connection() as conn:
-        conn.execute(sql, params or {})
 
-
-def _read_df(sql: str, params: dict[str, Any] | None = None, ttl: str | None = None) -> pd.DataFrame:
-    if _can_use_neon():
-        # st.connection.query caches by default, we can use that or direct pd.read_sql
-        # Using .query() from Streamlit connection object which handles caching if ttl is set
-        return get_neon_conn().query(sql, params=params or {}, ttl=ttl or "5m")
-    with _sqlite_connection() as conn:
-        return pd.read_sql_query(sql, conn, params=params or {})
-
-
-def _sqlite_has_column(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
-    columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    return any(column[1] == column_name for column in columns)
-
-
-def _ensure_scan_history_table_neon():
-    _exec(
-        """
-        CREATE TABLE IF NOT EXISTS scan_history (
-            id BIGSERIAL PRIMARY KEY,
-            scan_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            symbol TEXT,
-            conviction_score NUMERIC,
-            regime TEXT,
-            sub_scores JSONB,
-            raw_data JSONB
+    df = df.copy()
+    # Persist detailed score components as JSON payload for richer audit/backtest analysis.
+    if "sub_scores" in df.columns:
+        df["sub_scores"] = df["sub_scores"].apply(
+            lambda x: json.dumps(x) if isinstance(x, dict) else x
         )
-        """
-    )
-    _exec("CREATE INDEX IF NOT EXISTS idx_scan_history_timestamp ON scan_history (scan_timestamp DESC)")
-    _exec("CREATE INDEX IF NOT EXISTS idx_scan_history_symbol ON scan_history (symbol)")
+
+    try:
+        with get_connection() as conn:
+            with conn:
+                c = conn.cursor()
+                is_sqlite = isinstance(conn, sqlite3.Connection)
+
+                if is_sqlite:
+                    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
+                    table_exists = c.fetchone()
+                    if not table_exists:
+                        df.to_sql(table_name, conn, if_exists="replace", index=False)
+                        return
+
+                    c.execute(f"PRAGMA table_info({table_name})")
+                    existing_cols = {row[1] for row in c.fetchall()}
+                else:
+                    c.execute(
+                        """
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public' AND table_name = %s
+                        """,
+                        (table_name,),
+                    )
+                    existing_cols = {row[0] for row in c.fetchall()}
+
+                missing_cols = [col for col in df.columns if col not in existing_cols]
+
+                if missing_cols:
+                    add_clauses = [
+                        f'ADD COLUMN "{col}" {_infer_sql_type(df[col])}'
+                        for col in missing_cols
+                    ]
+                    alter_sql = f'ALTER TABLE "{table_name}" ' + ", ".join(add_clauses)
+                    c.execute(alter_sql)
+
+                df.to_sql(table_name, conn, if_exists="append", index=False)
+    except Exception as e:
+        print(f"Error logging scan results: {e}")
+
+
+# --- NEW INSERTION LOGIC ---
 
 
 def _postgres_has_column(table_name: str, column_name: str) -> bool:

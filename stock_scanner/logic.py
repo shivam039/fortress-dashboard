@@ -649,17 +649,18 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
 def backtest_top_picks(scan_timestamp):
     """Backtest top picks from a scan timestamp against Nifty benchmark forward returns."""
     try:
-        # From development-db: Neon compatibility
-        query = """
-            SELECT d.symbol AS Symbol, d.price AS Entry_Price
-            FROM scan_history_details d
-            INNER JOIN scans s ON s.scan_id = d.scan_id
-            WHERE s.timestamp = :timestamp
-              AND s.scan_type = 'STOCK'
-              AND COALESCE(d.score, 0) >= 60
-        """
-        picks = _read_df(query, params={"timestamp": scan_timestamp})
+        from utils.db import get_connection
 
+        with get_connection() as conn:
+            query = """
+                SELECT d.symbol AS Symbol, d.price AS Entry_Price
+                FROM scan_history_details d
+                INNER JOIN scans s ON s.scan_id = d.scan_id
+                WHERE s.timestamp = ?
+                  AND s.scan_type = 'STOCK'
+                  AND COALESCE(d.score, 0) >= 60
+            """
+            picks = pd.read_sql(query, conn, params=(scan_timestamp,))
         if picks.empty:
             return pd.DataFrame()
 
