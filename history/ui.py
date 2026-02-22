@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from utils.db import DB_NAME
+from stock_scanner.logic import backtest_top_picks
 
 KEY_COLUMNS = [
     "symbol",
@@ -21,6 +22,22 @@ KEY_COLUMNS = [
     "scan_timestamp",
 ]
 
+
+@st.cache_data(ttl=300)
+def get_full_scan_history(limit=1000):
+    query = f"""
+    SELECT *
+    FROM scan_history_details
+    ORDER BY scan_timestamp DESC
+    LIMIT {limit}
+    """
+    try:
+        conn = st.connection("neon", type="sql")
+        df = conn.query(query, ttl="5m")
+    except Exception:
+        with sqlite3.connect(DB_NAME, timeout=15.0) as sqlite_conn:
+            df = pd.read_sql_query(query, sqlite_conn)
+    return df
 
 @st.cache_data(ttl=1800)
 def get_unique_scan_timestamps():
@@ -235,14 +252,57 @@ def render():
         ignore_index=True,
     )
     if not combined.empty:
-        st.download_button(
-            "📥 Export Combined CSV",
-            combined.to_csv(index=False).encode("utf-8"),
-            f"scan_history_combined_{selected_label.replace(':', '-')}.csv",
-            "text/csv",
-        )
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.download_button(
+                "📥 Export Combined CSV",
+                combined.to_csv(index=False).encode("utf-8"),
+                f"scan_history_combined_{selected_label.replace(':', '-')}.csv",
+                "text/csv",
+                use_container_width=True
+            )
+        with col2:
+            pass
 
-    st.code(
-        "ALTER TABLE scan_history_details ADD COLUMN IF NOT EXISTS pick_type TEXT;",
-        language="sql",
-    )
+    st.markdown("### 🧪 Backtest Analysis")
+    st.caption(f"Simulate returns for picks from **{selected_label}** vs Nifty 50.")
+
+    if st.button("Run Backtest for This Scan", key="hist_backtest_btn", type="primary"):
+        with st.spinner("Running backtest against Nifty..."):
+            bt_results = backtest_top_picks(selected_timestamp_str)
+            if not bt_results.empty:
+                st.success("Backtest complete!")
+                st.dataframe(bt_results, use_container_width=True)
+                st.download_button(
+                    "📥 Download Backtest Results",
+                    bt_results.to_csv(index=False).encode("utf-8"),
+                    f"backtest_results_{selected_label.replace(':', '-')}.csv",
+                    "text/csv"
+                )
+            else:
+                st.warning("No backtest data available (needs >7 days history) or no valid picks found in this scan.")
+
+    st.markdown("---")
+    st.subheader("📥 Bulk Data Export")
+    with st.expander("Export Full Scan History (Raw Data)", expanded=False):
+        st.caption("Download the last 1000 raw scan records for offline analysis.")
+        if st.button("Prepare Full History CSV"):
+            with st.spinner("Fetching data..."):
+                full_df = get_full_scan_history(limit=1000)
+                if not full_df.empty:
+                    st.dataframe(full_df.head(5), use_container_width=True)
+                    st.download_button(
+                        "📥 Download Full History (Last 1000)",
+                        full_df.to_csv(index=False).encode("utf-8"),
+                        f"full_scan_history_last1000_{datetime.now().strftime('%Y%m%d')}.csv",
+                        "text/csv",
+                        use_container_width=True
+                    )
+                else:
+                    st.warning("No history data found.")
+
+    # Utility for DB Migration (Optional Display)
+    # st.code(
+    #     "ALTER TABLE scan_history_details ADD COLUMN IF NOT EXISTS pick_type TEXT;",
+    #     language="sql",
+    # )
