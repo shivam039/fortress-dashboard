@@ -9,9 +9,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
 import numpy as np
+import sys
+
+print("Loading stock_scanner.ui ...")
+print(f"sys.path during ui.py load: {sys.path}")
 
 from fortress_config import TICKER_GROUPS, INDEX_BENCHMARKS
-from .logic import (
+from stock_scanner.logic import (
     check_institutional_fortress,
     apply_advanced_scoring,
     DEFAULT_SCORING_CONFIG,
@@ -341,18 +345,18 @@ def _run_smallcap_scan_fragment(broker_choice, scoring_config):
                 time.sleep(1.2) # Throttling for Smallcap
                 st.session_state["smallcap_scan_state"] = state
                 st.rerun()
-        else:
-            # Scan Complete
-            state["status"] = "completed"
+            else:
+                # Scan Complete
+                state["status"] = "completed"
 
-            # Save results once
-            df = pd.DataFrame(state["results"])
-            if not df.empty:
-                timestamp = _save_scan(df, universe)
-                state["timestamp"] = timestamp
+                # Save results once
+                df = pd.DataFrame(state["results"])
+                if not df.empty:
+                    timestamp = _save_scan(df, universe)
+                    state["timestamp"] = timestamp
 
-            st.session_state["smallcap_scan_state"] = state
-            st.rerun()
+                st.session_state["smallcap_scan_state"] = state
+                st.rerun()
 
     elif state.get("status") == "completed":
         results = state["results"]
