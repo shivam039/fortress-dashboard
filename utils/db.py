@@ -140,7 +140,8 @@ def _exec(sql: str, params: dict[str, Any] | None = None):
 def _read_df_cached(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
     """Cached read for standard queries (default 5m TTL)."""
     engine = get_db_engine()
-    return pd.read_sql(text(sql), engine, params=params or {})
+    with engine.connect() as conn:
+        return pd.read_sql_query(text(sql), conn, params=params or {})
 
 
 @retry(
@@ -152,7 +153,8 @@ def _read_df_cached(sql: str, params: dict[str, Any] | None = None) -> pd.DataFr
 def _read_df_uncached(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
     """Direct read for schema checks and fresh data."""
     engine = get_db_engine()
-    return pd.read_sql(text(sql), engine, params=params or {})
+    with engine.connect() as conn:
+        return pd.read_sql_query(text(sql), conn, params=params or {})
 
 
 def _read_df(sql: str, params: dict[str, Any] | None = None, ttl: str | None = None) -> pd.DataFrame:
@@ -221,10 +223,12 @@ def _postgres_has_column(table_name: str, column_name: str) -> bool:
     query = """
         SELECT column_name
         FROM information_schema.columns
-        WHERE table_name = :table_name AND column_name = :column_name
+        WHERE table_schema = 'public'
+          AND table_name = :table_name
+          AND column_name = :column_name
     """
     # Use uncached read for schema check
-    df = _read_df_uncached(query, {"table_name": table_name, "column_name": column_name})
+    df = _read_df_uncached(query, {"table_name": table_name.lower(), "column_name": column_name.lower()})
     return not df.empty
 
 
