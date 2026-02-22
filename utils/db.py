@@ -198,18 +198,20 @@ def _ensure_scan_history_table_neon():
 
 
 def _postgres_has_table(table_name: str) -> bool:
-    query = """
-    SELECT EXISTS (
-        SELECT FROM information_schema.tables
-        WHERE table_schema = 'public'
-          AND table_name = :table_name
-    );
-    """
+    query = text(
+        """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = :table_name
+        )
+        """
+    )
     try:
-        df = _read_df_uncached(query, {"table_name": table_name.lower()})
-        if not df.empty:
-            return bool(df.iloc[0, 0])
-        return False
+        engine = get_db_engine()
+        with engine.connect() as conn:
+            exists = conn.execute(query, {"table_name": table_name.lower()}).scalar()
+        return bool(exists)
     except Exception as e:
         if "does not exist" in str(e).lower() or "closed" in str(e).lower():
             return False
@@ -220,16 +222,27 @@ def _postgres_has_column(table_name: str, column_name: str) -> bool:
     if not _postgres_has_table(table_name):
         return False
 
-    query = """
-        SELECT column_name
+    query = text(
+        """
+        SELECT 1
         FROM information_schema.columns
         WHERE table_schema = 'public'
           AND table_name = :table_name
           AND column_name = :column_name
-    """
-    # Use uncached read for schema check
-    df = _read_df_uncached(query, {"table_name": table_name.lower(), "column_name": column_name.lower()})
-    return not df.empty
+        LIMIT 1
+        """
+    )
+
+    engine = get_db_engine()
+    with engine.connect() as conn:
+        exists = conn.execute(
+            query,
+            {
+                "table_name": table_name.lower(),
+                "column_name": column_name.lower(),
+            },
+        ).scalar()
+    return bool(exists)
 
 
 @retry(
