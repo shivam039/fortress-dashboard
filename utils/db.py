@@ -140,7 +140,7 @@ def _exec(sql: str, params: dict[str, Any] | None = None):
 def _read_df_cached(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
     """Cached read for standard queries (default 5m TTL)."""
     engine = get_db_engine()
-    return pd.read_sql(sql, engine, params=params or {})
+    return pd.read_sql(text(sql), engine, params=params or {})
 
 
 @retry(
@@ -152,7 +152,7 @@ def _read_df_cached(sql: str, params: dict[str, Any] | None = None) -> pd.DataFr
 def _read_df_uncached(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
     """Direct read for schema checks and fresh data."""
     engine = get_db_engine()
-    return pd.read_sql(sql, engine, params=params or {})
+    return pd.read_sql(text(sql), engine, params=params or {})
 
 
 def _read_df(sql: str, params: dict[str, Any] | None = None, ttl: str | None = None) -> pd.DataFrame:
