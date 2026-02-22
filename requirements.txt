@@ -14,3 +14,4 @@ requests
 psycopg2-binary
 psycopg[binary]>=3.2
 SQLAlchemy>=2.0
+tenacity

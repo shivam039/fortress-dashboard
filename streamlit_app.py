@@ -1,5 +1,9 @@
 # streamlit_app.py - v9.6 MASTER TERMINAL
 import streamlit as st
+import yfinance as yf
+
+# Must be first Streamlit command
+st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
 
 from utils.db import init_db
 import mf_lab.ui
@@ -10,7 +14,29 @@ from options_algo.ui import render as options_algo_render
 
 init_db()
 
-st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
+@st.cache_resource
+def _preload_global_config():
+    """Pre-load and cache heavy static configuration."""
+    from fortress_config import TICKER_GROUPS, SECTOR_MAP, INDEX_BENCHMARKS
+    return TICKER_GROUPS, SECTOR_MAP, INDEX_BENCHMARKS
+
+TICKER_GROUPS, SECTOR_MAP, INDEX_BENCHMARKS = _preload_global_config()
+
+@st.cache_resource
+def _cache_global_benchmarks():
+    """Cache critical market benchmarks globally."""
+    # Pre-fetch Nifty, VIX, Bank Nifty, Smallcap
+    symbols = ["^NSEI", "^INDIAVIX", "^NSEBANK", "^CNXSC", "^NSMIDCP"]
+    try:
+        # Fetch minimal history to ensure availability
+        data = yf.download(symbols, period="1y", interval="1d", group_by='ticker', threads=True, progress=False, auto_adjust=False)
+        return data
+    except:
+        return None
+
+# Trigger global benchmark cache
+_cache_global_benchmarks()
+
 st.title("🛡️ Fortress 95 Pro v9.6 — Institutional Terminal")
 
 st.sidebar.title("Navigation")

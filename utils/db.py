@@ -1,9 +1,9 @@
 import json
 import logging
 import os
-import random
 import sqlite3
 import time
+import random
 from datetime import datetime
 from typing import Any
 
@@ -406,6 +406,21 @@ def init_db():
         c.execute("CREATE INDEX IF NOT EXISTS idx_scan_history_symbol ON scan_history(symbol)")
 
 
+def _infer_sql_type(series):
+    dtype = series.dtype
+    if pd.api.types.is_float_dtype(dtype):
+        return "REAL"
+    if pd.api.types.is_integer_dtype(dtype):
+        return "INTEGER"
+    if pd.api.types.is_bool_dtype(dtype):
+        return "BOOLEAN"
+    if pd.api.types.is_datetime64_any_dtype(dtype):
+        return "TIMESTAMP"
+    if str(series.name).lower() == "sub_scores":
+        return "JSONB"
+    return "TEXT"
+
+
 def log_scan_results(df, table_name="scan_results"):
     if df.empty:
         return
@@ -481,14 +496,26 @@ def log_scan_results(df, table_name="scan_results"):
         df.to_sql(table_name, engine, if_exists="append", index=False)
         return
 
-    with _sqlite_connection() as conn:
-        ensure_table_exists(conn, table_name)
-
+    # SQLite fallback with retries and schema evolution
     max_retries = 3
     for attempt in range(1, max_retries + 1):
         conn = _sqlite_connection()
         try:
             ensure_table_exists(conn, table_name)
+
+            c = conn.cursor()
+            c.execute(f"PRAGMA table_info({table_name})")
+            existing_cols = {row[1] for row in c.fetchall()}
+            missing_cols = [col for col in df.columns if col not in existing_cols]
+
+            if missing_cols:
+                for col in missing_cols:
+                    try:
+                        sql_type = _infer_sql_type(df[col])
+                        c.execute(f'ALTER TABLE "{table_name}" ADD COLUMN "{col}" {sql_type}')
+                    except Exception as e:
+                        logger.error(f"Failed to add column {col}: {e}")
+
             df.to_sql(table_name, conn, if_exists="append", index=False, chunksize=1000)
             conn.commit()
             return
@@ -641,7 +668,11 @@ def save_benchmark_data(ticker, df):
         return
     rows = []
     for date, row in df.iterrows():
-        rows.append((ticker, date.strftime("%Y-%m-%d"), row.get("Close", 0.0), row.get("ret", 0.0) or 0.0))
+        # Handle NaN returns safely
+        ret = row.get("ret", 0.0)
+        if pd.isna(ret):
+            ret = 0.0
+        rows.append((ticker, date.strftime("%Y-%m-%d"), row.get("Close", 0.0), ret))
     with _sqlite_connection() as conn:
         conn.executemany("INSERT OR REPLACE INTO benchmark_history (ticker, date, close, ret) VALUES (?, ?, ?, ?)", rows)
 
