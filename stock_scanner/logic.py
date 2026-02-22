@@ -172,23 +172,8 @@ def _normalize_weight_map(weight_map):
     return {k: max(v, 0.0) / total for k, v in merged.items()}
 
 
-@st.cache_data(ttl="10m")
-def detect_market_regime():
-    try:
-        nifty_close = _download_close_series(NIFTY_SYMBOL)
-        nifty_now = _safe_float(nifty_close.iloc[-1]) if not nifty_close.empty else 0.0
-        nifty_ema200 = _safe_float(ta.ema(nifty_close, 200).iloc[-1]) if len(nifty_close) >= 200 else 0.0
-
-        vix_close = _download_close_series("^INDIAVIX", period="6mo")
-        vix_value = _safe_float(vix_close.iloc[-1], default=20.0) if not vix_close.empty else 20.0
-
-        if nifty_now > nifty_ema200 and vix_value < 18:
-            return {"Market_Regime": "Bull", "Regime_Multiplier": 1.15, "VIX": vix_value}
-        if nifty_now < nifty_ema200 or vix_value > 25:
-            return {"Market_Regime": "Bear", "Regime_Multiplier": 0.85, "VIX": vix_value}
-        return {"Market_Regime": "Range", "Regime_Multiplier": 1.00, "VIX": vix_value}
-    except:
-        return {"Market_Regime": "Range", "Regime_Multiplier": 1.00, "VIX": 20.0}
+def _get_default_regime():
+    return {"Market_Regime": "Range", "Regime_Multiplier": 1.00, "VIX": 20.0}
 
 
 def _apply_quality_gates(df, cfg):
@@ -284,7 +269,7 @@ def apply_advanced_scoring(df, scoring_config=None):
     df["Sentiment_Score"] = _normalize_series(sentiment.fillna(50)).round(2)
 
     # Regime handling
-    regime = detect_market_regime() if cfg.get("enable_regime", True) else {"Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0}
+    regime = cfg.get("regime", _get_default_regime()) if cfg.get("enable_regime", True) else _get_default_regime()
     df["Market_Regime"] = regime["Market_Regime"]
     df["Regime"] = regime["Market_Regime"]
     df["Regime_Multiplier"] = regime["Regime_Multiplier"]
@@ -333,7 +318,7 @@ def apply_advanced_scoring(df, scoring_config=None):
     df["Context_Score"] = df["Context_Score"]
     return df
 
-def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk_per_trade, selected_universe=None):
+def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk_per_trade, selected_universe=None, regime_data=None):
     try:
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
@@ -374,7 +359,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         tech_base = price>ema200 and trend_dir==1
         mtf_aligned = price > weekly_ema30 if weekly_ema30 > 0 else False
 
-        regime_multiplier = float(detect_market_regime().get("Regime_Multiplier", 1.0))
+        regime = regime_data if regime_data else _get_default_regime()
+        regime_multiplier = float(regime.get("Regime_Multiplier", 1.0))
         # Adaptive: tighter stops in Bull, wider in Bear to avoid shakeouts
         adaptive_mult = np.clip(regime_multiplier, 0.7, 1.3)
         sl_distance = atr * (1.5 / adaptive_mult)
