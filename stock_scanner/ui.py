@@ -15,57 +15,13 @@ from .logic import (
     check_institutional_fortress,
     apply_advanced_scoring,
     DEFAULT_SCORING_CONFIG,
-    detect_market_regime,
     get_stock_data,
     backtest_top_picks,
 )
 from stock_scanner.config import ALL_COLUMNS
 from utils.db import log_audit, get_table_name_from_universe, log_scan_results, fetch_timestamps, fetch_history_data, fetch_symbol_history, register_scan, save_scan_results, update_scan_status
 from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
-
-
-@st.cache_data(ttl="10m")
-def _get_market_pulse_snapshot(index_benchmarks):
-    """Cached pulse snapshot to reduce repeated benchmark downloads on reruns."""
-    out = {}
-    symbols = list(index_benchmarks.values())
-    try:
-        # Parallel Bulk Download
-        all_data = yf.download(symbols, period="1y", interval="1d", group_by='ticker', threads=True, progress=False, auto_adjust=False)
-    except Exception:
-        return out
-
-    for name, symbol in index_benchmarks.items():
-        try:
-            # Handle single vs multi-ticker structure from yfinance
-            if len(symbols) > 1:
-                idx_data = all_data[symbol]
-            else:
-                idx_data = all_data
-
-            idx_data = idx_data.dropna()
-            if idx_data.empty or "Close" not in idx_data:
-                continue
-
-            p_close = idx_data["Close"].iloc[-1]
-            p_status = "⚪ N/A"
-
-            # Ensure sufficient data for 200 EMA
-            if len(idx_data) >= 200:
-                ema_series = ta.ema(idx_data["Close"], length=200)
-                if ema_series is not None and not ema_series.empty:
-                    p_ema = ema_series.iloc[-1]
-                    p_status = "🟢 BULL" if p_close > p_ema else "🔴 BEAR"
-                else:
-                    p_status = "🟡 ND"
-            else:
-                p_status = "🟡 ND"
-
-            out[name] = {"close": p_close, "status": p_status}
-        except Exception:
-            continue
-
-    return out
+import stock_scanner.pulse as pulse
 
 
 @st.cache_data(ttl="10m")
@@ -139,7 +95,13 @@ def render_sidebar():
     market_cap_cr_min = st.sidebar.number_input("Market cap gate (₹ Cr)", min_value=0.0, value=1500.0, step=50.0)
     price_min = st.sidebar.number_input("Minimum price gate (₹)", min_value=0.0, value=80.0, step=5.0)
 
-    regime = detect_market_regime() if enable_regime else {"Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0}
+    if "market_pulse_data" not in st.session_state:
+        st.session_state["market_pulse_data"] = None
+
+    regime = {"Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0}
+    if st.session_state["market_pulse_data"]:
+        regime = st.session_state["market_pulse_data"].get("regime", regime)
+
     st.sidebar.info(
         f"Regime: {regime['Market_Regime']} | Multiplier: {regime['Regime_Multiplier']:.2f} | India VIX: {regime['VIX']:.2f}"
     )
@@ -163,6 +125,7 @@ def render_sidebar():
         "price_min": price_min,
         "max_debt_to_equity": DEFAULT_SCORING_CONFIG["max_debt_to_equity"],
         "min_interest_coverage": DEFAULT_SCORING_CONFIG["min_interest_coverage"],
+        "regime": regime,
     }
 
     return portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice, scoring_config
@@ -365,6 +328,7 @@ def _run_smallcap_scan_fragment(broker_choice, scoring_config):
                                     state["portfolio_val"],
                                     state["risk_pct"],
                                     selected_universe=universe,
+                                    regime_data=scoring_config.get("regime")
                                 )
                                 if res and res["Score"] >= 60:
                                     state["results"].append(res)
@@ -417,7 +381,14 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
                 search_hist = get_stock_data(search_symbol, period="2y", interval="1d")
 
             if not search_hist.empty:
-                search_res = check_institutional_fortress(search_symbol, search_hist, search_tkr, portfolio_val, risk_pct)
+                search_res = check_institutional_fortress(
+                    search_symbol,
+                    search_hist,
+                    search_tkr,
+                    portfolio_val,
+                    risk_pct,
+                    regime_data=scoring_config.get("regime")
+                )
                 if search_res:
                     search_df = pd.DataFrame([search_res])
                     search_df["Actions"] = search_df.apply(lambda row: generate_action_link(row, broker_choice), axis=1)
@@ -436,15 +407,19 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
 
     # ---------------- MARKET PULSE ----------------
     st.subheader("🌐 Market Pulse")
-    pulse_cols = st.columns(len(INDEX_BENCHMARKS))
-    pulse_snapshot = _get_market_pulse_snapshot(INDEX_BENCHMARKS)
-    for i, (name, _) in enumerate(INDEX_BENCHMARKS.items()):
-        try:
-            row = pulse_snapshot.get(name)
-            if row:
-                pulse_cols[i].metric(name, f"{row['close']:,.0f}", row["status"])
-        except:
-            pass
+    col_pulse_btn, col_pulse_ph = st.columns([1, 4])
+    with col_pulse_btn:
+        if st.button("Refresh Market Pulse", use_container_width=True):
+            with st.spinner("Updating Market Pulse..."):
+                pulse_data = pulse.fetch_market_pulse_data()
+                st.session_state["market_pulse_data"] = pulse_data
+                st.rerun()
+
+    if st.session_state.get("market_pulse_data"):
+        with st.expander("Show/Hide Market Pulse Details", expanded=True):
+             pulse.render_market_pulse(st.session_state["market_pulse_data"])
+    else:
+        st.info("Click 'Refresh Market Pulse' to load latest indices and regime data.")
 
     # ---------------- MAIN SCAN ----------------
     execute_scan = st.button("🚀 EXECUTE SYSTEM SCAN", type="primary", use_container_width=True)
@@ -501,6 +476,7 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
                                     portfolio_val,
                                     risk_pct,
                                     selected_universe=selected_universe,
+                                    regime_data=scoring_config.get("regime")
                                 )
                                 if res and (selected_universe != "Nifty Smallcap 250" or res["Score"] >= 60):
                                     local_results.append(res)
