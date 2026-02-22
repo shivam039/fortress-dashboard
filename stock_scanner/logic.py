@@ -170,7 +170,11 @@ def _apply_quality_gates(df, cfg):
         gate_conditions[f"MCap<{cfg['market_cap_cr_min']}Cr"] = pd.to_numeric(df.get(market_cap_col), errors="coerce") <= cfg["market_cap_cr_min"]
     if debt_col:
         gate_conditions[f"Debt/Equity>{cfg['max_debt_to_equity']}"] = pd.to_numeric(df.get(debt_col), errors="coerce") >= cfg["max_debt_to_equity"]
-    gate_conditions["LowLiquidityFlag"] = df.get("Liquidity_Flag", "").astype(str).eq("Low Liquidity - Avoid")
+
+    if "Liquidity_Flag" in df.columns:
+        gate_conditions["LowLiquidityFlag"] = df["Liquidity_Flag"].astype(str).eq("Low Liquidity - Avoid")
+    else:
+        gate_conditions["LowLiquidityFlag"] = False
 
     gate_frame = pd.DataFrame({k: v.fillna(False) for k, v in gate_conditions.items()}, index=df.index)
     df["Quality_Gate_Pass"] = ~gate_frame.any(axis=1)
