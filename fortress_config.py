@@ -107,6 +107,14 @@ SECTOR_MAP = {
     "TRENT.NS": "Retail", "ZOMATO.NS": "Retail", "NYKAA.NS": "Retail"
 }
 
+# Extended for Nifty Smallcap 250 sector mapping
+try:
+    from utils.helpers import load_sector_map
+    _smallcap_map = load_sector_map("smallcap_sectors.csv")
+    SECTOR_MAP.update(_smallcap_map)
+except Exception as e:
+    print(f"Warning: Could not load Smallcap sectors: {e}")
+
 # ^NIFTYJR is delisted/unreliable on Yahoo. Using ^CNX100 (Nifty 100) as proxy or fallback.
 INDEX_BENCHMARKS = {
     "Nifty 50": "^NSEI",
