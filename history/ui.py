@@ -1,151 +1,248 @@
-import streamlit as st
-import pandas as pd
+import json
+import sqlite3
 from datetime import datetime
-from utils.db import fetch_timestamps, fetch_history_data
-from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+import streamlit as st
+
+from utils.db import DB_NAME
+
+KEY_COLUMNS = [
+    "symbol",
+    "price",
+    "target_price",
+    "conviction_score",
+    "rsi",
+    "ema200",
+    "analyst_target_mean",
+    "regime",
+    "pick_type",
+    "scan_timestamp",
+]
+
+
+@st.cache_data(ttl=1800)
+def get_unique_scan_timestamps():
+    query = """
+    SELECT DISTINCT scan_timestamp
+    FROM scan_history_details
+    WHERE scan_timestamp IS NOT NULL
+    ORDER BY scan_timestamp DESC
+    LIMIT 50
+    """
+
+    try:
+        conn = st.connection("neon", type="sql")
+        df = conn.query(query, ttl="30m")
+    except Exception:
+        fallback_query = """
+        SELECT DISTINCT scan_timestamp
+        FROM scan_history
+        WHERE scan_timestamp IS NOT NULL
+        ORDER BY scan_timestamp DESC
+        LIMIT 50
+        """
+        with sqlite3.connect(DB_NAME, timeout=15.0) as sqlite_conn:
+            df = pd.read_sql_query(fallback_query, sqlite_conn)
+
+    if df.empty:
+        return []
+
+    ts_col = pd.to_datetime(df["scan_timestamp"], errors="coerce", utc=True).dropna()
+    return ts_col.tolist()
+
+
+@st.cache_data(ttl=1800)
+def get_scan_data_for_timestamp(selected_timestamp):
+    query = """
+    SELECT *
+    FROM scan_history_details
+    WHERE scan_timestamp = :ts
+    ORDER BY conviction_score DESC
+    """
+    params = {"ts": selected_timestamp}
+
+    try:
+        conn = st.connection("neon", type="sql")
+        raw_df = conn.query(query, params=params, ttl="30m")
+    except Exception:
+        sqlite_query = """
+        SELECT d.*, s.timestamp AS scan_timestamp_fallback
+        FROM scan_history_details d
+        LEFT JOIN scans s ON d.scan_id = s.scan_id
+        WHERE COALESCE(d.scan_timestamp, s.timestamp) = ?
+        ORDER BY d.conviction_score DESC
+        """
+        with sqlite3.connect(DB_NAME, timeout=15.0) as sqlite_conn:
+            raw_df = pd.read_sql_query(sqlite_query, sqlite_conn, params=(selected_timestamp,))
+
+    if raw_df.empty:
+        return pd.DataFrame()
+
+    if "raw_data" in raw_df.columns:
+        def parse_raw(value):
+            if isinstance(value, dict):
+                return value
+            if isinstance(value, str) and value.strip():
+                try:
+                    return json.loads(value)
+                except json.JSONDecodeError:
+                    return {}
+            return {}
+
+        normalized = pd.json_normalize(raw_df["raw_data"].apply(parse_raw))
+        merged = pd.concat([normalized, raw_df], axis=1)
+        merged = merged.loc[:, ~merged.columns.duplicated()]
+        return merged
+
+    return raw_df
+
+
+def classify_long_term(df):
+    if df.empty:
+        return df
+
+    scores = pd.to_numeric(df.get("conviction_score"), errors="coerce")
+    regime = df.get("regime", pd.Series("", index=df.index)).astype(str).str.lower()
+    price = pd.to_numeric(df.get("price"), errors="coerce")
+    analyst_target = pd.to_numeric(df.get("analyst_target_mean"), errors="coerce")
+    upside = analyst_target / price
+
+    return df[(scores >= 80) | ((regime == "bull") & (upside >= 1.25))].copy()
+
+
+def classify_momentum(df):
+    if df.empty:
+        return df
+    scores = pd.to_numeric(df.get("conviction_score"), errors="coerce")
+    return df[(scores >= 65) & (scores < 80)].copy()
+
+
+def classify_strategic(df):
+    if df.empty:
+        return df
+
+    long_idx = classify_long_term(df).index
+    momentum_idx = classify_momentum(df).index
+    return df[~df.index.isin(long_idx.union(momentum_idx))].copy()
+
+
+def _pick_type_mask(df: pd.DataFrame, patterns: list[str]) -> pd.Series:
+    if "pick_type" not in df.columns:
+        return pd.Series([False] * len(df), index=df.index)
+
+    lower = df["pick_type"].astype(str).str.lower()
+    mask = pd.Series([False] * len(df), index=df.index)
+    for pattern in patterns:
+        mask = mask | lower.str.contains(pattern, na=False)
+    return mask
+
+
+def _format_ts_for_display(ts):
+    parsed = pd.to_datetime(ts, errors="coerce", utc=True)
+    if pd.isna(parsed):
+        return str(ts)
+    return parsed.tz_convert(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S IST")
+
+
+def _apply_symbol_filter(df: pd.DataFrame, search_term: str) -> pd.DataFrame:
+    if df.empty or not search_term:
+        return df
+    if "symbol" not in df.columns:
+        return df.iloc[0:0]
+    return df[df["symbol"].astype(str).str.contains(search_term, case=False, na=False)].copy()
+
+
+def _display_pick_table(title: str, df: pd.DataFrame, selected_label: str, search_term: str):
+    with st.expander(title, expanded=True):
+        if df.empty:
+            st.info("No matches" if search_term else "No data available for this scan")
+            return
+
+        display_cols = [c for c in KEY_COLUMNS if c in df.columns]
+        if not display_cols:
+            display_cols = [c for c in df.columns if c not in {"id", "scan_id", "raw_data"}]
+
+        table_df = df[display_cols]
+        st.dataframe(table_df, use_container_width=True, hide_index=True)
+        st.download_button(
+            f"📥 Export {title} CSV",
+            table_df.to_csv(index=False).encode("utf-8"),
+            f"{title.lower().replace(' ', '_')}_{selected_label.replace(':', '-')}.csv",
+            "text/csv",
+        )
+
 
 def render():
     st.header("📜 Master Scan History")
 
-    # --- Sidebar Controls ---
-    st.sidebar.subheader("History Filters")
-
-    # Scan Type Selection
-    scan_type = st.sidebar.selectbox(
-        "Scan Type",
-        ["STOCK", "MF", "OPTIONS", "COMMODITY"],
-        index=0
-    )
-
-    # Date Filter
-    # Get all timestamps for the type
-    all_timestamps = fetch_timestamps(scan_type=scan_type)
-
-    if not all_timestamps:
-        st.info(f"No scan history found for {scan_type}.")
+    timestamps = get_unique_scan_timestamps()
+    if not timestamps:
+        st.info("No data available for this scan")
         return
 
-    # Convert to datetime objects for date input filter
-    # Assuming timestamp format "YYYY-MM-DD HH:MM:SS"
-    try:
-        dt_objs = [datetime.strptime(ts, "%Y-%m-%d %H:%M:%S") for ts in all_timestamps]
-        min_date = min(dt_objs).date()
-        max_date = max(dt_objs).date()
-    except:
-        min_date = datetime.now().date()
-        max_date = datetime.now().date()
-
-    date_range = st.sidebar.date_input(
-        "Date Range",
-        value=(min_date, max_date)
-    )
-
-    # Filter timestamps based on date range
-    filtered_timestamps = []
-    if isinstance(date_range, tuple) and len(date_range) == 2:
-        start_d, end_d = date_range
-        for ts in all_timestamps:
-            try:
-                d = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").date()
-                if start_d <= d <= end_d:
-                    filtered_timestamps.append(ts)
-            except:
-                pass
-    else:
-        filtered_timestamps = all_timestamps
-
-    # Scan Selection
+    options = [None] + timestamps
     selected_timestamp = st.selectbox(
-        "Select Scan",
-        filtered_timestamps if filtered_timestamps else all_timestamps
+        "Select Scan Timestamp",
+        options=options,
+        format_func=lambda ts: "Select a scan timestamp" if ts is None else _format_ts_for_display(ts),
     )
+    symbol_search = st.text_input("Search symbol across all tables", placeholder="e.g. RELIANCE")
 
-    if not selected_timestamp:
+    if selected_timestamp is None:
+        st.info("Select a scan timestamp to view historical results")
         return
 
-    # Broker Choice for Links
-    broker_choice = st.sidebar.selectbox("Execution Broker", ["Zerodha", "Dhan"])
+    selected_timestamp_str = pd.to_datetime(selected_timestamp, utc=True).isoformat()
+    selected_label = _format_ts_for_display(selected_timestamp)
 
-    # --- Fetch Data ---
-    with st.spinner(f"Loading {scan_type} scan from {selected_timestamp}..."):
-        # We pass table_name="" because fetch_history_data logic relies on scan_type logic now
-        # or falls back to standard tables if scan_type matches.
-        # But wait, my fetch_history_data change:
-        # if db_scan_type in ['STOCK', 'OPTIONS', 'COMMODITY'] ...
-        # So passing scan_type in args is not strictly necessary if 'scans' table has it,
-        # but fetch_history_data needs timestamp to look up scan_id.
-        # It takes table_name, timestamp, scan_type (optional).
-        df = fetch_history_data(table_name="", timestamp=selected_timestamp, scan_type=scan_type)
+    with st.spinner(f"Loading scan snapshot for {selected_label}..."):
+        df = get_scan_data_for_timestamp(selected_timestamp_str)
 
     if df.empty:
-        st.warning("No details found for this scan.")
+        st.info("No data available for this scan")
         return
 
-    st.subheader(f"{scan_type} Results - {selected_timestamp}")
-    st.caption(f"Found {len(df)} records.")
+    if "pick_type" in df.columns:
+        long_term = df[_pick_type_mask(df, ["long-term", "long term", "longterm"])].copy()
+        momentum = df[_pick_type_mask(df, ["momentum"])].copy()
+        strategic = df[_pick_type_mask(df, ["strategic", "actionable"])].copy()
 
-    # --- Display Logic with Links ---
+        # Keep unclassified rows visible in Strategic table
+        if strategic.empty:
+            used_idx = long_term.index.union(momentum.index)
+            strategic = df[~df.index.isin(used_idx)].copy()
+    else:
+        long_term = classify_long_term(df)
+        momentum = classify_momentum(df)
+        strategic = classify_strategic(df)
 
-    # Helper for links
-    def get_link(row):
-        symbol = row.get('Symbol') or row.get('symbol')
-        if not symbol: return None
+    long_term = _apply_symbol_filter(long_term, symbol_search)
+    momentum = _apply_symbol_filter(momentum, symbol_search)
+    strategic = _apply_symbol_filter(strategic, symbol_search)
 
-        # Quantity logic
-        qty = row.get('Position_Qty', 1)
-        if pd.isna(qty): qty = 1
+    _display_pick_table("Long-Term Picks", long_term, selected_label, symbol_search)
+    _display_pick_table("Momentum Picks", momentum, selected_label, symbol_search)
+    _display_pick_table("Strategic Picks", strategic, selected_label, symbol_search)
 
-        # Price for Dhan
-        price = row.get('Price', 0)
-        if pd.isna(price): price = 0
-
-        # Transaction Type (for Commodities/Options)
-        # Check 'action' or 'Action' or 'Trade_Type'
-        txn_type = "BUY"
-        if 'Trade_Type' in row and row['Trade_Type']:
-            txn_type = row['Trade_Type']
-        elif 'action' in row and row['action']:
-            txn_type = row['action']
-
-        if broker_choice == "Zerodha":
-            return generate_zerodha_url(symbol, qty, transaction_type=txn_type)
-        else:
-            return generate_dhan_url(symbol, qty, price, transaction_type=txn_type)
-
-    # Apply links if Symbol exists
-    if 'Symbol' in df.columns or 'symbol' in df.columns:
-        df['Execute'] = df.apply(get_link, axis=1)
-
-        # Move Execute to front
-        cols = list(df.columns)
-        if 'Execute' in cols:
-            cols.insert(0, cols.pop(cols.index('Execute')))
-            df = df[cols]
-
-    # Column Config
-    column_config = {
-        "Execute": st.column_config.LinkColumn("⚡ Trade"),
-        "Price": st.column_config.NumberColumn(format="%.2f"),
-        "Score": st.column_config.NumberColumn(format="%.1f"),
-        "Fortress Score": st.column_config.NumberColumn(format="%.1f"),
-    }
-
-    # Hide some technical columns
-    hide_cols = ['scan_id', 'id']
-    show_cols = [c for c in df.columns if c not in hide_cols]
-
-    st.dataframe(
-        df[show_cols],
-        use_container_width=True,
-        column_config=column_config,
-        hide_index=True
+    combined = pd.concat(
+        [
+            long_term.assign(_table="Long-Term Picks"),
+            momentum.assign(_table="Momentum Picks"),
+            strategic.assign(_table="Strategic Picks"),
+        ],
+        ignore_index=True,
     )
+    if not combined.empty:
+        st.download_button(
+            "📥 Export Combined CSV",
+            combined.to_csv(index=False).encode("utf-8"),
+            f"scan_history_combined_{selected_label.replace(':', '-')}.csv",
+            "text/csv",
+        )
 
-    # Download
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        "📥 Download CSV",
-        csv,
-        f"scan_history_{scan_type}_{selected_timestamp}.csv",
-        "text/csv"
+    st.code(
+        "ALTER TABLE scan_history_details ADD COLUMN IF NOT EXISTS pick_type TEXT;",
+        language="sql",
     )

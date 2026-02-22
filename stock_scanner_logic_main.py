@@ -14,14 +14,6 @@ from fortress_config import (
 )
 from datetime import datetime
 
-# From development-db: Neon compatibility
-try:
-    from utils.db import _read_df
-except ImportError:
-    # Fallback for local testing or if utils.db structure differs
-    def _read_df(*args, **kwargs):
-        return pd.DataFrame()
-
 _BENCHMARK_CACHE = {}
 
 DEFAULT_SCORING_CONFIG = {
@@ -209,7 +201,6 @@ def _apply_quality_gates(df, cfg):
 
 
 def apply_advanced_scoring(df, scoring_config=None):
-    # From main: clean scoring logic without inline duplication
     if df is None or df.empty:
         return df
 

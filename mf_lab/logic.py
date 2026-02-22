@@ -138,6 +138,9 @@ def fetch_mf_snapshot(scheme_codes: list[str]) -> pd.DataFrame:
                     "Benchmark": bench_ticker
                 }
             )
+            # Defensive sleep to respect mfapi.in rate limits
+            time.sleep(0.5)
+
         except Exception as e:
             logger.error(f"mf_lab error: {e}")
 

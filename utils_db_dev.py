@@ -70,9 +70,6 @@ def _can_use_neon() -> bool:
     if _sqlite_only_mode():
         return False
     try:
-        # Check if secrets are available
-        if "connections" not in st.secrets or "neon" not in st.secrets["connections"]:
-             return False
         _ = st.secrets["connections"]["neon"]["url"]
         conn = get_neon_conn()
         conn.session.execute(text("SELECT 1"))
@@ -94,78 +91,50 @@ def get_table_name_from_universe(u):
     return "scan_entries"
 
 
-def _infer_sql_type(series):
-    dtype = series.dtype
-    if pd.api.types.is_float_dtype(dtype):
-        return "REAL"
-    if pd.api.types.is_integer_dtype(dtype):
-        return "INTEGER"
-    if pd.api.types.is_bool_dtype(dtype):
-        return "BOOLEAN"
-    if pd.api.types.is_datetime64_any_dtype(dtype):
-        return "TIMESTAMP"
-    if str(series.name).lower() == "sub_scores":
-        return "JSONB"
-    return "TEXT"
-
-
-def log_scan_results(df, table_name="scan_results"):
-    """
-    Logs scan results with automated schema evolution.
-    Uses bulk schema inspection + ALTER before appending rows.
-    """
-    if df.empty:
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    retry=retry_if_exception(_should_retry_db_error),
+    reraise=True,
+)
+def _exec(sql: str, params: dict[str, Any] | None = None):
+    if _can_use_neon():
+        conn = get_neon_conn()
+        conn.session.execute(text(sql), params or {})
+        conn.session.commit()
         return
+    with _sqlite_connection() as conn:
+        conn.execute(sql, params or {})
 
-    df = df.copy()
-    # Persist detailed score components as JSON payload for richer audit/backtest analysis.
-    if "sub_scores" in df.columns:
-        df["sub_scores"] = df["sub_scores"].apply(
-            lambda x: json.dumps(x) if isinstance(x, dict) else x
+
+def _read_df(sql: str, params: dict[str, Any] | None = None, ttl: str | None = None) -> pd.DataFrame:
+    if _can_use_neon():
+        return get_neon_conn().query(sql, params=params or {}, ttl=ttl or "5m")
+    with _sqlite_connection() as conn:
+        return pd.read_sql_query(sql, conn, params=params or {})
+
+
+def _sqlite_has_column(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(column[1] == column_name for column in columns)
+
+
+def _ensure_scan_history_table_neon():
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS scan_history (
+            id BIGSERIAL PRIMARY KEY,
+            scan_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            symbol TEXT,
+            conviction_score NUMERIC,
+            regime TEXT,
+            sub_scores JSONB,
+            raw_data JSONB
         )
-
-    try:
-        with get_connection() as conn:
-            with conn:
-                c = conn.cursor()
-                is_sqlite = isinstance(conn, sqlite3.Connection)
-
-                if is_sqlite:
-                    c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
-                    table_exists = c.fetchone()
-                    if not table_exists:
-                        df.to_sql(table_name, conn, if_exists="replace", index=False)
-                        return
-
-                    c.execute(f"PRAGMA table_info({table_name})")
-                    existing_cols = {row[1] for row in c.fetchall()}
-                else:
-                    c.execute(
-                        """
-                        SELECT column_name
-                        FROM information_schema.columns
-                        WHERE table_schema = 'public' AND table_name = %s
-                        """,
-                        (table_name,),
-                    )
-                    existing_cols = {row[0] for row in c.fetchall()}
-
-                missing_cols = [col for col in df.columns if col not in existing_cols]
-
-                if missing_cols:
-                    add_clauses = [
-                        f'ADD COLUMN "{col}" {_infer_sql_type(df[col])}'
-                        for col in missing_cols
-                    ]
-                    alter_sql = f'ALTER TABLE "{table_name}" ' + ", ".join(add_clauses)
-                    c.execute(alter_sql)
-
-                df.to_sql(table_name, conn, if_exists="append", index=False)
-    except Exception as e:
-        print(f"Error logging scan results: {e}")
-
-
-# --- NEW INSERTION LOGIC ---
+        """
+    )
+    _exec("CREATE INDEX IF NOT EXISTS idx_scan_history_timestamp ON scan_history (scan_timestamp DESC)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_scan_history_symbol ON scan_history (symbol)")
 
 
 def _postgres_has_column(table_name: str, column_name: str) -> bool:
@@ -710,97 +679,65 @@ def save_benchmark_data(ticker, df):
 
 @st.cache_data(ttl=60)
 def fetch_timestamps(table_name="scan_mf", scan_type=None):
-    # 1. Try New Schema (Neon/Postgres or Unified SQLite)
-    timestamps = []
     query = "SELECT timestamp FROM scans WHERE status='Completed'"
     params = {}
     if scan_type:
         query += " AND scan_type = :scan_type"
         params["scan_type"] = scan_type
     query += " ORDER BY timestamp DESC"
-
     try:
         df = _read_df(query, params=params, ttl="5m")
-        if not df.empty:
-            timestamps = df["timestamp"].tolist()
-    except Exception as e:
-        logger.warning(f"Error fetching timestamps from scans table: {e}")
-
-    # 2. Legacy fallback from main - supports pre-Neon SQLite data
-    # Only if timestamps list is empty or scan_type is legacy-compatible
-    if not timestamps:
-        try:
-            # Attempt to read from legacy scan_mf table
-            # We use _read_df to support reading this from Neon (if migrated) or SQLite
-            df_legacy = _read_df("SELECT DISTINCT timestamp FROM scan_mf ORDER BY timestamp DESC", ttl="5m")
-            if not df_legacy.empty:
-                legacy = [t for t in df_legacy['timestamp'].tolist() if t not in timestamps]
-                timestamps.extend(legacy)
-        except Exception as e:
-             # Legacy table might not exist
-             logger.debug(f"Legacy scan_mf fetch failed (expected if fresh install): {e}")
-
-    # Ensure list is sorted
-    timestamps.sort(reverse=True)
-    return timestamps
+        return df["timestamp"].tolist() if not df.empty else []
+    except Exception:
+        return []
 
 
 @st.cache_data(ttl=60)
 def fetch_history_data(table_name, timestamp, scan_type=None):
-    # 1. Try New Schema via scans table
     scan_info = _read_df("SELECT scan_id, scan_type FROM scans WHERE timestamp = :timestamp", {"timestamp": timestamp}, ttl="5m")
-
-    if not scan_info.empty:
-        scan_id = scan_info.iloc[0]["scan_id"]
-        db_scan_type = scan_info.iloc[0].get("scan_type")
-
-        if db_scan_type in ["STOCK", "OPTIONS", "COMMODITY"]:
-            df = _read_df("SELECT raw_data FROM scan_history_details WHERE scan_id = :scan_id", {"scan_id": scan_id}, ttl="5m")
-            if "raw_data" in df.columns and not df.empty:
-                return pd.json_normalize(df["raw_data"].apply(lambda x: x if isinstance(x, dict) else json.loads(x)))
-            return df
-
-        query = """
-        SELECT
-            r.symbol as Symbol,
-            r.scheme_code as "Scheme Code",
-            r.category as Category,
-            r.score as Score,
-            r.price as Price,
-            r.integrity_label as Integrity,
-            r.drift_status as "Drift Status",
-            r.drift_message as "Drift Message",
-            m.alpha as "Alpha (True)",
-            m.beta as Beta,
-            m.te as "Tracking Error",
-            m.sortino as Sortino,
-            m.max_dd as "Max Drawdown",
-            m.win_rate as "Win Rate",
-            m.upside as "Upside Cap",
-            m.downside as "Downside Cap",
-            m.cagr as cagr
-        FROM scan_entries r
-        LEFT JOIN fund_metrics m ON r.scan_id = m.scan_id AND r.symbol = m.symbol
-        WHERE r.scan_id = :scan_id
-        """
-        df = _read_df(query, {"scan_id": scan_id}, ttl="5m")
-        if not df.empty and "Score" in df.columns:
-            df["Fortress Score"] = df["Score"]
-        return df
-
-    # 2. Legacy fallback from main - supports pre-Neon SQLite data
-    # If not found in 'scans', check 'scan_mf' directly
-    try:
-        df = _read_df("SELECT * FROM scan_mf WHERE timestamp = :timestamp", {"timestamp": timestamp}, ttl="5m")
-        return df
-    except Exception as e:
-        logger.debug(f"Legacy fetch_history_data failed: {e}")
+    if scan_info.empty:
         return pd.DataFrame()
+
+    scan_id = scan_info.iloc[0]["scan_id"]
+    db_scan_type = scan_info.iloc[0].get("scan_type")
+
+    if db_scan_type in ["STOCK", "OPTIONS", "COMMODITY"]:
+        df = _read_df("SELECT raw_data FROM scan_history_details WHERE scan_id = :scan_id", {"scan_id": scan_id}, ttl="5m")
+        if "raw_data" in df.columns and not df.empty:
+            return pd.json_normalize(df["raw_data"].apply(lambda x: x if isinstance(x, dict) else json.loads(x)))
+        return df
+
+    query = """
+    SELECT
+        r.symbol as Symbol,
+        r.scheme_code as "Scheme Code",
+        r.category as Category,
+        r.score as Score,
+        r.price as Price,
+        r.integrity_label as Integrity,
+        r.drift_status as "Drift Status",
+        r.drift_message as "Drift Message",
+        m.alpha as "Alpha (True)",
+        m.beta as Beta,
+        m.te as "Tracking Error",
+        m.sortino as Sortino,
+        m.max_dd as "Max Drawdown",
+        m.win_rate as "Win Rate",
+        m.upside as "Upside Cap",
+        m.downside as "Downside Cap",
+        m.cagr as cagr
+    FROM scan_entries r
+    LEFT JOIN fund_metrics m ON r.scan_id = m.scan_id AND r.symbol = m.symbol
+    WHERE r.scan_id = :scan_id
+    """
+    df = _read_df(query, {"scan_id": scan_id}, ttl="5m")
+    if not df.empty and "Score" in df.columns:
+        df["Fortress Score"] = df["Score"]
+    return df
 
 
 @st.cache_data(ttl=60)
 def fetch_symbol_history(table_name, symbol):
-    # Unified history fetch (New Schema)
     query = """
     SELECT s.timestamp, r.score as Score, r.price as Price, m.alpha as "Alpha (True)", m.beta as Beta, m.te as "Tracking Error"
     FROM scan_entries r
@@ -809,29 +746,7 @@ def fetch_symbol_history(table_name, symbol):
     WHERE r.symbol = :symbol
     ORDER BY s.timestamp
     """
-    try:
-        df_new = _read_df(query, {"symbol": symbol}, ttl="5m")
-    except Exception:
-        df_new = pd.DataFrame()
-
-    # Legacy Schema
-    df_old = pd.DataFrame()
-    try:
-        # Columns might differ in legacy, selecting key ones
-        df_old = _read_df("SELECT timestamp, Score, Price, `Alpha (True)`, Beta, `Tracking Error` FROM scan_mf WHERE Symbol = :symbol", {"symbol": symbol}, ttl="5m")
-    except Exception:
-        pass
-
-    if not df_new.empty and not df_old.empty:
-        existing_ts = set(df_new['timestamp'])
-        df_old = df_old[~df_old['timestamp'].isin(existing_ts)]
-        return pd.concat([df_old, df_new]).sort_values('timestamp')
-    elif not df_new.empty:
-        return df_new
-    elif not df_old.empty:
-        return df_old
-
-    return pd.DataFrame()
+    return _read_df(query, {"symbol": symbol}, ttl="5m")
 
 
 def log_audit(action, universe="Global", details=""):
