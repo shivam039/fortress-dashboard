@@ -130,6 +130,15 @@ def _exec(sql: str, params: dict[str, Any] | None = None):
         conn.execute(sql, params or {})
 
 
+def _read_df_neon_sqlalchemy(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
+    """Read query results via SQLAlchemy directly, avoiding pandas SQL driver edge-cases."""
+    engine = get_db_engine()
+    with engine.connect() as conn:
+        result = conn.execute(text(sql), params or {})
+        rows = result.mappings().all()
+    return pd.DataFrame(rows)
+
+
 @st.cache_data(ttl=300)
 @retry(
     stop=stop_after_attempt(3),
@@ -139,9 +148,7 @@ def _exec(sql: str, params: dict[str, Any] | None = None):
 )
 def _read_df_cached(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
     """Cached read for standard queries (default 5m TTL)."""
-    engine = get_db_engine()
-    with engine.connect() as conn:
-        return pd.read_sql_query(text(sql), conn, params=params or {})
+    return _read_df_neon_sqlalchemy(sql, params)
 
 
 @retry(
@@ -152,9 +159,7 @@ def _read_df_cached(sql: str, params: dict[str, Any] | None = None) -> pd.DataFr
 )
 def _read_df_uncached(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
     """Direct read for schema checks and fresh data."""
-    engine = get_db_engine()
-    with engine.connect() as conn:
-        return pd.read_sql_query(text(sql), conn, params=params or {})
+    return _read_df_neon_sqlalchemy(sql, params)
 
 
 def _read_df(sql: str, params: dict[str, Any] | None = None, ttl: str | None = None) -> pd.DataFrame:
