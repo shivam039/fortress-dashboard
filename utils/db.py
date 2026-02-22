@@ -40,6 +40,10 @@ def _sqlite_connection():
     return sqlite3.connect(DB_NAME, timeout=15.0)
 
 
+def get_connection():
+    return _sqlite_connection()
+
+
 def _sqlite_only_mode() -> bool:
     backend = os.getenv("FORTRESS_DB_BACKEND", "").strip().lower()
     return backend in {"sqlite", "local"}
@@ -92,6 +96,34 @@ def get_table_name_from_universe(u):
     if "Commodities" == u:
         return "scan_commodities"
     return "scan_entries"
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    retry=retry_if_exception(_should_retry_db_error),
+    reraise=True,
+)
+def _exec(sql: str, params: dict[str, Any] | None = None):
+    if _can_use_neon():
+        conn = get_neon_conn()
+        conn.session.execute(text(sql), params or {})
+        conn.session.commit()
+        return
+    with _sqlite_connection() as conn:
+        conn.execute(sql, params or {})
+
+
+def _read_df(sql: str, params: dict[str, Any] | None = None, ttl: str | None = None) -> pd.DataFrame:
+    if _can_use_neon():
+        return get_neon_conn().query(sql, params=params or {}, ttl=ttl or "5m")
+    with _sqlite_connection() as conn:
+        return pd.read_sql_query(sql, conn, params=params or {})
+
+
+def _sqlite_has_column(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
+    columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(column[1] == column_name for column in columns)
 
 
 def _infer_sql_type(series):
@@ -166,6 +198,24 @@ def log_scan_results(df, table_name="scan_results"):
 
 
 # --- NEW INSERTION LOGIC ---
+
+
+def _ensure_scan_history_table_neon():
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS scan_history (
+            id BIGSERIAL PRIMARY KEY,
+            scan_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            symbol TEXT,
+            conviction_score NUMERIC,
+            regime TEXT,
+            sub_scores JSONB,
+            raw_data JSONB
+        )
+        """
+    )
+    _exec("CREATE INDEX IF NOT EXISTS idx_scan_history_timestamp ON scan_history (scan_timestamp DESC)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_scan_history_symbol ON scan_history (symbol)")
 
 
 def _postgres_has_column(table_name: str, column_name: str) -> bool:
