@@ -58,6 +58,38 @@ def _download_close_series(symbol, period="1y", interval="1d"):
     return bench.get("Close", pd.Series(dtype=float)).dropna()
 
 
+@st.cache_data(ttl="10m")
+def _get_ticker_info(symbol):
+    try:
+        return yf.Ticker(symbol).info
+    except:
+        return {}
+
+
+@st.cache_data(ttl="10m")
+def _get_ticker_news(symbol):
+    try:
+        return yf.Ticker(symbol).news
+    except:
+        return []
+
+
+@st.cache_data(ttl="10m")
+def _get_ticker_calendar(symbol):
+    try:
+        return yf.Ticker(symbol).calendar
+    except:
+        return None
+
+
+@st.cache_data(ttl="10m")
+def _get_ticker_earnings_dates(symbol):
+    try:
+        return yf.Ticker(symbol).earnings_dates
+    except:
+        return None
+
+
 def _get_benchmark_series(symbol):
     cached = _BENCHMARK_CACHE.get(symbol)
     if cached is not None and len(cached) > 0:
@@ -171,10 +203,11 @@ def _apply_quality_gates(df, cfg):
     if debt_col:
         gate_conditions[f"Debt/Equity>{cfg['max_debt_to_equity']}"] = pd.to_numeric(df.get(debt_col), errors="coerce") >= cfg["max_debt_to_equity"]
 
+    # Fix: Ensure Liquidity_Flag is treated as Series and handle missing values safely
     if "Liquidity_Flag" in df.columns:
-        gate_conditions["LowLiquidityFlag"] = df["Liquidity_Flag"].astype(str).eq("Low Liquidity - Avoid")
+        gate_conditions["LowLiquidityFlag"] = df["Liquidity_Flag"].fillna("").astype(str).eq("Low Liquidity - Avoid")
     else:
-        gate_conditions["LowLiquidityFlag"] = False
+        gate_conditions["LowLiquidityFlag"] = pd.Series(False, index=df.index)
 
     gate_frame = pd.DataFrame({k: v.fillna(False) for k, v in gate_conditions.items()}, index=df.index)
     df["Quality_Gate_Pass"] = ~gate_frame.any(axis=1)
@@ -194,7 +227,8 @@ def apply_advanced_scoring(df, scoring_config=None):
     else:
         cfg["weights"] = _normalize_weight_map(cfg["weights"])
 
-    df = df.copy()
+    # Optimized: Avoid unnecessary copy if safe
+    # df = df.copy()
 
     sector_rotation_bonus = _compute_sector_rotation_bonus(df)
     df["Sector_Rotation_Bonus"] = sector_rotation_bonus.round(2)
@@ -377,7 +411,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
                 gap_integrity = "⚠️ Gap Risk"
 
         try:
-            news = ticker_obj.news or []
+            # Optimized: Use cached news fetch
+            news = _get_ticker_news(ticker) or []
             titles = " ".join(n.get("title","").lower() for n in news[:5])
             if any(k in titles for k in ["fraud","investigation","default","bankruptcy","scam","legal"]):
                 news_sentiment = "🚨 BLACK SWAN"
@@ -385,7 +420,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
                 black_swan_flag = 1
         except: pass
         try:
-            cal = ticker_obj.calendar
+            # Optimized: Use cached calendar fetch
+            cal = _get_ticker_calendar(ticker)
             if isinstance(cal,pd.DataFrame) and not cal.empty:
                 next_date = pd.to_datetime(cal.iloc[0,0]).date()
                 days_to = (next_date - datetime.now().date()).days
@@ -400,7 +436,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         earnings_surprise = 0.0
         negative_earnings_surprise = False
         try:
-            info = ticker_obj.info or {}
+            # Optimized: Use cached info fetch
+            info = _get_ticker_info(ticker) or {}
             analyst_count = info.get("numberOfAnalystOpinions",0)
             target_high = info.get("targetHighPrice",0)
             target_low = info.get("targetLowPrice",0)
@@ -412,7 +449,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         except: pass
 
         try:
-            earnings = ticker_obj.earnings_dates
+            # Optimized: Use cached earnings fetch
+            earnings = _get_ticker_earnings_dates(ticker)
             if isinstance(earnings, pd.DataFrame) and not earnings.empty:
                 latest = earnings.sort_index(ascending=False).iloc[0]
                 earnings_ts = earnings.sort_index(ascending=False).index[0]
