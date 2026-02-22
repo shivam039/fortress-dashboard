@@ -14,14 +14,6 @@ from fortress_config import (
 )
 from datetime import datetime
 
-# From development-db: Neon compatibility
-try:
-    from utils.db import _read_df
-except ImportError:
-    # Fallback for local testing or if utils.db structure differs
-    def _read_df(*args, **kwargs):
-        return pd.DataFrame()
-
 _BENCHMARK_CACHE = {}
 
 DEFAULT_SCORING_CONFIG = {
@@ -209,7 +201,6 @@ def _apply_quality_gates(df, cfg):
 
 
 def apply_advanced_scoring(df, scoring_config=None):
-    # From main: clean scoring logic without inline duplication
     if df is None or df.empty:
         return df
 
@@ -244,6 +235,15 @@ def apply_advanced_scoring(df, scoring_config=None):
         df["Sector_RSI_Z"] = rsi_z.round(3)
         df["Sector_Conviction_Z"] = conviction_z.round(3)
         df["Context_Raw"] += ((rsi_z + conviction_z) * 5.0)
+
+    # Sector rotation bonus (moved from UI to Core Logic)
+    # Calculate top sectors based on 3M perf proxy (Ret_90D) directly from the current dataframe
+    if "Sector" in df.columns and "Ret_90D" in df.columns:
+        sector_perf = df.groupby("Sector")["Ret_90D"].mean().sort_values(ascending=False)
+        top_sectors = set(sector_perf.head(3).index.tolist())
+        df["Sector_Rotation_Bonus"] = df["Sector"].isin(top_sectors).astype(int) * 10
+        # Add to Context_Raw before normalization
+        df["Context_Raw"] = pd.to_numeric(df.get("Context_Raw", 0), errors="coerce").fillna(0) + df["Sector_Rotation_Bonus"]
 
     # Normalize category sub-scores within scan universe
     df["Technical_Score"] = _normalize_series(df.get("Technical_Raw", 50)).round(2)
@@ -649,7 +649,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
 def backtest_top_picks(scan_timestamp):
     """Backtest top picks from a scan timestamp against Nifty benchmark forward returns."""
     try:
-        # From development-db: Neon compatibility
+        from utils.db import _read_df
+
         query = """
             SELECT d.symbol AS Symbol, d.price AS Entry_Price
             FROM scan_history_details d
