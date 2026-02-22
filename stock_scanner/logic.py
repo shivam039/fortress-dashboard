@@ -304,6 +304,13 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         close, high, low, open_price = data["Close"], data["High"], data["Low"], data["Open"]
         volume = data.get("Volume", pd.Series(0, index=data.index, dtype=float)).fillna(0)
 
+        # Immediate Liquidity Guard
+        price = _safe_float(close.iloc[-1])
+        avg_volume_20 = _safe_float(volume.tail(20).mean())
+        avg_value_20d_cr = (avg_volume_20 * price) / 1e7 if price > 0 else 0.0
+        if selected_universe == "Nifty Smallcap 250" and avg_value_20d_cr < SMALLCAP_LIQUIDITY_MIN_CR:
+            return None
+
         ema200 = _safe_float(ta.ema(close,200).iloc[-1])
         ema50 = _safe_float(ta.ema(close,50).iloc[-1])
         rsi = _safe_float(ta.rsi(close,14).iloc[-1])
@@ -312,15 +319,14 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         st_df = ta.supertrend(high,low,close,10,3)
         trend_col = [c for c in st_df.columns if c.startswith("SUPERTd")][0]
         trend_dir = int(_safe_float(st_df[trend_col].iloc[-1]))
-        price = _safe_float(close.iloc[-1])
+        # price already defined above
         prev_close = _safe_float(close.iloc[-2])
         curr_open = _safe_float(open_price.iloc[-1])
         curr_low = _safe_float(low.iloc[-1])
         current_volume = _safe_float(volume.iloc[-1])
-        avg_volume_20 = _safe_float(volume.tail(20).mean())
-        avg_value_20d_cr = (avg_volume_20 * price) / 1e7 if price > 0 else 0.0
-        if selected_universe == "Nifty Smallcap 250" and avg_value_20d_cr < SMALLCAP_LIQUIDITY_MIN_CR:
-            return None
+        # avg_volume_20 already defined above
+        # avg_value_20d_cr already defined above
+
         vol_surge_ratio = (current_volume / avg_volume_20) if avg_volume_20 > 0 else 0.0
         vol_surge = vol_surge_ratio > 1.5
 
@@ -331,9 +337,9 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         mtf_aligned = price > weekly_ema30 if weekly_ema30 > 0 else False
 
         regime_multiplier = float(detect_market_regime().get("Regime_Multiplier", 1.0))
-        regime_multiplier = float(np.clip(regime_multiplier, 1.0, 2.0))
         # Adaptive: tighter stops in Bull, wider in Bear to avoid shakeouts
-        sl_distance = atr * (1.5 / regime_multiplier)
+        adaptive_mult = np.clip(regime_multiplier, 0.7, 1.3)
+        sl_distance = atr * (1.5 / adaptive_mult)
         sl_price = round(price-sl_distance,2)
         target_10d = round(price + atr*1.8,2)
         risk_amount = portfolio_value*risk_per_trade

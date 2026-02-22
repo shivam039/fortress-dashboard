@@ -8,6 +8,7 @@ import queue
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
+import numpy as np
 
 from fortress_config import TICKER_GROUPS, INDEX_BENCHMARKS
 from .logic import (
@@ -34,11 +35,16 @@ def _get_market_pulse_snapshot(index_benchmarks):
         p_close = idx_data["Close"].iloc[-1]
 
         p_status = "⚪ N/A"
+        # Ensure sufficient data for 200 EMA
         if len(idx_data) >= 200:
-            ema_series = ta.ema(idx_data["Close"], 200)
+            ema_series = ta.ema(idx_data["Close"], length=200)
             if ema_series is not None and not ema_series.empty:
                 p_ema = ema_series.iloc[-1]
                 p_status = "🟢 BULL" if p_close > p_ema else "🔴 BEAR"
+            else:
+                p_status = "🟡 ND" # Not enough data for signal
+        else:
+            p_status = "🟡 ND"
 
         out[name] = {"close": p_close, "status": p_status}
     return out
@@ -138,6 +144,239 @@ def render_sidebar():
 
     return portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice, scoring_config
 
+def _save_scan(df, universe):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    scan_id = register_scan(timestamp, universe=universe, scan_type="STOCK", status="Completed")
+
+    df['Universe'] = universe # Add metadata
+    save_scan_results(scan_id, df)
+
+    # Clear cache after new scan so history tab updates
+    fetch_timestamps.clear()
+    fetch_history_data.clear()
+    fetch_symbol_history.clear()
+
+    log_audit("Scan Completed", universe, f"Saved {len(df)} records to unified history (ID: {scan_id})")
+    return timestamp
+
+def _display_scan_results(df, universe, broker_choice, scoring_config, timestamp=None):
+    if df.empty:
+        st.warning("No data retrieved.")
+        return
+
+    df = _apply_advanced_scoring_cached(df, scoring_config).sort_values("Score",ascending=False)
+    filtered_out_df = df[df.get("Quality_Gate_Pass", True) == False].copy()
+    actionable_df = df[df.get("Quality_Gate_Pass", True) == True].copy()
+
+    st.success(f"Scan Complete: {len(actionable_df[actionable_df['Score']>=60])} actionable setups.")
+
+    # --- GENERATE ACTIONS COLUMN ---
+    # Universal Action Links: Enabled for all scan results (No Verdict Gate)
+    df["Actions"] = df.apply(lambda row: generate_action_link(row, broker_choice), axis=1)
+
+    # --- SECTOR INTELLIGENCE TERMINAL ---
+    st.subheader("🔥 Sector Intelligence & Rotation")
+
+    # Aggregate Sector Metrics
+    if "Sector" in df.columns and "Velocity" in df.columns:
+        sector_stats = df.groupby("Sector").agg({
+            "Velocity": "mean",
+            "Above_EMA200": "mean", # Breadth (0-1)
+            "Score": "mean"
+        }).reset_index()
+
+        # Formatting
+        sector_stats["Breadth (%)"] = (sector_stats["Above_EMA200"] * 100).round(1)
+        sector_stats["Avg Score"] = sector_stats["Score"].round(1)
+        sector_stats["Velocity"] = sector_stats["Velocity"].round(2)
+
+        # Thesis Generation
+        def get_thesis(row):
+            if row["Score"] > 75 and row["Velocity"] > 0:
+                return "🐂 Bullish Accumulation"
+            elif row["Score"] < 35 and row["Breadth (%)"] < 40:
+                return "❄️ Structural Weakness"
+            elif row["Velocity"] > 2:
+                return "🚀 High Momentum"
+            else:
+                return "⚖️ Neutral / Rotation"
+
+        sector_stats["Thesis"] = sector_stats.apply(get_thesis, axis=1)
+
+        # Classification
+        def check_rise(row):
+            if row['Velocity'] > 0 and row['Breadth (%)'] > 70: return "🔥 YES"
+            return ""
+
+        def check_fall(row):
+            if row['Velocity'] < 0 or row['Breadth (%)'] < 40: return "❄️ YES"
+            return ""
+
+        sector_stats['On the Rise'] = sector_stats.apply(check_rise, axis=1)
+        sector_stats['On the Fall'] = sector_stats.apply(check_fall, axis=1)
+
+        # Display Dashboard
+        st.dataframe(
+            sector_stats[["Sector", "Thesis", "Velocity", "Breadth (%)", "Avg Score", "On the Rise", "On the Fall"]].sort_values("Velocity", ascending=False),
+            use_container_width=True,
+            column_config={
+                "Velocity": st.column_config.NumberColumn("Momentum Vel", format="%.2f%%"),
+                "Breadth (%)": st.column_config.ProgressColumn("Inst. Breadth", min_value=0, max_value=100, format="%.1f%%"),
+                "Avg Score": st.column_config.ProgressColumn("Sector Strength", min_value=0, max_value=100)
+            },
+            hide_index=True
+        )
+
+    # --- UPDATED STRATEGIC PICKS (ALL COLUMNS) ---
+    st.subheader("🎯 Strategic Picks")
+    momentum_picks = df[df['Strategy'] == "Momentum Pick"]
+    lt_picks = df[df['Strategy'] == "Long-Term Pick"]
+    if universe == "Nifty Smallcap 250":
+        momentum_picks = momentum_picks[momentum_picks["Score"] >= 60]
+        lt_picks = lt_picks[lt_picks["Score"] >= 60]
+
+    # Use all columns selected in the sidebar for these Strategic tables
+    default_full_list = list(ALL_COLUMNS.keys())
+    display_cols = [
+        c for c in st.session_state.get("selected_columns", default_full_list)
+        if c in df.columns
+    ]
+    st_column_config = get_column_config(display_cols, broker_choice)
+
+    if not momentum_picks.empty:
+        st.markdown(f"#### 🚀 Momentum Picks ({len(momentum_picks)})")
+        st.dataframe(momentum_picks[display_cols], use_container_width=True, hide_index=True, column_config=st_column_config)
+
+    if not lt_picks.empty:
+        st.markdown(f"#### 💎 Long-Term Picks ({len(lt_picks)})")
+        st.dataframe(lt_picks[display_cols], use_container_width=True, hide_index=True, column_config=st_column_config)
+
+    st.markdown("#### 🧪 Backtesting Hooks")
+    if st.button("Run Backtest for This Scan", use_container_width=True):
+        if timestamp:
+            bt_df = backtest_top_picks(timestamp)
+            if bt_df.empty:
+                st.info("No backtest data available for selected scan timestamp.")
+            else:
+                st.dataframe(bt_df, use_container_width=True, hide_index=True)
+        else:
+             st.info("Scan timestamp not available.")
+
+    # Ensure 'Actions' is available in display if selected
+    # Note: selected_columns might contain 'Actions', so we ensure it exists in df (done above)
+    display_cols = [c for c in st.session_state.get("selected_columns", default_full_list) if c in df.columns]
+    display_df = df[display_cols]
+
+    # --- FILTERING FOR SMALLCAP 250 ---
+    # Strictly filter display and export to show only 'Bullish' or 'Strong Bullish' verdicts (Score >= 60).
+    # This applies only to the UI table and CSV, preserving 'df' for Sector Intelligence calculations.
+    if universe == "Nifty Smallcap 250":
+        display_df = display_df[display_df["Score"] >= 60]
+        if display_df.empty:
+            st.warning("No tickers met the strict criteria (Score >= 60) for Smallcap 250.")
+
+    st_column_config = get_column_config(display_cols, broker_choice)
+
+    st.dataframe(display_df,use_container_width=True,height=600,column_config=st_column_config)
+
+    if not filtered_out_df.empty:
+        with st.expander(f"Filtered Out ({len(filtered_out_df)}) - Hard Quality Gates", expanded=False):
+            filtered_cols = [c for c in display_cols if c in filtered_out_df.columns]
+            st.dataframe(filtered_out_df[filtered_cols], use_container_width=True, hide_index=True)
+
+    csv = display_df.to_csv(index=False).encode("utf-8")
+    st.download_button("📥 Export Trades to CSV",data=csv,
+                       file_name=f"Fortress_Trades_{datetime.now().strftime('%Y%m%d')}.csv",
+                       mime="text/csv",use_container_width=True)
+
+    # ---------------- HEATMAP ----------------
+    if not df.empty and "Score" in df.columns:
+        st.subheader("📊 Conviction Heatmap")
+        plt.figure(figsize=(12,len(df)/2))
+        df["Conviction_Band"] = df["Score"].apply(lambda x: "🔥 High (85+)" if x>=85 else "🚀 Pass (60-85)" if x>=60 else "🟡 Watch (<60)")
+        heatmap_data = df.pivot_table(index="Symbol", columns="Conviction_Band", values="Score", fill_value=0)
+        sns.heatmap(heatmap_data, annot=True, cmap="Greens", cbar=False, linewidths=0.5, linecolor='grey')
+        st.pyplot(plt)
+    else:
+        st.info("Insufficient data for heatmap generation.")
+
+@st.fragment
+def _run_smallcap_scan_fragment(broker_choice, scoring_config):
+    state = st.session_state.get("smallcap_scan_state")
+    if not state:
+        return
+
+    universe = state["universe"]
+    if universe != "Nifty Smallcap 250":
+        return
+
+    if state.get("status") == "running":
+        tickers = state["tickers"]
+        chunk_size = state["chunk_size"]
+        i = state["index"]
+        num_chunks = max(1, (len(tickers) + chunk_size - 1) // chunk_size)
+
+        # Calculate progress correctly
+        current_chunk_idx = i // chunk_size
+        progress_val = min(current_chunk_idx / num_chunks, 1.0)
+
+        progress_bar = st.progress(progress_val)
+        status_text = st.empty()
+
+        if i < len(tickers):
+            chunk = tickers[i:i + chunk_size]
+            status_text.text(f"Scanning {i}/{len(tickers)} tickers...")
+
+            try:
+                batch_data = get_stock_data(chunk, period="1y", interval="1d", group_by="ticker")
+                for ticker in chunk:
+                    try:
+                        tkr_obj = yf.Ticker(ticker)
+                        hist = batch_data[ticker].dropna() if len(chunk) > 1 else batch_data.dropna()
+                        if not hist.empty and len(hist) >= 210:
+                            res = check_institutional_fortress(
+                                ticker,
+                                hist,
+                                tkr_obj,
+                                state["portfolio_val"],
+                                state["risk_pct"],
+                                selected_universe=universe,
+                            )
+                            if res and res["Score"] >= 60:
+                                state["results"].append(res)
+                    except Exception as inner_e:
+                        state["errors"].append(f"{ticker}: {inner_e}")
+            except Exception as e:
+                state["errors"].append(f"Chunk {i}: {e}")
+
+            state["index"] = i + chunk_size
+            time.sleep(1.2) # Throttling for Smallcap
+            st.session_state["smallcap_scan_state"] = state
+            st.rerun()
+        else:
+            # Scan Complete
+            state["status"] = "completed"
+
+            # Save results once
+            df = pd.DataFrame(state["results"])
+            if not df.empty:
+                timestamp = _save_scan(df, universe)
+                state["timestamp"] = timestamp
+
+            st.session_state["smallcap_scan_state"] = state
+            st.rerun()
+
+    elif state.get("status") == "completed":
+        results = state["results"]
+        for err in state["errors"]:
+            st.error(f"Batch Error: {err}")
+
+        if results:
+            df = pd.DataFrame(results)
+            _display_scan_results(df, universe, broker_choice, scoring_config, timestamp=state.get("timestamp"))
+        else:
+             st.warning("No results found.")
+
 def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice, scoring_config):
     if "smallcap_scan_state" not in st.session_state:
         st.session_state["smallcap_scan_state"] = None
@@ -199,54 +438,14 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
             "errors": [],
             "portfolio_val": portfolio_val,
             "risk_pct": risk_pct,
+            "status": "running"
         }
         st.rerun()
 
     smallcap_state = st.session_state.get("smallcap_scan_state")
     if smallcap_state and selected_universe == "Nifty Smallcap 250":
-        tickers = smallcap_state["tickers"]
-        chunk_size = smallcap_state["chunk_size"]
-        i = smallcap_state["index"]
-        num_chunks = max(1, (len(tickers) + chunk_size - 1) // chunk_size)
-        progress_bar = st.progress(min((i // chunk_size) / num_chunks, 1.0))
-        status_text = st.empty()
+        _run_smallcap_scan_fragment(broker_choice, scoring_config)
 
-        if i < len(tickers):
-            chunk = tickers[i:i + chunk_size]
-            try:
-                batch_data = get_stock_data(chunk, period="1y", interval="1d", group_by="ticker")
-                for ticker in chunk:
-                    try:
-                        tkr_obj = yf.Ticker(ticker)
-                        hist = batch_data[ticker].dropna() if len(chunk) > 1 else batch_data.dropna()
-                        if not hist.empty and len(hist) >= 210:
-                            res = check_institutional_fortress(
-                                ticker,
-                                hist,
-                                tkr_obj,
-                                smallcap_state["portfolio_val"],
-                                smallcap_state["risk_pct"],
-                                selected_universe=selected_universe,
-                            )
-                            if res and res["Score"] >= 60:
-                                smallcap_state["results"].append(res)
-                    except Exception as inner_e:
-                        smallcap_state["errors"].append(f"{ticker}: {inner_e}")
-            except Exception as e:
-                smallcap_state["errors"].append(f"Chunk {i}: {e}")
-
-            smallcap_state["index"] = i + chunk_size
-            scanned = min(smallcap_state["index"], len(tickers))
-            chunk_idx = min((smallcap_state["index"] + chunk_size - 1) // chunk_size, num_chunks)
-            progress_bar.progress(min(chunk_idx / num_chunks, 1.0))
-            status_text.text(f"Scanned {scanned}/{len(tickers)} tickers...")
-            st.session_state["smallcap_scan_state"] = smallcap_state
-            st.rerun()
-
-        results = smallcap_state["results"]
-        for err in smallcap_state["errors"]:
-            st.error(f"Batch Error: {err}")
-        st.session_state["smallcap_scan_state"] = None
     elif execute_scan and selected_universe != "Nifty Smallcap 250":
         tickers = TICKER_GROUPS[selected_universe]
         results = []
@@ -257,7 +456,7 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
         log_audit("Scan Started", selected_universe, f"Scanning {len(tickers)} tickers")
 
         # --- CHUNKED PROCESSING LOGIC ---
-        chunk_size = 50 if selected_universe == "Nifty Smallcap 250" else len(tickers)
+        chunk_size = len(tickers) # No smallcap throttle needed
 
         def _scan_worker(result_queue):
             local_results = []
@@ -283,8 +482,6 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
                                     local_results.append(res)
                         except Exception as inner_e:
                             errors.append(f"{ticker}: {inner_e}")
-                    if selected_universe == "Nifty Smallcap 250":
-                        time.sleep(1.2)
                 except Exception as e:
                     errors.append(f"Chunk {i}: {e}")
                 result_queue.put({"progress": min(i + chunk_size, len(tickers))})
@@ -310,154 +507,8 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
     if results is not None:
         if results:
             df = pd.DataFrame(results)
-
-
-            df = _apply_advanced_scoring_cached(df, scoring_config).sort_values("Score",ascending=False)
-            filtered_out_df = df[df.get("Quality_Gate_Pass", True) == False].copy()
-            actionable_df = df[df.get("Quality_Gate_Pass", True) == True].copy()
-            status_text.success(f"Scan Complete: {len(actionable_df[actionable_df['Score']>=60])} actionable setups.")
-
-            # --- GENERATE ACTIONS COLUMN ---
-            # Universal Action Links: Enabled for all scan results (No Verdict Gate)
-            df["Actions"] = df.apply(lambda row: generate_action_link(row, broker_choice), axis=1)
-
-            # --- SECTOR INTELLIGENCE TERMINAL ---
-            st.subheader("🔥 Sector Intelligence & Rotation")
-
-            # Aggregate Sector Metrics
-            if "Sector" in df.columns and "Velocity" in df.columns:
-                sector_stats = df.groupby("Sector").agg({
-                    "Velocity": "mean",
-                    "Above_EMA200": "mean", # Breadth (0-1)
-                    "Score": "mean"
-                }).reset_index()
-
-                # Formatting
-                sector_stats["Breadth (%)"] = (sector_stats["Above_EMA200"] * 100).round(1)
-                sector_stats["Avg Score"] = sector_stats["Score"].round(1)
-                sector_stats["Velocity"] = sector_stats["Velocity"].round(2)
-
-                # Thesis Generation
-                def get_thesis(row):
-                    if row["Score"] > 75 and row["Velocity"] > 0:
-                        return "🐂 Bullish Accumulation"
-                    elif row["Score"] < 35 and row["Breadth (%)"] < 40:
-                        return "❄️ Structural Weakness"
-                    elif row["Velocity"] > 2:
-                        return "🚀 High Momentum"
-                    else:
-                        return "⚖️ Neutral / Rotation"
-
-                sector_stats["Thesis"] = sector_stats.apply(get_thesis, axis=1)
-
-                # Classification
-                def check_rise(row):
-                    if row['Velocity'] > 0 and row['Breadth (%)'] > 70: return "🔥 YES"
-                    return ""
-
-                def check_fall(row):
-                    if row['Velocity'] < 0 or row['Breadth (%)'] < 40: return "❄️ YES"
-                    return ""
-
-                sector_stats['On the Rise'] = sector_stats.apply(check_rise, axis=1)
-                sector_stats['On the Fall'] = sector_stats.apply(check_fall, axis=1)
-
-                # Display Dashboard
-                st.dataframe(
-                    sector_stats[["Sector", "Thesis", "Velocity", "Breadth (%)", "Avg Score", "On the Rise", "On the Fall"]].sort_values("Velocity", ascending=False),
-                    use_container_width=True,
-                    column_config={
-                        "Velocity": st.column_config.NumberColumn("Momentum Vel", format="%.2f%%"),
-                        "Breadth (%)": st.column_config.ProgressColumn("Inst. Breadth", min_value=0, max_value=100, format="%.1f%%"),
-                        "Avg Score": st.column_config.ProgressColumn("Sector Strength", min_value=0, max_value=100)
-                    },
-                    hide_index=True
-                )
-
-            # --- UPDATED STRATEGIC PICKS (ALL COLUMNS) ---
-            st.subheader("🎯 Strategic Picks")
-            momentum_picks = df[df['Strategy'] == "Momentum Pick"]
-            lt_picks = df[df['Strategy'] == "Long-Term Pick"]
-            if selected_universe == "Nifty Smallcap 250":
-                momentum_picks = momentum_picks[momentum_picks["Score"] >= 60]
-                lt_picks = lt_picks[lt_picks["Score"] >= 60]
-
-            # Use all columns selected in the sidebar for these Strategic tables
-            default_full_list = list(ALL_COLUMNS.keys())
-            display_cols = [
-                c for c in st.session_state.get("selected_columns", default_full_list)
-                if c in df.columns
-            ]
-            st_column_config = get_column_config(display_cols, broker_choice)
-
-            if not momentum_picks.empty:
-                st.markdown(f"#### 🚀 Momentum Picks ({len(momentum_picks)})")
-                st.dataframe(momentum_picks[display_cols], use_container_width=True, hide_index=True, column_config=st_column_config)
-
-            if not lt_picks.empty:
-                st.markdown(f"#### 💎 Long-Term Picks ({len(lt_picks)})")
-                st.dataframe(lt_picks[display_cols], use_container_width=True, hide_index=True, column_config=st_column_config)
-
-            # Log Logic
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            scan_id = register_scan(timestamp, universe=selected_universe, scan_type="STOCK", status="Completed")
-
-            df['Universe'] = selected_universe # Add metadata
-            save_scan_results(scan_id, df)
-
-            # Clear cache after new scan so history tab updates
-            fetch_timestamps.clear()
-            fetch_history_data.clear()
-            fetch_symbol_history.clear()
-
-            log_audit("Scan Completed", selected_universe, f"Saved {len(df)} records to unified history (ID: {scan_id})")
-
-            st.markdown("#### 🧪 Backtesting Hooks")
-            if st.button("Run Backtest for This Scan", use_container_width=True):
-                bt_df = backtest_top_picks(timestamp)
-                if bt_df.empty:
-                    st.info("No backtest data available for selected scan timestamp.")
-                else:
-                    st.dataframe(bt_df, use_container_width=True, hide_index=True)
-
-            # Ensure 'Actions' is available in display if selected
-            # Note: selected_columns might contain 'Actions', so we ensure it exists in df (done above)
-            display_cols = [c for c in st.session_state["selected_columns"] if c in df.columns]
-            display_df = df[display_cols]
-
-            # --- FILTERING FOR SMALLCAP 250 ---
-            # Strictly filter display and export to show only 'Bullish' or 'Strong Bullish' verdicts (Score >= 60).
-            # This applies only to the UI table and CSV, preserving 'df' for Sector Intelligence calculations.
-            if selected_universe == "Nifty Smallcap 250":
-                display_df = display_df[display_df["Score"] >= 60]
-                if display_df.empty:
-                    st.warning("No tickers met the strict criteria (Score >= 60) for Smallcap 250.")
-
-            st_column_config = get_column_config(display_cols, broker_choice)
-
-            st.dataframe(display_df,use_container_width=True,height=600,column_config=st_column_config)
-
-            if not filtered_out_df.empty:
-                with st.expander(f"Filtered Out ({len(filtered_out_df)}) - Hard Quality Gates", expanded=False):
-                    filtered_cols = [c for c in display_cols if c in filtered_out_df.columns]
-                    st.dataframe(filtered_out_df[filtered_cols], use_container_width=True, hide_index=True)
-
-            csv = display_df.to_csv(index=False).encode("utf-8")
-            st.download_button("📥 Export Trades to CSV",data=csv,
-                               file_name=f"Fortress_Trades_{datetime.now().strftime('%Y%m%d')}.csv",
-                               mime="text/csv",use_container_width=True)
-
-            # ---------------- HEATMAP ----------------
-            if not df.empty and "Score" in df.columns:
-                st.subheader("📊 Conviction Heatmap")
-                plt.figure(figsize=(12,len(df)/2))
-                df["Conviction_Band"] = df["Score"].apply(lambda x: "🔥 High (85+)" if x>=85 else "🚀 Pass (60-85)" if x>=60 else "🟡 Watch (<60)")
-                heatmap_data = df.pivot_table(index="Symbol", columns="Conviction_Band", values="Score", fill_value=0)
-                sns.heatmap(heatmap_data, annot=True, cmap="Greens", cbar=False, linewidths=0.5, linecolor='grey')
-                st.pyplot(plt)
-            else:
-                st.info("Insufficient data for heatmap generation.")
-
+            timestamp = _save_scan(df, selected_universe)
+            _display_scan_results(df, selected_universe, broker_choice, scoring_config, timestamp=timestamp)
         else:
             st.warning("No data retrieved. Check internet or ticker config.")
             log_audit("Scan Failed", selected_universe, "No data retrieved")
