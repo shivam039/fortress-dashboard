@@ -100,8 +100,12 @@ def get_table_name_from_universe(u):
 def _exec(sql: str, params: dict[str, Any] | None = None):
     if _can_use_neon():
         conn = get_neon_conn()
-        conn.session.execute(text(sql), params or {})
-        conn.session.commit()
+        try:
+            conn.session.execute(text(sql), params or {})
+            conn.session.commit()
+        except Exception:
+            conn.session.rollback()
+            raise
         return
     with _sqlite_connection() as conn:
         conn.execute(sql, params or {})
@@ -149,6 +153,7 @@ def _postgres_has_column(table_name: str, column_name: str) -> bool:
 
 
 def _ensure_scan_history_details_neon():
+    # 1. Check existence
     table_exists_query = """
         SELECT 1
         FROM information_schema.tables
@@ -156,6 +161,8 @@ def _ensure_scan_history_details_neon():
         LIMIT 1
     """
     exists_df = _read_df(table_exists_query, {"table_name": "scan_history_details"}, ttl="1s")
+
+    # 2. Create if missing (Full Schema)
     if exists_df.empty:
         try:
             _exec(
@@ -163,8 +170,8 @@ def _ensure_scan_history_details_neon():
                 CREATE TABLE IF NOT EXISTS scan_history_details (
                     id BIGSERIAL PRIMARY KEY,
                     scan_id BIGINT,
-                    symbol TEXT,
-                    scan_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    symbol TEXT NOT NULL,
+                    scan_timestamp TIMESTAMPTZ DEFAULT NOW(),
                     conviction_score NUMERIC,
                     regime TEXT,
                     sub_scores JSONB,
@@ -175,6 +182,12 @@ def _ensure_scan_history_details_neon():
                     ema200 REAL,
                     analyst_target_mean REAL,
                     volume REAL,
+                    quality_gate_pass BOOLEAN DEFAULT TRUE,
+                    liquidity_flag TEXT,
+                    sector TEXT,
+                    mcap_cr REAL,
+                    avg_volume_cr REAL,
+                    debt_to_equity REAL,
                     pick_type TEXT
                 )
                 """
@@ -184,8 +197,9 @@ def _ensure_scan_history_details_neon():
             logger.exception("Failed to create scan_history_details table in Neon: %s", exc)
             raise
 
+    # 3. Validate Schema & Evolve
     required_columns = {
-        "scan_timestamp": "TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        "scan_timestamp": "TIMESTAMPTZ DEFAULT NOW()",
         "conviction_score": "NUMERIC",
         "regime": "TEXT",
         "sub_scores": "JSONB",
@@ -196,15 +210,29 @@ def _ensure_scan_history_details_neon():
         "ema200": "REAL",
         "analyst_target_mean": "REAL",
         "volume": "REAL",
+        "quality_gate_pass": "BOOLEAN DEFAULT TRUE",
+        "liquidity_flag": "TEXT",
+        "sector": "TEXT",
+        "mcap_cr": "REAL",
+        "avg_volume_cr": "REAL",
+        "debt_to_equity": "REAL",
         "pick_type": "TEXT",
+        "scan_id": "BIGINT",
     }
+
+    added_cols = []
     for column_name, column_type in required_columns.items():
         if not _postgres_has_column("scan_history_details", column_name):
             try:
                 _exec(f"ALTER TABLE scan_history_details ADD COLUMN IF NOT EXISTS {column_name} {column_type}")
-                logger.info("Ensured column %s exists on scan_history_details.", column_name)
+                added_cols.append(column_name)
             except Exception as exc:
                 logger.warning("Could not ensure column %s on scan_history_details: %s", column_name, exc)
+
+    if added_cols:
+        msg = f"Missing columns added to scan_history_details: {added_cols}"
+        print(msg)
+        st.toast(msg, icon="🛠️")
 
 
 def init_db():
@@ -474,21 +502,25 @@ def log_scan_results(df, table_name="scan_results"):
         logger.warning(f"Schema evolution failed for {table_name}: {e}")
 
     if _can_use_neon() and table_name == "scan_history":
-        for row in df.to_dict(orient="records"):
-            _exec(
-                """
-                INSERT INTO scan_history (scan_timestamp, symbol, conviction_score, regime, sub_scores, raw_data)
-                VALUES (COALESCE(:scan_timestamp, NOW()), :symbol, :conviction_score, :regime, CAST(:sub_scores AS JSONB), CAST(:raw_data AS JSONB))
-                """,
-                {
-                    "scan_timestamp": row.get("scan_timestamp"),
-                    "symbol": row.get("symbol") or row.get("Symbol"),
-                    "conviction_score": row.get("conviction_score") or row.get("Conviction Score") or row.get("Score"),
-                    "regime": row.get("regime") or row.get("Regime"),
-                    "sub_scores": json.dumps(row.get("sub_scores", {})),
-                    "raw_data": json.dumps(row),
-                },
-            )
+        print(f"Logging {len(df)} rows to {table_name} in Neon")
+        try:
+            for row in df.to_dict(orient="records"):
+                _exec(
+                    """
+                    INSERT INTO scan_history (scan_timestamp, symbol, conviction_score, regime, sub_scores, raw_data)
+                    VALUES (COALESCE(:scan_timestamp, NOW()), :symbol, :conviction_score, :regime, CAST(:sub_scores AS JSONB), CAST(:raw_data AS JSONB))
+                    """,
+                    {
+                        "scan_timestamp": row.get("scan_timestamp"),
+                        "symbol": row.get("symbol") or row.get("Symbol"),
+                        "conviction_score": row.get("conviction_score") or row.get("Conviction Score") or row.get("Score"),
+                        "regime": row.get("regime") or row.get("Regime"),
+                        "sub_scores": json.dumps(row.get("sub_scores", {})),
+                        "raw_data": json.dumps(row),
+                    },
+                )
+        except Exception as e:
+            st.error(f"Neon log failed: {str(e)}")
         return
 
     if _can_use_neon():

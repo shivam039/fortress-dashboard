@@ -22,20 +22,20 @@ def _preload_global_config():
 
 TICKER_GROUPS, SECTOR_MAP, INDEX_BENCHMARKS = _preload_global_config()
 
-# @st.cache_resource
-# def _cache_global_benchmarks():
-#     """Cache critical market benchmarks globally."""
-#     # Pre-fetch Nifty, VIX, Bank Nifty, Smallcap
-#     symbols = ["^NSEI", "^INDIAVIX", "^NSEBANK", "^CNXSC", "^NSMIDCP"]
-#     try:
-#         # Fetch minimal history to ensure availability
-#         data = yf.download(symbols, period="1y", interval="1d", group_by='ticker', threads=True, progress=False, auto_adjust=False)
-#         return data
-#     except:
-#         return None
+@st.cache_resource(ttl="60s")
+def _cache_global_benchmarks():
+    """Cache critical market benchmarks globally."""
+    # Pre-fetch Nifty, VIX, Bank Nifty, Smallcap
+    symbols = ["^NSEI", "^INDIAVIX", "^NSEBANK", "^CNXSC", "^NSMIDCP"]
+    try:
+        # Fetch minimal history to ensure availability
+        data = yf.download(symbols, period="1y", interval="1d", group_by='ticker', threads=True, progress=False, auto_adjust=False)
+        return data
+    except:
+        return None
 
 # Trigger global benchmark cache
-# _cache_global_benchmarks()
+_cache_global_benchmarks()
 
 st.title("🛡️ Fortress 95 Pro v9.6 — Institutional Terminal")
 
