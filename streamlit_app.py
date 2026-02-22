@@ -1,3 +1,4 @@
+print("Loading streamlit_app ...")
 # streamlit_app.py - v9.6 MASTER TERMINAL
 import streamlit as st
 import yfinance as yf
@@ -8,7 +9,11 @@ st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
 from utils.db import init_db
 import mf_lab.ui
 import stock_scanner.ui
-import commodities.ui
+try:
+    import commodities.ui
+except Exception as e:
+    st.error(f"Import commodities.ui failed: {str(e)}")
+    raise
 import history.ui
 from options_algo.ui import render as options_algo_render
 
