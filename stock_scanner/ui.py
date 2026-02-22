@@ -19,7 +19,7 @@ from .logic import (
     get_stock_data,
     backtest_top_picks,
 )
-from .config import ALL_COLUMNS
+from stock_scanner.config import ALL_COLUMNS
 from utils.db import log_audit, get_table_name_from_universe, log_scan_results, fetch_timestamps, fetch_history_data, fetch_symbol_history, register_scan, save_scan_results, update_scan_status
 from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
 
@@ -101,13 +101,18 @@ def get_column_config(display_cols, broker_choice):
 
 def render_sidebar():
     st.sidebar.title("💰 Portfolio & Risk")
-    portfolio_val = st.sidebar.number_input("Portfolio Value (₹)", value=1000000, step=50000)
-    risk_pct = st.sidebar.slider("Risk Per Trade (%)", 0.5, 3.0, 1.0, 0.1)/100
+    # Persistence: Use keys to store in session_state
+    if "portfolio_val" not in st.session_state: st.session_state["portfolio_val"] = 1000000
+    if "risk_pct_slider" not in st.session_state: st.session_state["risk_pct_slider"] = 1.0
+    if "selected_universe" not in st.session_state: st.session_state["selected_universe"] = list(TICKER_GROUPS.keys())[0]
+
+    portfolio_val = st.sidebar.number_input("Portfolio Value (₹)", value=1000000, step=50000, key="portfolio_val")
+    risk_pct = st.sidebar.slider("Risk Per Trade (%)", 0.5, 3.0, 1.0, 0.1, key="risk_pct_slider")/100
 
     # Broker Selection
-    broker_choice = st.sidebar.selectbox("Preferred Broker", ["Zerodha", "Dhan"])
+    broker_choice = st.sidebar.selectbox("Preferred Broker", ["Zerodha", "Dhan"], key="broker_choice")
 
-    selected_universe = st.sidebar.selectbox("Select Index", list(TICKER_GROUPS.keys()))
+    selected_universe = st.sidebar.selectbox("Select Index", list(TICKER_GROUPS.keys()), key="selected_universe")
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("⚙️ Advanced Scoring Weights")
@@ -338,39 +343,40 @@ def _run_smallcap_scan_fragment(broker_choice, scoring_config):
         current_chunk_idx = i // chunk_size
         progress_val = min(current_chunk_idx / num_chunks, 1.0)
 
-        progress_bar = st.progress(progress_val)
-        status_text = st.empty()
+        with st.spinner("Scanning universe..."):
+            progress_bar = st.progress(progress_val)
+            status_text = st.empty()
 
-        if i < len(tickers):
-            chunk = tickers[i:i + chunk_size]
-            status_text.text(f"Scanning {i}/{len(tickers)} tickers...")
+            if i < len(tickers):
+                chunk = tickers[i:i + chunk_size]
+                status_text.text(f"Scanning {i}/{len(tickers)} tickers...")
 
-            try:
-                batch_data = get_stock_data(chunk, period="1y", interval="1d", group_by="ticker")
-                for ticker in chunk:
-                    try:
-                        tkr_obj = yf.Ticker(ticker)
-                        hist = batch_data[ticker].dropna() if len(chunk) > 1 else batch_data.dropna()
-                        if not hist.empty and len(hist) >= 210:
-                            res = check_institutional_fortress(
-                                ticker,
-                                hist,
-                                tkr_obj,
-                                state["portfolio_val"],
-                                state["risk_pct"],
-                                selected_universe=universe,
-                            )
-                            if res and res["Score"] >= 60:
-                                state["results"].append(res)
-                    except Exception as inner_e:
-                        state["errors"].append(f"{ticker}: {inner_e}")
-            except Exception as e:
-                state["errors"].append(f"Chunk {i}: {e}")
+                try:
+                    batch_data = get_stock_data(chunk, period="1y", interval="1d", group_by="ticker")
+                    for ticker in chunk:
+                        try:
+                            tkr_obj = yf.Ticker(ticker)
+                            hist = batch_data[ticker].dropna() if len(chunk) > 1 else batch_data.dropna()
+                            if not hist.empty and len(hist) >= 210:
+                                res = check_institutional_fortress(
+                                    ticker,
+                                    hist,
+                                    tkr_obj,
+                                    state["portfolio_val"],
+                                    state["risk_pct"],
+                                    selected_universe=universe,
+                                )
+                                if res and res["Score"] >= 60:
+                                    state["results"].append(res)
+                        except Exception as inner_e:
+                            state["errors"].append(f"{ticker}: {inner_e}")
+                except Exception as e:
+                    state["errors"].append(f"Chunk {i}: {e}")
 
-            state["index"] = i + chunk_size
-            time.sleep(1.2) # Throttling for Smallcap
-            st.session_state["smallcap_scan_state"] = state
-            st.rerun()
+                state["index"] = i + chunk_size
+                time.sleep(1.2) # Throttling for Smallcap
+                st.session_state["smallcap_scan_state"] = state
+                st.rerun()
         else:
             # Scan Complete
             state["status"] = "completed"
