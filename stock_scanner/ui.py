@@ -32,8 +32,14 @@ def _get_market_pulse_snapshot(index_benchmarks):
         if idx_data.empty or "Close" not in idx_data:
             continue
         p_close = idx_data["Close"].iloc[-1]
-        p_ema = ta.ema(idx_data["Close"], 200).iloc[-1]
-        p_status = "🟢 BULL" if p_close > p_ema else "🔴 BEAR"
+
+        p_status = "⚪ N/A"
+        if len(idx_data) >= 200:
+            ema_series = ta.ema(idx_data["Close"], 200)
+            if ema_series is not None and not ema_series.empty:
+                p_ema = ema_series.iloc[-1]
+                p_status = "🟢 BULL" if p_close > p_ema else "🔴 BEAR"
+
         out[name] = {"close": p_close, "status": p_status}
     return out
 
