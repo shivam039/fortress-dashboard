@@ -124,7 +124,6 @@ def render_sidebar():
     scoring_config = {
         "weights": weights,
         "enable_regime": enable_regime,
-        "regime_multiplier": regime["Regime_Multiplier"],
         "liquidity_cr_min": liquidity_cr_min,
         "market_cap_cr_min": market_cap_cr_min,
         "price_min": price_min,
@@ -373,6 +372,23 @@ def _run_smallcap_scan_fragment(broker_choice, scoring_config):
 def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice, scoring_config):
     if "smallcap_scan_state" not in st.session_state:
         st.session_state["smallcap_scan_state"] = None
+
+    # ---------------- MARKET PULSE ----------------
+    pulse_data = st.session_state.get("market_pulse_data")
+    btn_label = "Refresh Market Pulse"
+    if pulse_data and "timestamp" in pulse_data:
+        btn_label = f"Refresh Market Pulse (Updated: {pulse_data['timestamp']})"
+
+    if st.button(btn_label, type="primary", use_container_width=True):
+        with st.spinner("Updating Market Pulse..."):
+            pulse_data = pulse.fetch_market_pulse_data()
+            st.session_state["market_pulse_data"] = pulse_data
+            st.rerun()
+
+    if pulse_data:
+        with st.expander("Market Pulse Details", expanded=True):
+             pulse.render_market_pulse(pulse_data)
+
     # ---------------- SEARCH FEATURE ----------------
     search_symbol = st.text_input("🔍 Search Stock (Symbol)", placeholder="e.g., RELIANCE.NS")
     if search_symbol:
@@ -410,21 +426,6 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
         except Exception as e:
             st.error(f"Search Error: {str(e)}")
 
-    # ---------------- MARKET PULSE ----------------
-    st.subheader("🌐 Market Pulse")
-    col_pulse_btn, col_pulse_ph = st.columns([1, 4])
-    with col_pulse_btn:
-        if st.button("Refresh Market Pulse", use_container_width=True):
-            with st.spinner("Updating Market Pulse..."):
-                pulse_data = pulse.fetch_market_pulse_data()
-                st.session_state["market_pulse_data"] = pulse_data
-                st.rerun()
-
-    if st.session_state.get("market_pulse_data"):
-        with st.expander("Show/Hide Market Pulse Details", expanded=True):
-             pulse.render_market_pulse(st.session_state["market_pulse_data"])
-    else:
-        st.info("Click 'Refresh Market Pulse' to load latest indices and regime data.")
 
     # ---------------- MAIN SCAN ----------------
     execute_scan = st.button("🚀 EXECUTE SYSTEM SCAN", type="primary", use_container_width=True)
