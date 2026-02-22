@@ -2,8 +2,16 @@ import numpy as np
 import pandas as pd
 import pandas_ta as ta
 import datetime
+import streamlit as st
 import yfinance as yf
-from fortress_config import SECTOR_MAP, NIFTY_SYMBOL, TICKER_GROUPS, SMALLCAP_LIQUIDITY_MIN_CR
+from fortress_config import (
+    SECTOR_MAP,
+    NIFTY_SYMBOL,
+    SECTOR_ROTATION_BONUS_POINTS,
+    TOP_SECTOR_COUNT,
+    SMALLCAP_LIQUIDITY_MIN_CR,
+    TICKER_GROUPS,
+)
 from datetime import datetime
 
 _BENCHMARK_CACHE = {}
@@ -33,16 +41,62 @@ def _safe_float(value, default=0.0):
         return default
 
 
+@st.cache_data(ttl="10m")
+def get_stock_data(symbol, period="1y", interval="1d", group_by="column"):
+    """Cached market data fetch to reduce repeated Yahoo calls across reruns."""
+    data = yf.download(symbol, period=period, interval=interval, group_by=group_by, progress=False, auto_adjust=False)
+    if isinstance(data.columns, pd.MultiIndex) and group_by == "column":
+        data.columns = data.columns.get_level_values(0)
+    return data
+
+
+@st.cache_data(ttl="10m")
+def _download_close_series(symbol, period="1y", interval="1d"):
+    bench = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
+    if isinstance(bench.columns, pd.MultiIndex):
+        bench.columns = bench.columns.get_level_values(0)
+    return bench.get("Close", pd.Series(dtype=float)).dropna()
+
+
+@st.cache_data(ttl="10m")
+def _get_ticker_info(symbol):
+    try:
+        return yf.Ticker(symbol).info
+    except:
+        return {}
+
+
+@st.cache_data(ttl="10m")
+def _get_ticker_news(symbol):
+    try:
+        return yf.Ticker(symbol).news
+    except:
+        return []
+
+
+@st.cache_data(ttl="10m")
+def _get_ticker_calendar(symbol):
+    try:
+        return yf.Ticker(symbol).calendar
+    except:
+        return None
+
+
+@st.cache_data(ttl="10m")
+def _get_ticker_earnings_dates(symbol):
+    try:
+        return yf.Ticker(symbol).earnings_dates
+    except:
+        return None
+
+
 def _get_benchmark_series(symbol):
     cached = _BENCHMARK_CACHE.get(symbol)
     if cached is not None and len(cached) > 0:
         return cached
 
     try:
-        bench = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=False)
-        if isinstance(bench.columns, pd.MultiIndex):
-            bench.columns = bench.columns.get_level_values(0)
-        close = bench.get("Close", pd.Series(dtype=float)).dropna()
+        close = _download_close_series(symbol)
         _BENCHMARK_CACHE[symbol] = close
         return close
     except:
@@ -67,6 +121,22 @@ def _safe_info_float(info, key, default=0.0):
 
 def _extract_sector(symbol):
     return SECTOR_MAP.get(symbol, "General")
+
+
+def _compute_sector_rotation_bonus(df):
+    if df is None or df.empty or "Sector" not in df.columns:
+        return pd.Series(0.0, index=df.index if df is not None else pd.Index([]))
+
+    sector_ret = pd.to_numeric(df.get("Ret_90D", np.nan), errors="coerce")
+    sector_perf = (
+        pd.DataFrame({"Sector": df["Sector"], "Ret_90D": sector_ret})
+        .dropna(subset=["Sector"])
+        .groupby("Sector", as_index=False)["Ret_90D"]
+        .mean()
+        .sort_values("Ret_90D", ascending=False)
+    )
+    top_sectors = set(sector_perf.head(TOP_SECTOR_COUNT)["Sector"].tolist())
+    return df["Sector"].isin(top_sectors).astype(float) * float(SECTOR_ROTATION_BONUS_POINTS)
 
 
 def _normalize_series(series):
@@ -102,27 +172,8 @@ def _normalize_weight_map(weight_map):
     return {k: max(v, 0.0) / total for k, v in merged.items()}
 
 
-def detect_market_regime():
-    try:
-        nifty = yf.download(NIFTY_SYMBOL, period="1y", interval="1d", progress=False, auto_adjust=False)
-        if isinstance(nifty.columns, pd.MultiIndex):
-            nifty.columns = nifty.columns.get_level_values(0)
-        nifty_close = nifty["Close"].dropna()
-        nifty_now = _safe_float(nifty_close.iloc[-1]) if not nifty_close.empty else 0.0
-        nifty_ema200 = _safe_float(ta.ema(nifty_close, 200).iloc[-1]) if len(nifty_close) >= 200 else 0.0
-
-        vix = yf.download("^INDIAVIX", period="6mo", interval="1d", progress=False, auto_adjust=False)
-        if isinstance(vix.columns, pd.MultiIndex):
-            vix.columns = vix.columns.get_level_values(0)
-        vix_value = _safe_float(vix.get("Close", pd.Series(dtype=float)).dropna().iloc[-1], default=20.0)
-
-        if nifty_now > nifty_ema200 and vix_value < 18:
-            return {"Market_Regime": "Bull", "Regime_Multiplier": 1.15, "VIX": vix_value}
-        if nifty_now < nifty_ema200 or vix_value > 25:
-            return {"Market_Regime": "Bear", "Regime_Multiplier": 0.85, "VIX": vix_value}
-        return {"Market_Regime": "Range", "Regime_Multiplier": 1.00, "VIX": vix_value}
-    except:
-        return {"Market_Regime": "Range", "Regime_Multiplier": 1.00, "VIX": 20.0}
+def _get_default_regime():
+    return {"Market_Regime": "Range", "Regime_Multiplier": 1.00, "VIX": 20.0}
 
 
 def _apply_quality_gates(df, cfg):
@@ -136,6 +187,12 @@ def _apply_quality_gates(df, cfg):
         gate_conditions[f"MCap<{cfg['market_cap_cr_min']}Cr"] = pd.to_numeric(df.get(market_cap_col), errors="coerce") <= cfg["market_cap_cr_min"]
     if debt_col:
         gate_conditions[f"Debt/Equity>{cfg['max_debt_to_equity']}"] = pd.to_numeric(df.get(debt_col), errors="coerce") >= cfg["max_debt_to_equity"]
+
+    # Fix: Ensure Liquidity_Flag is treated as Series and handle missing values safely
+    if "Liquidity_Flag" in df.columns:
+        gate_conditions["LowLiquidityFlag"] = df["Liquidity_Flag"].fillna("").astype(str).eq("Low Liquidity - Avoid")
+    else:
+        gate_conditions["LowLiquidityFlag"] = pd.Series(False, index=df.index)
 
     gate_frame = pd.DataFrame({k: v.fillna(False) for k, v in gate_conditions.items()}, index=df.index)
     df["Quality_Gate_Pass"] = ~gate_frame.any(axis=1)
@@ -155,7 +212,29 @@ def apply_advanced_scoring(df, scoring_config=None):
     else:
         cfg["weights"] = _normalize_weight_map(cfg["weights"])
 
-    df = df.copy()
+    # Optimized: Avoid unnecessary copy if safe
+    # df = df.copy()
+
+    sector_rotation_bonus = _compute_sector_rotation_bonus(df)
+    df["Sector_Rotation_Bonus"] = sector_rotation_bonus.round(2)
+    df["Context_Raw"] = pd.to_numeric(df.get("Context_Raw", 0), errors="coerce").fillna(0) + df["Sector_Rotation_Bonus"]
+
+    # Sector-relative scoring: normalize RSI and conviction by sector before blending into Context_Raw.
+    if "Sector" in df.columns:
+        rsi_raw = pd.to_numeric(df.get("RSI", np.nan), errors="coerce")
+        conviction_raw = pd.to_numeric(df.get("Score", np.nan), errors="coerce")
+
+        def _sector_zscore(series):
+            std = series.std(ddof=0)
+            if std is None or std == 0 or pd.isna(std):
+                return pd.Series(0.0, index=series.index)
+            return (series - series.mean()) / std
+
+        rsi_z = rsi_raw.groupby(df["Sector"]).transform(_sector_zscore).fillna(0.0)
+        conviction_z = conviction_raw.groupby(df["Sector"]).transform(_sector_zscore).fillna(0.0)
+        df["Sector_RSI_Z"] = rsi_z.round(3)
+        df["Sector_Conviction_Z"] = conviction_z.round(3)
+        df["Context_Raw"] += ((rsi_z + conviction_z) * 5.0)
 
     # Sector rotation bonus (moved from UI to Core Logic)
     # Calculate top sectors based on 3M perf proxy (Ret_90D) directly from the current dataframe
@@ -199,7 +278,7 @@ def apply_advanced_scoring(df, scoring_config=None):
     df["Sentiment_Score"] = _normalize_series(sentiment.fillna(50)).round(2)
 
     # Regime handling
-    regime = detect_market_regime() if cfg.get("enable_regime", True) else {"Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0}
+    regime = cfg.get("regime", _get_default_regime()) if cfg.get("enable_regime", True) else _get_default_regime()
     df["Market_Regime"] = regime["Market_Regime"]
     df["Regime"] = regime["Market_Regime"]
     df["Regime_Multiplier"] = regime["Regime_Multiplier"]
@@ -216,6 +295,15 @@ def apply_advanced_scoring(df, scoring_config=None):
         + df["Fundamental_Score"] * w["fundamental"]
         + df["Sentiment_Score"] * w["sentiment"]
         + df["Context_Score"] * w["context"]
+    )
+    df["sub_scores"] = df.apply(
+        lambda row: {
+            "technical": round(_safe_float(row.get("Technical_Score")), 2),
+            "fundamental": round(_safe_float(row.get("Fundamental_Score")), 2),
+            "sentiment": round(_safe_float(row.get("Sentiment_Score")), 2),
+            "context": round(_safe_float(row.get("Context_Score")), 2),
+        },
+        axis=1,
     )
     df["Score"] = (df["Score_Pre_Regime"] * df["Regime_Multiplier"]).clip(lower=0, upper=100).round(2)
 
@@ -239,7 +327,7 @@ def apply_advanced_scoring(df, scoring_config=None):
     df["Context_Score"] = df["Context_Score"]
     return df
 
-def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk_per_trade, regime_multiplier=1.0):
+def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk_per_trade, selected_universe=None, regime_data=None):
     try:
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
@@ -248,16 +336,12 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         close, high, low, open_price = data["Close"], data["High"], data["Low"], data["Open"]
         volume = data.get("Volume", pd.Series(0, index=data.index, dtype=float)).fillna(0)
 
+        # Immediate Liquidity Guard
         price = _safe_float(close.iloc[-1])
         avg_volume_20 = _safe_float(volume.tail(20).mean())
-
-        # --- Small-Cap Liquidity Guard ---
-        # If in Smallcap universe and liquidity < threshold, fail early
-        if ticker in TICKER_GROUPS.get("Nifty Smallcap 250", []):
-            avg_val_cr = (avg_volume_20 * price) / 1e7
-            if avg_val_cr < SMALLCAP_LIQUIDITY_MIN_CR:
-                 # Early exit for illiquid smallcaps
-                 return None
+        avg_value_20d_cr = (avg_volume_20 * price) / 1e7 if price > 0 else 0.0
+        if selected_universe == "Nifty Smallcap 250" and avg_value_20d_cr < SMALLCAP_LIQUIDITY_MIN_CR:
+            return None
 
         ema200 = _safe_float(ta.ema(close,200).iloc[-1])
         ema50 = _safe_float(ta.ema(close,50).iloc[-1])
@@ -267,11 +351,13 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         st_df = ta.supertrend(high,low,close,10,3)
         trend_col = [c for c in st_df.columns if c.startswith("SUPERTd")][0]
         trend_dir = int(_safe_float(st_df[trend_col].iloc[-1]))
-
+        # price already defined above
         prev_close = _safe_float(close.iloc[-2])
         curr_open = _safe_float(open_price.iloc[-1])
         curr_low = _safe_float(low.iloc[-1])
         current_volume = _safe_float(volume.iloc[-1])
+        # avg_volume_20 already defined above
+        # avg_value_20d_cr already defined above
 
         vol_surge_ratio = (current_volume / avg_volume_20) if avg_volume_20 > 0 else 0.0
         vol_surge = vol_surge_ratio > 1.5
@@ -282,14 +368,11 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         tech_base = price>ema200 and trend_dir==1
         mtf_aligned = price > weekly_ema30 if weekly_ema30 > 0 else False
 
-        # Regime-aware ATR Scaling
-        # Tighter stops in Bear to reduce stop-outs
-        safe_regime_mult = max(0.5, min(2.0, float(regime_multiplier)))
-        sl_mult_factor = 1.5 / safe_regime_mult
-        # Clamp multiplier between 1.0 and 2.0 to avoid extreme values as requested
-        sl_mult_factor = max(1.0, min(2.0, sl_mult_factor))
-
-        sl_distance = atr * sl_mult_factor
+        regime = regime_data if regime_data else _get_default_regime()
+        regime_multiplier = float(regime.get("Regime_Multiplier", 1.0))
+        # Adaptive: tighter stops in Bull, wider in Bear to avoid shakeouts
+        adaptive_mult = np.clip(regime_multiplier, 0.7, 1.3)
+        sl_distance = atr * (1.5 / adaptive_mult)
         sl_price = round(price-sl_distance,2)
         target_10d = round(price + atr*1.8,2)
         risk_amount = portfolio_value*risk_per_trade
@@ -323,7 +406,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
                 gap_integrity = "⚠️ Gap Risk"
 
         try:
-            news = ticker_obj.news or []
+            # Optimized: Use cached news fetch
+            news = _get_ticker_news(ticker) or []
             titles = " ".join(n.get("title","").lower() for n in news[:5])
             if any(k in titles for k in ["fraud","investigation","default","bankruptcy","scam","legal"]):
                 news_sentiment = "🚨 BLACK SWAN"
@@ -331,7 +415,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
                 black_swan_flag = 1
         except: pass
         try:
-            cal = ticker_obj.calendar
+            # Optimized: Use cached calendar fetch
+            cal = _get_ticker_calendar(ticker)
             if isinstance(cal,pd.DataFrame) and not cal.empty:
                 next_date = pd.to_datetime(cal.iloc[0,0]).date()
                 days_to = (next_date - datetime.now().date()).days
@@ -346,7 +431,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         earnings_surprise = 0.0
         negative_earnings_surprise = False
         try:
-            info = ticker_obj.info or {}
+            # Optimized: Use cached info fetch
+            info = _get_ticker_info(ticker) or {}
             analyst_count = info.get("numberOfAnalystOpinions",0)
             target_high = info.get("targetHighPrice",0)
             target_low = info.get("targetLowPrice",0)
@@ -358,7 +444,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         except: pass
 
         try:
-            earnings = ticker_obj.earnings_dates
+            # Optimized: Use cached earnings fetch
+            earnings = _get_ticker_earnings_dates(ticker)
             if isinstance(earnings, pd.DataFrame) and not earnings.empty:
                 latest = earnings.sort_index(ascending=False).iloc[0]
                 earnings_ts = earnings.sort_index(ascending=False).index[0]
@@ -538,7 +625,7 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             "Extension_Pct": round(extension_pct, 2),
             "Is_Coiling": is_coiling,
             "Avg_Volume_20D": round(avg_volume_20, 0),
-            "Avg_Value_20D_Cr": round((avg_volume_20 * price) / 1e7, 2),
+            "Avg_Value_20D_Cr": round(avg_value_20d_cr, 2),
             "Market_Cap_Cr": round(market_cap_cr, 2),
             "Debt_To_Equity": round(debt_to_equity, 2),
             "Interest_Coverage": round(interest_coverage, 2),
@@ -553,6 +640,62 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             "Technical_Raw": round(technical_raw, 2),
             "Fundamental_Raw": round(fundamental_raw, 2),
             "Sentiment_Raw": round(sentiment_raw, 2),
-            "Context_Raw": round(context_raw, 2)
+            "Context_Raw": round(context_raw, 2),
+            "Regime_Multiplier": round(regime_multiplier, 2)
         }
     except: return None
+
+
+def backtest_top_picks(scan_timestamp):
+    """Backtest top picks from a scan timestamp against Nifty benchmark forward returns."""
+    try:
+        from utils.db import _read_df
+
+        query = """
+            SELECT d.symbol AS Symbol, d.price AS Entry_Price
+            FROM scan_history_details d
+            INNER JOIN scans s ON s.scan_id = d.scan_id
+            WHERE s.timestamp = :timestamp
+              AND s.scan_type = 'STOCK'
+              AND COALESCE(d.score, 0) >= 60
+        """
+        picks = _read_df(query, params={"timestamp": scan_timestamp})
+
+        if picks.empty:
+            return pd.DataFrame()
+
+        benchmark = _download_close_series(NIFTY_SYMBOL, period="2y")
+        if benchmark.empty:
+            return pd.DataFrame()
+
+        horizon_days = [7, 30, 60]
+        out_rows = []
+        for _, row in picks.iterrows():
+            symbol = row["Symbol"]
+            data = _download_close_series(symbol, period="2y")
+            if data.empty:
+                continue
+            latest = float(data.iloc[-1])
+            stock_returns = {}
+            nifty_returns = {}
+            for days in horizon_days:
+                if len(data) > days and len(benchmark) > days:
+                    stock_returns[f"Stock_{days}D_%"] = ((latest / float(data.iloc[-(days + 1)])) - 1) * 100
+                    nifty_returns[f"Nifty_{days}D_%"] = ((float(benchmark.iloc[-1]) / float(benchmark.iloc[-(days + 1)])) - 1) * 100
+                else:
+                    stock_returns[f"Stock_{days}D_%"] = np.nan
+                    nifty_returns[f"Nifty_{days}D_%"] = np.nan
+            out_rows.append({"Symbol": symbol, **stock_returns, **nifty_returns})
+
+        detail_df = pd.DataFrame(out_rows)
+        if detail_df.empty:
+            return detail_df
+
+        avg_row = {"Symbol": "AVERAGE"}
+        for days in horizon_days:
+            avg_row[f"Stock_{days}D_%"] = detail_df[f"Stock_{days}D_%"].mean()
+            avg_row[f"Nifty_{days}D_%"] = detail_df[f"Nifty_{days}D_%"].mean()
+        avg_df = pd.concat([detail_df, pd.DataFrame([avg_row])], ignore_index=True)
+        return avg_df
+    except Exception:
+        return pd.DataFrame()

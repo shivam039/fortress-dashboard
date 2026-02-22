@@ -75,14 +75,45 @@ def fetch_mf_snapshot(scheme_codes: list[str]) -> pd.DataFrame:
             scheme_name = f"Scheme {code}"
             if mf_client:
                 scheme_name, nav_from_mftool = _retry(lambda: _extract_name_and_nav(mf_client, str(code)), "mf_quote")
+                # Defensive delay to avoid AMFI (mfapi.in) rate-limit blocks
+                time.sleep(0.5)
                 if pd.notna(nav_from_mftool):
                     nav = float(nav_from_mftool)
+
+            # --- Dynamic Benchmark Realignment ---
+            bench_ticker = INDEX_BENCHMARKS.get("Nifty 50", "^NSEI")
+            nm_lower = scheme_name.lower()
+            if "small cap" in nm_lower or "smallcap" in nm_lower:
+                bench_ticker = INDEX_BENCHMARKS.get("Nifty Smallcap 250", "^CNXSC")
+            elif "mid cap" in nm_lower or "midcap" in nm_lower:
+                bench_ticker = INDEX_BENCHMARKS.get("Nifty Midcap 150", "^NSMIDCP")
+
+            bench_ret_series = fetch_benchmark_returns(bench_ticker)
+            ret = history["ret"].dropna()
+
+            # Alpha/Beta Calculation
+            alpha, beta = np.nan, np.nan
+            if not bench_ret_series.empty and not ret.empty:
+                combined = pd.concat([ret, bench_ret_series], axis=1, join="inner").dropna()
+                if len(combined) > 60:
+                    cov_matrix = np.cov(combined.iloc[:, 0], combined.iloc[:, 1])
+                    cov = cov_matrix[0, 1]
+                    var = np.var(combined.iloc[:, 1])
+                    beta = cov / var if var != 0 else 1.0
+
+                    # Annualized Alpha
+                    # Alpha = (Rp - Rf) - Beta * (Rm - Rf)
+                    # Simplified: Alpha = Rp - Beta * Rm (assuming Rf is negligible or handled in excess returns)
+                    # Using simple mean difference annualized:
+                    rp = combined.iloc[:, 0].mean() * 252
+                    rm = combined.iloc[:, 1].mean() * 252
+                    alpha = (rp - 0.06) - beta * (rm - 0.06) # Assuming Rf=6%
+                    alpha = alpha * 100 # Convert to percentage
 
             ret_1y = history["nav"].pct_change(252).iloc[-1] * 100 if len(history) > 252 else np.nan
             ret_3y = ((history["nav"].iloc[-1] / history["nav"].iloc[-min(756, len(history))]) ** (252 / min(756, len(history))) - 1) * 100 if len(history) > 252 else np.nan
             ret_5y = ((history["nav"].iloc[-1] / history["nav"].iloc[-min(1260, len(history))]) ** (252 / min(1260, len(history))) - 1) * 100 if len(history) > 252 else np.nan
 
-            ret = history["ret"].dropna()
             vol = ret.std() * np.sqrt(252) * 100
             downside = ret[ret < 0].std() * np.sqrt(252) * 100
             sharpe = ((ret.mean() * 252) - 0.06) / (ret.std() * np.sqrt(252) + 1e-9)
@@ -102,6 +133,9 @@ def fetch_mf_snapshot(scheme_codes: list[str]) -> pd.DataFrame:
                     "Sharpe": sharpe,
                     "Sortino": sortino,
                     "Rolling Std": rolling_std,
+                    "Alpha": alpha,
+                    "Beta": beta,
+                    "Benchmark": bench_ticker
                 }
             )
             # Defensive sleep to respect mfapi.in rate limits
