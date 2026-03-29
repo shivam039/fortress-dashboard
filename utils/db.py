@@ -539,6 +539,22 @@ def init_db():
         _ensure_ticker_metadata_neon()
         _ensure_ohlcv_cache_neon()
         _ensure_options_chain_cache_neon()
+        try:
+            _ensure_mf_nav_cache_neon()
+        except Exception:
+            pass  # table creation is best-effort
+        _exec("""
+            CREATE TABLE IF NOT EXISTS mf_scan_results (
+                id          BIGSERIAL PRIMARY KEY,
+                scheme_code TEXT NOT NULL,
+                scheme_name TEXT,
+                scan_date   DATE NOT NULL DEFAULT CURRENT_DATE,
+                result_json JSONB,
+                updated_at  TIMESTAMPTZ DEFAULT NOW(),
+                UNIQUE (scheme_code, scan_date)
+            )
+        """)
+        _exec("CREATE INDEX IF NOT EXISTS idx_mf_scan_date ON mf_scan_results (scan_date DESC)")
         _exec(
             """
             CREATE TABLE IF NOT EXISTS scans (
@@ -1188,3 +1204,109 @@ def fetch_active_trades():
 
 def close_all_trades():
     _exec("UPDATE algo_trade_log SET status='Closed' WHERE status='Active'")
+
+
+# ─────────────────────────────────────────────
+#  Monthly MF Scan Persistence
+# ─────────────────────────────────────────────
+
+def fetch_mf_cached_results(max_age_days: int = 31) -> pd.DataFrame:
+    """Return the latest monthly MF scan from Neon. Empty DF if stale/missing."""
+    if not _can_use_neon():
+        return pd.DataFrame()
+    try:
+        df = _read_df(
+            f"SELECT scheme_code, scheme_name, scan_date, result_json "
+            f"FROM mf_scan_results "
+            f"WHERE scan_date >= CURRENT_DATE - INTERVAL '{max_age_days} days' "
+            f"ORDER BY scan_date DESC, scheme_code"
+        )
+        if df.empty:
+            return pd.DataFrame()
+        rows = []
+        for _, row in df.iterrows():
+            rj = row["result_json"]
+            if isinstance(rj, str):
+                rj = json.loads(rj)
+            if isinstance(rj, dict):
+                rows.append(rj)
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
+    except Exception as e:
+        logger.error("fetch_mf_cached_results error: %s", e)
+        return pd.DataFrame()
+
+
+def upsert_mf_scan_results(df: pd.DataFrame):
+    """Persist a full MF scan result DataFrame into Neon (one row per scheme, monthly UPSERT)."""
+    if not _can_use_neon() or df is None or df.empty:
+        return
+    try:
+        for _, row in df.iterrows():
+            record = row.to_dict()
+            record = {k: (None if (isinstance(v, float) and v != v) else v) for k, v in record.items()}
+            scheme_code = str(record.get("Scheme Code") or record.get("scheme_code") or "UNKNOWN")
+            scheme_name = str(record.get("Scheme") or record.get("scheme_name") or "")
+            payload = json.dumps(record, default=str)
+            _exec(
+                "INSERT INTO mf_scan_results (scheme_code, scheme_name, scan_date, result_json, updated_at) "
+                "VALUES (:code, :name, CURRENT_DATE, CAST(:payload AS JSONB), NOW()) "
+                "ON CONFLICT (scheme_code, scan_date) DO UPDATE "
+                "SET result_json=EXCLUDED.result_json, scheme_name=EXCLUDED.scheme_name, updated_at=EXCLUDED.updated_at",
+                {"code": scheme_code, "name": scheme_name, "payload": payload},
+            )
+        logger.info("upsert_mf_scan_results: saved %d rows", len(df))
+    except Exception as e:
+        logger.error("upsert_mf_scan_results error: %s", e)
+
+
+# ─────────────────────────────────────────────
+#  MF NAV History Cache  (per scheme, 1-day TTL)
+# ─────────────────────────────────────────────
+
+def _ensure_mf_nav_cache_neon():
+    _exec("""
+        CREATE TABLE IF NOT EXISTS mf_nav_cache (
+            scheme_code TEXT PRIMARY KEY,
+            nav_json    JSONB,
+            updated_at  TIMESTAMPTZ DEFAULT NOW()
+        )
+    """)
+
+def fetch_mf_nav_cache(scheme_code: str, max_age_hours: int = 20) -> pd.DataFrame:
+    """Return cached NAV history DataFrame if fresh, else None."""
+    if not _can_use_neon():
+        return None
+    try:
+        engine = get_db_engine()
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("""
+                    SELECT nav_json FROM mf_nav_cache
+                    WHERE scheme_code = :code
+                      AND updated_at >= NOW() - INTERVAL :age
+                """),
+                {"code": str(scheme_code), "age": f"{max_age_hours} hours"}
+            ).fetchone()
+        if row and row[0]:
+            df = pd.read_json(json.dumps(row[0]), orient="split")
+            df.index = pd.to_datetime(df.index)
+            return df
+    except Exception as e:
+        logger.debug("fetch_mf_nav_cache miss %s: %s", scheme_code, e)
+    return None
+
+def upsert_mf_nav_cache(scheme_code: str, df: pd.DataFrame):
+    """Persist NAV history DataFrame into Neon for future cache hits."""
+    if not _can_use_neon() or df is None or df.empty:
+        return
+    try:
+        payload = json.dumps(json.loads(df.to_json(date_format="iso", orient="split")))
+        _exec(
+            "INSERT INTO mf_nav_cache (scheme_code, nav_json, updated_at) "
+            "VALUES (:code, CAST(:payload AS JSONB), NOW()) "
+            "ON CONFLICT (scheme_code) DO UPDATE "
+            "SET nav_json=EXCLUDED.nav_json, updated_at=EXCLUDED.updated_at",
+            {"code": str(scheme_code), "payload": payload},
+        )
+    except Exception as e:
+        logger.debug("upsert_mf_nav_cache %s: %s", scheme_code, e)
