@@ -291,14 +291,12 @@ def _display_scan_results(df, universe, broker_choice, scoring_config, timestamp
         st.info("Insufficient data for heatmap generation.")
 
 @st.fragment
-def _run_smallcap_scan_fragment(broker_choice, scoring_config):
-    state = st.session_state.get("smallcap_scan_state")
+def _run_scan_fragment(broker_choice, scoring_config):
+    state = st.session_state.get("scan_state")
     if not state:
         return
 
     universe = state["universe"]
-    if universe != "Nifty Smallcap 250":
-        return
 
     if state.get("status") == "running":
         tickers = state["tickers"]
@@ -306,11 +304,10 @@ def _run_smallcap_scan_fragment(broker_choice, scoring_config):
         i = state["index"]
         num_chunks = max(1, (len(tickers) + chunk_size - 1) // chunk_size)
 
-        # Calculate progress correctly
         current_chunk_idx = i // chunk_size
         progress_val = min(current_chunk_idx / num_chunks, 1.0)
 
-        with st.spinner("Scanning universe..."):
+        with st.spinner(f"Scanning {universe}..."):
             progress_bar = st.progress(progress_val)
             status_text = st.empty()
 
@@ -320,7 +317,10 @@ def _run_smallcap_scan_fragment(broker_choice, scoring_config):
 
                 try:
                     batch_data = get_stock_data(chunk, period="1y", interval="1d", group_by="ticker")
-                    for ticker in chunk:
+                    
+                    import concurrent.futures
+
+                    def process_ticker(ticker):
                         try:
                             tkr_obj = yf.Ticker(ticker)
                             hist = batch_data[ticker].dropna() if len(chunk) > 1 else batch_data.dropna()
@@ -334,28 +334,39 @@ def _run_smallcap_scan_fragment(broker_choice, scoring_config):
                                     selected_universe=universe,
                                     regime_data=scoring_config.get("regime")
                                 )
-                                if res and res["Score"] >= 60:
-                                    state["results"].append(res)
+                                if res and (universe != "Nifty Smallcap 250" or res["Score"] >= 60):
+                                    return res
                         except Exception as inner_e:
-                            state["errors"].append(f"{ticker}: {inner_e}")
+                            return f"ERROR_{ticker}: {inner_e}"
+                        return None
+                    
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                        futures = {executor.submit(process_ticker, t): t for t in chunk}
+                        for future in concurrent.futures.as_completed(futures):
+                            res = future.result()
+                            if res:
+                                if isinstance(res, str) and res.startswith("ERROR_"):
+                                    state["errors"].append(res)
+                                else:
+                                    state["results"].append(res)
+
                 except Exception as e:
                     state["errors"].append(f"Chunk {i}: {e}")
 
                 state["index"] = i + chunk_size
-                time.sleep(1.2) # Throttling for Smallcap
-                st.session_state["smallcap_scan_state"] = state
+                time.sleep(1.0) # Throttling for APIs
+                st.session_state["scan_state"] = state
                 st.rerun()
             else:
                 # Scan Complete
                 state["status"] = "completed"
 
-                # Save results once
                 df = pd.DataFrame(state["results"])
                 if not df.empty:
                     timestamp = _save_scan(df, universe)
                     state["timestamp"] = timestamp
 
-                st.session_state["smallcap_scan_state"] = state
+                st.session_state["scan_state"] = state
                 st.rerun()
 
     elif state.get("status") == "completed":
@@ -367,11 +378,11 @@ def _run_smallcap_scan_fragment(broker_choice, scoring_config):
             df = pd.DataFrame(results)
             _display_scan_results(df, universe, broker_choice, scoring_config, timestamp=state.get("timestamp"))
         else:
-             st.warning("No results found.")
+             st.warning("No actionable setups found.")
 
 def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_choice, scoring_config):
-    if "smallcap_scan_state" not in st.session_state:
-        st.session_state["smallcap_scan_state"] = None
+    if "scan_state" not in st.session_state:
+        st.session_state["scan_state"] = None
 
     # ---------------- MARKET PULSE ----------------
     pulse_data = st.session_state.get("market_pulse_data")
@@ -429,12 +440,12 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
 
     # ---------------- MAIN SCAN ----------------
     execute_scan = st.button("🚀 EXECUTE SYSTEM SCAN", type="primary", use_container_width=True)
-    results = None
 
-    if execute_scan and selected_universe == "Nifty Smallcap 250":
-        tickers = TICKER_GROUPS[selected_universe]
+    if execute_scan:
+        tickers = TICKER_GROUPS.get(selected_universe, [])
+        # Bulk chunking with multi-threading logic
         chunk_size = 50
-        st.session_state["smallcap_scan_state"] = {
+        st.session_state["scan_state"] = {
             "universe": selected_universe,
             "tickers": tickers,
             "chunk_size": chunk_size,
@@ -445,78 +456,11 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
             "risk_pct": risk_pct,
             "status": "running"
         }
+        log_audit("Scan Started", selected_universe, f"Scanning {len(tickers)} tickers synchronously")
         st.rerun()
 
-    smallcap_state = st.session_state.get("smallcap_scan_state")
-    if smallcap_state and selected_universe == "Nifty Smallcap 250":
-        _run_smallcap_scan_fragment(broker_choice, scoring_config)
-
-    elif execute_scan and selected_universe != "Nifty Smallcap 250":
-        tickers = TICKER_GROUPS[selected_universe]
-        results = []
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        # Log Start
-        log_audit("Scan Started", selected_universe, f"Scanning {len(tickers)} tickers")
-
-        # --- CHUNKED PROCESSING LOGIC ---
-        chunk_size = len(tickers) # No smallcap throttle needed
-
-        def _scan_worker(result_queue):
-            local_results = []
-            errors = []
-            for i in range(0, len(tickers), chunk_size):
-                chunk = tickers[i : i + chunk_size]
-                try:
-                    batch_data = get_stock_data(chunk, period="1y", interval="1d", group_by="ticker")
-                    for ticker in chunk:
-                        try:
-                            tkr_obj = yf.Ticker(ticker)
-                            hist = batch_data[ticker].dropna() if len(chunk) > 1 else batch_data.dropna()
-                            if not hist.empty and len(hist) >= 210:
-                                res = check_institutional_fortress(
-                                    ticker,
-                                    hist,
-                                    tkr_obj,
-                                    portfolio_val,
-                                    risk_pct,
-                                    selected_universe=selected_universe,
-                                    regime_data=scoring_config.get("regime")
-                                )
-                                if res and (selected_universe != "Nifty Smallcap 250" or res["Score"] >= 60):
-                                    local_results.append(res)
-                        except Exception as inner_e:
-                            errors.append(f"{ticker}: {inner_e}")
-                except Exception as e:
-                    errors.append(f"Chunk {i}: {e}")
-                result_queue.put({"progress": min(i + chunk_size, len(tickers))})
-
-            result_queue.put({"done": True, "results": local_results, "errors": errors})
-
-        result_queue = queue.Queue()
-        worker = threading.Thread(target=_scan_worker, args=(result_queue,), daemon=True)
-        worker.start()
-        done = False
-        while not done:
-            msg = result_queue.get()
-            if "progress" in msg:
-                scanned = msg["progress"]
-                progress_bar.progress(min(scanned / len(tickers), 1.0))
-                status_text.text(f"Scanned {scanned}/{len(tickers)} tickers...")
-            if msg.get("done"):
-                results.extend(msg.get("results", []))
-                for err in msg.get("errors", []):
-                    st.error(f"Batch Error: {err}")
-                done = True
-
-    if results is not None:
-        if results:
-            df = pd.DataFrame(results)
-            timestamp = _save_scan(df, selected_universe)
-            _display_scan_results(df, selected_universe, broker_choice, scoring_config, timestamp=timestamp)
-        else:
-            st.warning("No data retrieved. Check internet or ticker config.")
-            log_audit("Scan Failed", selected_universe, "No data retrieved")
+    scan_state = st.session_state.get("scan_state")
+    if scan_state and scan_state["universe"] == selected_universe:
+        _run_scan_fragment(broker_choice, scoring_config)
 
     st.caption("🛡️ Fortress 95 Pro v9.4 — Dynamic Columns | ATR SL | Analyst Dispersion | Full Logic")

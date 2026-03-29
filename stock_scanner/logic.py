@@ -345,10 +345,23 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
 
         ema200 = _safe_float(ta.ema(close,200).iloc[-1])
         ema50 = _safe_float(ta.ema(close,50).iloc[-1])
+        ema20 = _safe_float(ta.ema(close,20).iloc[-1])
         rsi = _safe_float(ta.rsi(close,14).iloc[-1])
         atr = _safe_float(ta.atr(high,low,close,14).iloc[-1])
         atr100 = _safe_float(ta.atr(high, low, close, 100).iloc[-1])
         st_df = ta.supertrend(high,low,close,10,3)
+
+        # ADX Calculation
+        try:
+            adx_df = ta.adx(high, low, close, 14)
+            adx_col = [c for c in adx_df.columns if c.startswith("ADX_")][0]
+            adx_val = _safe_float(adx_df[adx_col].iloc[-1])
+        except:
+            adx_val = 0.0
+
+        # 52-Week High Calculation
+        high_52w = _safe_float(high.tail(252).max()) if len(high) >= 200 else price
+        distance_to_high_pct = ((high_52w - price) / price) * 100 if price > 0 else 0.0
         trend_col = [c for c in st_df.columns if c.startswith("SUPERTd")][0]
         trend_dir = int(_safe_float(st_df[trend_col].iloc[-1]))
         # price already defined above
@@ -366,6 +379,7 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         weekly_ema30 = _safe_float(ta.ema(weekly_close, 30).iloc[-1]) if len(weekly_close) >= 30 else 0.0
 
         tech_base = price>ema200 and trend_dir==1
+        perfect_alignment = price > ema20 and ema20 > ema50 and ema50 > ema200 and trend_dir == 1
         mtf_aligned = price > weekly_ema30 if weekly_ema30 > 0 else False
 
         regime = regime_data if regime_data else _get_default_regime()
@@ -455,9 +469,25 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             pass
 
         if tech_base:
-            conviction += 60
+            conviction += 50
+            if perfect_alignment:
+                conviction += 15 # True alignment reward
+                
             if 48<=rsi<=62: conviction+=20
             elif 40<=rsi<=72: conviction+=10
+            
+            # ADX trend strength filter
+            if adx_val > 25:
+                conviction += 12
+            elif adx_val > 0 and adx_val < 20:
+                conviction -= 15 # Choppy penalty
+
+            # 52-week overhead resistance
+            if distance_to_high_pct < 10:
+                conviction += 10 # Near ATH sky
+            elif distance_to_high_pct > 35:
+                conviction -= 10 # Heavy resistance
+                
             conviction += score_mod
 
         # Relative Strength vs Nifty 50
@@ -492,12 +522,15 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         if vol_surge:
             conviction += 10
         if breakout and current_volume < avg_volume_20:
-            conviction -= 10
+            conviction -= 25 # High penalty for low volume trap
 
         # Volatility contraction (VCP-like)
-        is_coiling = atr > 0 and atr100 > 0 and atr < (atr100 * 0.8)
+        volume_dry_up = _safe_float(volume.tail(5).mean()) < avg_volume_20
+        is_coiling = atr > 0 and atr100 > 0 and atr < (atr100 * 0.6) and volume_dry_up
         if is_coiling:
-            conviction += 10
+            conviction += 20 # True squeeze reward
+        elif atr > 0 and atr100 > 0 and atr < (atr100 * 0.8):
+            conviction += 5 # Mild squeeze
 
         # Mean reversion / over-extension guard
         extension_pct = ((price - ema50) / ema50) * 100 if ema50 > 0 else 0.0
