@@ -425,11 +425,21 @@ def run_full_mf_scan(
         return pd.DataFrame()
 
     df = pd.DataFrame(rows).fillna(0)
+    df["Category"] = df["Scheme"].apply(classify_category)
     vol_penalty = (df["Volatility"] + df["Downside Deviation"] + df["Rolling Std"]).clip(lower=0)
     raw = (df["Sharpe"] + df["Sortino"] - vol_penalty / 100).fillna(0)
     mn, mx = raw.min(), raw.max()
     df["Consistency Score"] = 50.0 if mx == mn else ((raw - mn) / (mx - mn) * 100).clip(0, 100)
-    df = df.sort_values("Consistency Score", ascending=False).reset_index(drop=True)
+
+    # ── Conviction Enrichment (Decision Quality) ─────────────────────
+    try:
+        from utils.conviction_engine import enrich_mf_dataframe
+        df = enrich_mf_dataframe(df)
+        logger.info("run_full_mf_scan: enriched with conviction scores")
+    except Exception as e:
+        logger.error(f"Conviction enrichment failed: {e}")
+
+    df = df.sort_values("Conviction Score", ascending=False).reset_index(drop=True)
 
     try:
         from utils.db import upsert_mf_scan_results

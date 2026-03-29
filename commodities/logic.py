@@ -81,6 +81,8 @@ def compute_atr(df: pd.DataFrame, window: int = 14) -> float:
 
 
 def build_commodities_frame(selection: str | None = None) -> pd.DataFrame:
+    from utils.conviction_engine import score_commodity
+
     usdinr = fetch_price_series("INR=X", period="1mo")
     fx = float(usdinr["close"].iloc[-1]) if not usdinr.empty else 84.0
 
@@ -88,33 +90,43 @@ def build_commodities_frame(selection: str | None = None) -> pd.DataFrame:
     for name, cfg in COMMODITY_MAP.items():
         if selection and name != selection:
             continue
-        global_df = fetch_price_series(cfg["global"])
-        local_df = fetch_price_series(cfg["local"])
+        global_df = fetch_price_series(cfg["global"], period="6mo")
+        local_df  = fetch_price_series(cfg["local"],  period="6mo")
         if global_df.empty or local_df.empty:
             continue
 
-        g_price = float(global_df["close"].iloc[-1])
-        l_price = float(local_df["close"].iloc[-1])
-        parity = g_price * fx * cfg["unit_adj"]
+        g_price    = float(global_df["close"].iloc[-1])
+        l_price    = float(local_df["close"].iloc[-1])
+        parity     = g_price * fx * cfg["unit_adj"]
         spread_pct = ((l_price - parity) / (parity + 1e-9)) * 100
-        atr = compute_atr(local_df)
-        vol = local_df["close"].pct_change().std() * np.sqrt(252) * 100
-        score = np.clip(50 + (abs(spread_pct) * 8) - (vol * 0.3), 0, 100)
+        atr        = compute_atr(local_df)
+        vol        = local_df["close"].pct_change().std() * np.sqrt(252) * 100
 
-        rows.append(
-            {
-                "Commodity": name,
-                "Global Symbol": cfg["global"],
-                "Local Symbol": cfg["local"],
-                "Price": l_price,
-                "ATR": atr,
-                "Spread %": spread_pct,
-                "USDINR": fx,
-                "Score": score,
-            }
-        )
+        # Rich conviction scoring
+        conviction = score_commodity(name, local_df, global_df, spread_pct, fx)
+
+        rows.append({
+            "Commodity":        name,
+            "Price (₹)":       round(l_price, 2),
+            "ATR":              round(atr, 2),
+            "Volatility (Ann%)":round(vol, 1),
+            "Spread %":         round(spread_pct, 2),
+            "USDINR":           round(fx, 2),
+            "1M Return %":      conviction["1M Return %"],
+            "3M Return %":      conviction["3M Return %"],
+            "6M Return %":      conviction["6M Return %"],
+            "Trend":            conviction["Trend"],
+            "ATR Regime":       conviction["ATR Regime"],
+            "Conviction Score": conviction["Conviction Score"],
+            "Conviction Label": conviction["Conviction Label"],
+            "Conviction Emoji": conviction["Conviction Emoji"],
+            "Decision":         conviction["Decision"],
+            # Keep legacy field for DB compatibility
+            "Global Symbol":    cfg["global"],
+            "Local Symbol":     cfg["local"],
+        })
 
     df = pd.DataFrame(rows)
     if df.empty:
         return df
-    return df.fillna(0).sort_values("Score", ascending=False)
+    return df.fillna(0).sort_values("Conviction Score", ascending=False)

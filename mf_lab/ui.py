@@ -18,19 +18,37 @@ logger = logging.getLogger(__name__)
 #  Helpers
 # ─────────────────────────────────────────────
 
-DISPLAY_COLS = ["Scheme", "NAV", "1Y Return", "3Y Return", "5Y Return",
-                "Sharpe", "Sortino", "Consistency Score", "Category", "Scheme Code"]
+DISPLAY_COLS = [
+    "Conviction Emoji", "Scheme", "Conviction Score", "Conviction Label",
+    "NAV", "1Y Return", "3Y Return", "5Y Return",
+    "Sharpe", "Sortino", "Alpha", "Category", "Scheme Code",
+]
+
+LABEL_COLOR = {
+    "STRONG BUY":    "#00c853",
+    "BUY":           "#64dd17",
+    "HOLD":          "#ffd600",
+    "UNDERPERFORMER":"#ff6d00",
+    "AVOID":         "#d50000",
+}
 
 
 def _post_process(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
+    df = df.copy()
     df["Category"] = df.get("Scheme", pd.Series(dtype=str)).apply(classify_category)
     numeric_cols = ["NAV", "1Y Return", "3Y Return", "5Y Return", "Sharpe",
-                    "Sortino", "Consistency Score", "Volatility"]
+                    "Sortino", "Consistency Score", "Volatility", "Alpha", "Beta"]
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    # Apply conviction scoring
+    try:
+        from utils.conviction_engine import enrich_mf_dataframe
+        df = enrich_mf_dataframe(df)
+    except Exception as e:
+        logger.warning(f"Conviction scoring skipped: {e}")
     return df
 
 
@@ -39,6 +57,52 @@ def _apply_filters(df: pd.DataFrame, categories, min_sharpe) -> pd.DataFrame:
         return df
     mask = df["Category"].isin(categories) & (df["Sharpe"] >= min_sharpe)
     return df[mask].copy()
+
+
+def _scorecard(row: dict):
+    """Render a single fund conviction card."""
+    label = row.get("Conviction Label", "HOLD")
+    emoji = row.get("Conviction Emoji", "🟡")
+    score = row.get("Conviction Score", 50)
+    color = LABEL_COLOR.get(label, "#ffd600")
+    decision = row.get("Decision", "")
+
+    st.markdown(
+        f"""
+        <div style="
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-left: 5px solid {color};
+            border-radius: 12px;
+            padding: 16px 20px;
+            margin-bottom: 15px;
+        ">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h3 style="margin:0; color:#fff; font-size:1.1rem;">
+                    {emoji} {row.get('Scheme','—')}
+                </h3>
+                <span style="
+                    background:{color}; color:#000; font-weight:700;
+                    padding:4px 14px; border-radius:20px; font-size:0.85rem;
+                ">
+                    {label} • {score}/100
+                </span>
+            </div>
+            <hr style="border-color:#333; margin: 10px 0;">
+            <p style="margin:5px 0; color:#ccc; font-size:0.9rem; line-height:1.4;">{decision}</p>
+            <div style="margin-top:12px; display:flex; gap:25px; flex-wrap:wrap;">
+                <div><span style="color:#8f8f8f; font-size:0.75rem;">1Y Return</span><br>
+                     <b style="color:#fff; font-size:0.95rem;">{row.get("1Y Return",0):+.2f}%</b></div>
+                <div><span style="color:#8f8f8f; font-size:0.75rem;">Sharpe</span><br>
+                     <b style="color:#fff; font-size:0.95rem;">{row.get("Sharpe",0):.2f}</b></div>
+                <div><span style="color:#8f8f8f; font-size:0.75rem;">Alpha</span><br>
+                     <b style="color:#fff; font-size:0.95rem;">{row.get("Alpha",0):+.2f}%</b></div>
+                <div><span style="color:#8f8f8f; font-size:0.75rem;">Category</span><br>
+                     <b style="color:#fff; font-size:0.95rem;">{row.get("Category","—")}</b></div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ─────────────────────────────────────────────
@@ -120,6 +184,17 @@ def render():
     if filtered.empty:
         st.warning("No funds match the current filters. Adjust Sharpe or Category in the sidebar.")
     else:
+        # ── Top Conviction Picks ────────────────────────────────────
+        st.subheader("🎯 Top Conviction Picks")
+        top_picks = filtered[filtered["Conviction Label"].isin(["STRONG BUY", "BUY"])].head(5)
+        if not top_picks.empty:
+            for _, row in top_picks.iterrows():
+                _scorecard(row.to_dict())
+        else:
+            st.info("No funds currently meet the 'Strong Buy' or 'Buy' threshold. Showing all results below.")
+
+        st.markdown("---")
+        st.subheader("📋 Full Result Universe")
         display_cols = [c for c in DISPLAY_COLS if c in filtered.columns]
         st.dataframe(
             filtered[display_cols].reset_index(drop=True),
