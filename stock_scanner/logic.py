@@ -16,7 +16,9 @@ from datetime import datetime
 
 # From development-db: Neon compatibility
 try:
-    from utils.db import _read_df
+    from utils.db import _read_df, upsert_ticker_metadata_cache
+    import json
+    from threading import Lock
 except ImportError:
     # Fallback for local testing or if utils.db structure differs
     def _read_df(*args, **kwargs):
@@ -66,36 +68,83 @@ def _download_close_series(symbol, period="1y", interval="1d"):
     return bench.get("Close", pd.Series(dtype=float)).dropna()
 
 
-@st.cache_data(ttl="10m")
+_INFO_CACHE = {}
+_NEWS_CACHE = {}
+_CAL_CACHE = {}
+_EARN_CACHE = {}
+_META_LOCK = Lock()
+
+def _safe_df_to_dict(df):
+    if df is None: return {}
+    if isinstance(df, pd.DataFrame):
+        try:
+            # Convert datetime indexes or columns to string safely
+            return json.loads(df.to_json(date_format='iso', orient='split'))
+        except: return {}
+    return {}
+
+def _safe_dict_to_df(d):
+    try:
+        if d and isinstance(d, dict) and 'columns' in d and 'data' in d:
+            df = pd.read_json(json.dumps(d), orient='split')
+            return df
+    except: pass
+    return None
+
+def _ensure_metadata_loaded(symbol):
+    with _META_LOCK:
+        if symbol in _INFO_CACHE: 
+            return
+
+    try:
+        tkr = yf.Ticker(symbol)
+        info = tkr.info or {}
+        news = tkr.news or []
+        cal = tkr.calendar
+        earn = tkr.earnings_dates
+
+        # Save to memory cache immediately (thread safe)
+        cal_df = cal if isinstance(cal, pd.DataFrame) else None
+        earn_df = earn if isinstance(earn, pd.DataFrame) else None
+        
+        with _META_LOCK:
+            _INFO_CACHE[symbol] = info
+            _NEWS_CACHE[symbol] = news
+            _CAL_CACHE[symbol] = cal_df
+            _EARN_CACHE[symbol] = earn_df
+
+        # Upsert cleanly to Neon DB
+        cal_dict = _safe_df_to_dict(cal_df)
+        earn_dict = _safe_df_to_dict(earn_df)
+        
+        upsert_ticker_metadata_cache(symbol, {
+            'info_json': info,
+            'news_json': news,
+            'cal_json': cal_dict,
+            'earn_json': earn_dict
+        })
+    except Exception as e:
+        with _META_LOCK:
+            _INFO_CACHE[symbol] = {}
+            _NEWS_CACHE[symbol] = []
+            _CAL_CACHE[symbol] = None
+            _EARN_CACHE[symbol] = None
+
 def _get_ticker_info(symbol):
-    try:
-        return yf.Ticker(symbol).info
-    except:
-        return {}
+    _ensure_metadata_loaded(symbol)
+    return _INFO_CACHE.get(symbol, {})
 
-
-@st.cache_data(ttl="10m")
 def _get_ticker_news(symbol):
-    try:
-        return yf.Ticker(symbol).news
-    except:
-        return []
+    _ensure_metadata_loaded(symbol)
+    return _NEWS_CACHE.get(symbol, [])
 
-
-@st.cache_data(ttl="10m")
 def _get_ticker_calendar(symbol):
-    try:
-        return yf.Ticker(symbol).calendar
-    except:
-        return None
+    _ensure_metadata_loaded(symbol)
+    return _CAL_CACHE.get(symbol, None)
 
-
-@st.cache_data(ttl="10m")
 def _get_ticker_earnings_dates(symbol):
-    try:
-        return yf.Ticker(symbol).earnings_dates
-    except:
-        return None
+    _ensure_metadata_loaded(symbol)
+    return _EARN_CACHE.get(symbol, None)
 
 
 def _get_benchmark_series(symbol):

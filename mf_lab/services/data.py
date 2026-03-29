@@ -10,46 +10,47 @@ from utils.db import get_cached_benchmark, save_benchmark_data
 def fetch_benchmark_data(ticker):
     """
     Fetches benchmark data (Close & Returns).
-    Uses SQLite caching to avoid repeated API hits.
+    Priority: 1) Neon OHLCV cache  2) SQLite cache  3) yfinance live fetch + UPSERT.
     """
     try:
-        # 1. Try Cache
-        # We need data up to today.
-        # Ideally, we fetch from cache, check last date, and fetch delta.
-        # For simplicity in this iteration: Fetch full history if cache is empty or stale?
-        # Let's try to just use yfinance intelligently.
+        from utils.db import fetch_ohlcv_cache, upsert_ohlcv_cache
+        neon_df = fetch_ohlcv_cache(ticker, period="5y", max_age_hours=20)
+        if neon_df is not None and not neon_df.empty and "Close" in neon_df.columns:
+            if "ret" not in neon_df.columns:
+                neon_df["ret"] = neon_df["Close"].pct_change()
+            return neon_df[["Close", "ret"]].dropna()
+    except Exception:
+        pass
 
-        # Check last date in cache
+    try:
+        # 1. Try SQLite cache
         cached_df = get_cached_benchmark(ticker)
-
         if not cached_df.empty:
             last_date = cached_df.index.max()
             today = pd.Timestamp.now().normalize()
-
             if last_date >= today - pd.Timedelta(days=1):
-                # Cache is fresh (yesterday or today)
-                # logger.info(f"Using cached benchmark for {ticker}")
                 return cached_df
 
-        # 2. Fetch from API
-        # logger.info(f"Fetching fresh benchmark for {ticker}")
-        # Always fetch 5y to ensure we have enough history for calculations
+        # 2. Fetch from yfinance
         nifty = yf.download(ticker, period="5y", interval="1d", progress=False)
-
         if nifty.empty:
-            return cached_df # Return what we have if API fails
+            return cached_df
 
         if isinstance(nifty.columns, pd.MultiIndex):
             nifty.columns = nifty.columns.get_level_values(0)
 
-        # Calculate Returns
-        # Use 'Close' or 'Adj Close'? 'Close' is standard for Nifty usually on Yahoo
-        nifty['ret'] = nifty['Close'].pct_change()
+        nifty["ret"] = nifty["Close"].pct_change()
+        data_to_save = nifty[["Close", "ret"]].dropna()
 
-        data_to_save = nifty[['Close', 'ret']].dropna()
-
-        # 3. Update Cache
+        # 3. Update SQLite cache
         save_benchmark_data(ticker, data_to_save)
+
+        # 4. Upsert into Neon for next time
+        try:
+            from utils.db import upsert_ohlcv_cache
+            upsert_ohlcv_cache(ticker, "5y", nifty)
+        except Exception:
+            pass
 
         return data_to_save
 

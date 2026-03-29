@@ -339,11 +339,206 @@ def _sqlite_has_column(conn: sqlite3.Connection, table_name: str, column_name: s
     columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
     return any(column[1] == column_name for column in columns)
 
+def _ensure_ticker_metadata_neon():
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS ticker_metadata (
+            symbol TEXT PRIMARY KEY,
+            info_json JSONB,
+            news_json JSONB,
+            cal_json  JSONB,
+            earn_json JSONB,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """
+    )
+    
+def bulk_fetch_metadata(symbols: list, max_age_hours=12):
+    if not _can_use_neon() or not symbols:
+        return {} 
+    
+    try:
+        engine = get_db_engine()
+        placeholders = ", ".join([f":sym_{i}" for i in range(len(symbols))])
+        params = {f"sym_{i}": sym for i, sym in enumerate(symbols)}
+        
+        query = f"""
+        SELECT symbol, info_json, news_json, cal_json, earn_json
+        FROM ticker_metadata
+        WHERE symbol IN ({placeholders}) 
+        AND updated_at >= NOW() - INTERVAL '{max_age_hours} hours'
+        """
+        
+        with engine.connect() as conn:
+            res = conn.execute(text(query), params).fetchall()
+            
+        return {
+            row[0]: {
+                'info_json': row[1] if row[1] else {},
+                'news_json': row[2] if row[2] else [],
+                'cal_json': row[3],
+                'earn_json': row[4]
+            } for row in res
+        }
+    except Exception as e:
+        logger.error(f"Error fetching bulk metadata: {e}")
+        return {}
+
+def upsert_ticker_metadata_cache(symbol, metadata_dict):
+    if not _can_use_neon(): return
+    try:
+        query = """
+        INSERT INTO ticker_metadata (symbol, info_json, news_json, cal_json, earn_json, updated_at)
+        VALUES (:symbol, CAST(:info_json AS JSONB), CAST(:news_json AS JSONB), CAST(:cal_json AS JSONB), CAST(:earn_json AS JSONB), NOW())
+        ON CONFLICT (symbol) DO UPDATE SET 
+            info_json = EXCLUDED.info_json,
+            news_json = EXCLUDED.news_json,
+            cal_json = EXCLUDED.cal_json,
+            earn_json = EXCLUDED.earn_json,
+            updated_at = EXCLUDED.updated_at
+        """
+        _exec(query, {
+            "symbol": symbol,
+            "info_json": json.dumps(metadata_dict.get('info_json', {})),
+            "news_json": json.dumps(metadata_dict.get('news_json', [])),
+            "cal_json": json.dumps(metadata_dict.get('cal_json', {})),
+            "earn_json": json.dumps(metadata_dict.get('earn_json', {}))
+        })
+    except Exception as e:
+        logger.error(f"Error upserting metadata for {symbol}: {e}")
+
+
+
+# ─────────────────────────────────────────────
+# OHLCV time-series cache  (mf_lab + commodities)
+# ─────────────────────────────────────────────
+
+def _ensure_ohlcv_cache_neon():
+    _exec("""
+        CREATE TABLE IF NOT EXISTS ohlcv_cache (
+            symbol       TEXT NOT NULL,
+            period       TEXT NOT NULL,
+            ohlcv_json   JSONB,
+            updated_at   TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (symbol, period)
+        )
+    """)
+
+def fetch_ohlcv_cache(symbol: str, period: str = "5y", max_age_hours: int = 20) -> "pd.DataFrame | None":
+    """Return a DataFrame from Neon cache if fresh, else None."""
+    if not _can_use_neon():
+        return None
+    try:
+        engine = get_db_engine()
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("""
+                SELECT ohlcv_json FROM ohlcv_cache
+                WHERE symbol = :sym AND period = :period
+                  AND updated_at >= NOW() - INTERVAL :age_h
+                """),
+                {"sym": symbol, "period": period, "age_h": f"{max_age_hours} hours"}
+            ).fetchone()
+        if row and row[0]:
+            import pandas as pd
+            df = pd.read_json(json.dumps(row[0]), orient="split")
+            df.index = pd.to_datetime(df.index)
+            return df
+    except Exception as e:
+        logger.error("ohlcv_cache fetch error for %s: %s", symbol, e)
+    return None
+
+def upsert_ohlcv_cache(symbol: str, period: str, df: "pd.DataFrame"):
+    """Persist an OHLCV DataFrame into Neon for future cache hits."""
+    if not _can_use_neon() or df is None or df.empty:
+        return
+    try:
+        payload = json.dumps(
+            json.loads(df.to_json(date_format="iso", orient="split"))
+        )
+        _exec(
+            """
+            INSERT INTO ohlcv_cache (symbol, period, ohlcv_json, updated_at)
+            VALUES (:sym, :period, CAST(:payload AS JSONB), NOW())
+            ON CONFLICT (symbol, period) DO UPDATE
+              SET ohlcv_json = EXCLUDED.ohlcv_json,
+                  updated_at = EXCLUDED.updated_at
+            """,
+            {"sym": symbol, "period": period, "payload": payload},
+        )
+    except Exception as e:
+        logger.error("ohlcv_cache upsert error for %s: %s", symbol, e)
+
+
+# ─────────────────────────────────────────────
+# Options chain snapshot cache  (options_algo)
+# ─────────────────────────────────────────────
+
+def _ensure_options_chain_cache_neon():
+    _exec("""
+        CREATE TABLE IF NOT EXISTS options_chain_cache (
+            symbol      TEXT NOT NULL,
+            expiry_date TEXT NOT NULL,
+            chain_json  JSONB,
+            spot        REAL,
+            updated_at  TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (symbol, expiry_date)
+        )
+    """)
+
+def fetch_options_chain_cache(symbol: str, expiry: str, max_age_minutes: int = 5):
+    """Return cached option-chain dict {chain_json, spot} if fresh, else None."""
+    if not _can_use_neon():
+        return None
+    try:
+        engine = get_db_engine()
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("""
+                SELECT chain_json, spot FROM options_chain_cache
+                WHERE symbol = :sym AND expiry_date = :expiry
+                  AND updated_at >= NOW() - INTERVAL :age_m
+                """),
+                {"sym": symbol, "expiry": expiry, "age_m": f"{max_age_minutes} minutes"}
+            ).fetchone()
+        if row and row[0]:
+            import pandas as pd
+            chain_df = pd.read_json(json.dumps(row[0]), orient="split")
+            return {"chain": chain_df, "spot": float(row[1] or 0)}
+    except Exception as e:
+        logger.error("options_chain_cache fetch error %s/%s: %s", symbol, expiry, e)
+    return None
+
+def upsert_options_chain_cache(symbol: str, expiry: str, chain_df: "pd.DataFrame", spot: float):
+    """Save an option-chain snapshot to Neon."""
+    if not _can_use_neon() or chain_df is None or chain_df.empty:
+        return
+    try:
+        payload = json.dumps(
+            json.loads(chain_df.to_json(date_format="iso", orient="split"))
+        )
+        _exec(
+            """
+            INSERT INTO options_chain_cache (symbol, expiry_date, chain_json, spot, updated_at)
+            VALUES (:sym, :expiry, CAST(:payload AS JSONB), :spot, NOW())
+            ON CONFLICT (symbol, expiry_date) DO UPDATE
+              SET chain_json = EXCLUDED.chain_json,
+                  spot       = EXCLUDED.spot,
+                  updated_at = EXCLUDED.updated_at
+            """,
+            {"sym": symbol, "expiry": expiry, "payload": payload, "spot": spot},
+        )
+    except Exception as e:
+        logger.error("options_chain_cache upsert error %s/%s: %s", symbol, expiry, e)
+
 
 def init_db():
     if _can_use_neon():
         _ensure_scan_history_table_neon()
         _ensure_scan_history_details_neon()
+        _ensure_ticker_metadata_neon()
+        _ensure_ohlcv_cache_neon()
+        _ensure_options_chain_cache_neon()
         _exec(
             """
             CREATE TABLE IF NOT EXISTS scans (
@@ -743,25 +938,39 @@ def register_scan(timestamp, universe="Mutual Funds", scan_type="MF", status="In
         return cur.lastrowid
 
 
-def save_scan_results(scan_id, df):
+def save_scan_results(scan_id, df, scan_timestamp=None):
     if df.empty:
         return
 
     # Prepare list of dicts for insertion (common for both backends)
     records = []
     for row in df.to_dict(orient="records"):
+        score = row.get("conviction_score") or row.get("Conviction Score") or row.get("Score")
+        price = row.get("price") or row.get("Price")
+        regime = row.get("regime") or row.get("Regime")
+        
+        # Make sure None is saved if Pandas converts to nan
+        if pd.isna(score): score = None
+        if pd.isna(price): price = None
+        if pd.isna(regime): regime = None
+        
         # Serialize the full row to JSON for raw_data column
         records.append({
             "scan_id": scan_id,
-            "symbol": row.get("symbol") or row.get("Symbol"),
+            "scan_timestamp": scan_timestamp or row.get("scan_timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "symbol": row.get("symbol") or row.get("Symbol") or "UNKNOWN",
+            "conviction_score": score,
+            "price": price,
+            "regime": regime,
             "raw_data": json.dumps(row)
         })
 
     if _can_use_neon():
-        # Neon: Explicit INSERT with CAST for JSONB
+        # Neon: Explicit INSERT with properly typed values
         for rec in records:
             _exec(
-                "INSERT INTO scan_history_details (scan_id, symbol, raw_data) VALUES (:scan_id, :symbol, CAST(:raw_data AS JSONB))",
+                "INSERT INTO scan_history_details (scan_id, scan_timestamp, symbol, conviction_score, price, regime, raw_data) "
+                "VALUES (:scan_id, :scan_timestamp, :symbol, :conviction_score, :price, :regime, CAST(:raw_data AS JSONB))",
                 rec
             )
         return

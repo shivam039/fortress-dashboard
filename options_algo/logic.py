@@ -52,6 +52,23 @@ def get_available_expiries(symbol: str) -> list[str]:
 
 
 def fetch_option_chain(symbol: str, expiry: str):
+    """
+    Return (chain_df, spot, t).
+    Checks Neon options_chain_cache first (5-min TTL) to avoid repeated yfinance calls.
+    """
+    # ── 1. Try Neon cache ──────────────────────────────────────────────────
+    try:
+        from utils.db import fetch_options_chain_cache, upsert_options_chain_cache
+        cached = fetch_options_chain_cache(symbol, expiry, max_age_minutes=5)
+        if cached is not None:
+            chain_df = cached["chain"]
+            spot     = cached["spot"]
+            t = max((datetime.strptime(expiry, "%Y-%m-%d") - datetime.now()).days / 365.0, 1 / 365)
+            return chain_df, spot, t
+    except Exception:
+        pass
+
+    # ── 2. Live fetch from yfinance ────────────────────────────────────────
     def _load_chain():
         return yf.Ticker(symbol).option_chain(expiry)
 
@@ -61,17 +78,32 @@ def fetch_option_chain(symbol: str, expiry: str):
     t = max((datetime.strptime(expiry, "%Y-%m-%d") - datetime.now()).days / 365.0, 1 / 365)
 
     call_df = chain.calls.copy()
-    put_df = chain.puts.copy()
+    put_df  = chain.puts.copy()
     call_df["Type"] = "CE"
-    put_df["Type"] = "PE"
+    put_df["Type"]  = "PE"
     combined = pd.concat([call_df, put_df], ignore_index=True)
-    combined = combined.rename(columns={"strike": "Strike", "openInterest": "OI", "impliedVolatility": "IV", "lastPrice": "Premium"})
-    combined["IV"] = pd.to_numeric(combined["IV"], errors="coerce").fillna(0.2).clip(0.01, 3)
-    greeks = combined.apply(lambda r: calculate_greeks(spot, float(r["Strike"]), t, 0.06, float(r["IV"]), r["Type"]), axis=1).apply(pd.Series)
+    combined = combined.rename(columns={
+        "strike": "Strike", "openInterest": "OI",
+        "impliedVolatility": "IV", "lastPrice": "Premium",
+    })
+    combined["IV"]      = pd.to_numeric(combined["IV"],      errors="coerce").fillna(0.2).clip(0.01, 3)
+    greeks = combined.apply(
+        lambda r: calculate_greeks(spot, float(r["Strike"]), t, 0.06, float(r["IV"]), r["Type"]), axis=1
+    ).apply(pd.Series)
     combined = pd.concat([combined, greeks], axis=1)
-    combined["OI"] = pd.to_numeric(combined["OI"], errors="coerce").fillna(0)
+    combined["OI"]      = pd.to_numeric(combined["OI"],      errors="coerce").fillna(0)
     combined["Premium"] = pd.to_numeric(combined["Premium"], errors="coerce").fillna(0)
-    return combined[["Strike", "Type", "IV", "Delta", "Gamma", "Theta", "Vega", "OI", "Premium", "contractSymbol"]], spot, t
+
+    result_df = combined[["Strike", "Type", "IV", "Delta", "Gamma", "Theta", "Vega", "OI", "Premium", "contractSymbol"]]
+
+    # ── 3. Upsert into Neon for next call ──────────────────────────────────
+    try:
+        from utils.db import upsert_options_chain_cache
+        upsert_options_chain_cache(symbol, expiry, result_df, spot)
+    except Exception:
+        pass
+
+    return result_df, spot, t
 
 
 def scan_strategies(chain_df: pd.DataFrame, oi_threshold: int = 10000, iv_threshold: float = 0.2):

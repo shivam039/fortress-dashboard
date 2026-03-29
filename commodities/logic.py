@@ -31,12 +31,39 @@ def _retry(operation, module_name: str, retries: int = 3, base_delay: float = 1.
 
 
 def fetch_price_series(symbol: str, period: str = "6mo") -> pd.DataFrame:
-    data = _retry(lambda: yf.download(symbol, period=period, progress=False, auto_adjust=True), f"commodities_{symbol}")
-    if data.empty:
-        return pd.DataFrame()
-    out = data[["Close", "High", "Low"]].copy()
-    out.columns = ["close", "high", "low"]
-    return out.dropna()
+    """Fetch OHLCV for a commodity symbol. Neon cache → yfinance fallback + UPSERT."""
+    try:
+        from utils.db import fetch_ohlcv_cache, upsert_ohlcv_cache
+        cached = fetch_ohlcv_cache(symbol, period=period, max_age_hours=12)
+        if cached is not None and not cached.empty:
+            if isinstance(cached.columns, pd.MultiIndex):
+                cached.columns = cached.columns.get_level_values(0)
+            cols = {c.lower(): c for c in cached.columns}
+            close_col = cols.get("close", list(cached.columns)[0])
+            high_col  = cols.get("high",  close_col)
+            low_col   = cols.get("low",   close_col)
+            out = cached[[close_col, high_col, low_col]].copy()
+            out.columns = ["close", "high", "low"]
+            return out.dropna()
+    except Exception:
+        pass
+
+    def _download():
+        data = yf.download(symbol, period=period, progress=False, auto_adjust=True)
+        if data.empty:
+            return pd.DataFrame()
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        try:
+            from utils.db import upsert_ohlcv_cache
+            upsert_ohlcv_cache(symbol, period, data)
+        except Exception:
+            pass
+        out = data[["Close", "High", "Low"]].copy()
+        out.columns = ["close", "high", "low"]
+        return out.dropna()
+
+    return _retry(_download, f"commodities_{symbol}")
 
 
 def compute_atr(df: pd.DataFrame, window: int = 14) -> float:

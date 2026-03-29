@@ -162,10 +162,26 @@ def fetch_mf_snapshot(scheme_codes: list[str]) -> pd.DataFrame:
 
 @st.cache_data(ttl=1800)
 def fetch_benchmark_returns(ticker: str = INDEX_BENCHMARKS.get("Nifty 50", "^NSEI")) -> pd.Series:
+    """Return daily return series. Checks Neon OHLCV cache first (20 h TTL)."""
+    try:
+        from utils.db import fetch_ohlcv_cache, upsert_ohlcv_cache
+        cached = fetch_ohlcv_cache(ticker, period="5y", max_age_hours=20)
+        if cached is not None and not cached.empty and "Close" in cached.columns:
+            return cached["Close"].pct_change().dropna()
+    except Exception:
+        pass
+
     def _load():
         data = yf.download(ticker, period="5y", interval="1d", progress=False, auto_adjust=True)
         if data.empty:
             return pd.Series(dtype=float)
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        try:
+            from utils.db import upsert_ohlcv_cache
+            upsert_ohlcv_cache(ticker, "5y", data)
+        except Exception:
+            pass
         close_col = data["Close"] if "Close" in data else data.iloc[:, 0]
         return close_col.pct_change().dropna()
 

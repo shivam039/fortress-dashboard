@@ -23,7 +23,7 @@ from stock_scanner.logic import (
     backtest_top_picks,
 )
 from stock_scanner.config import ALL_COLUMNS
-from utils.db import log_audit, get_table_name_from_universe, log_scan_results, fetch_timestamps, fetch_history_data, fetch_symbol_history, register_scan, save_scan_results, update_scan_status
+from utils.db import log_audit, get_table_name_from_universe, bulk_fetch_metadata, log_scan_results, fetch_timestamps, fetch_history_data, fetch_symbol_history, register_scan, save_scan_results, update_scan_status
 from utils.broker_mappings import generate_zerodha_url, generate_dhan_url
 import stock_scanner.pulse as pulse
 
@@ -139,7 +139,7 @@ def _save_scan(df, universe):
     scan_id = register_scan(timestamp, universe=universe, scan_type="STOCK", status="Completed")
 
     df['Universe'] = universe # Add metadata
-    save_scan_results(scan_id, df)
+    save_scan_results(scan_id, df, scan_timestamp=timestamp)
 
     # Clear cache after new scan so history tab updates
     fetch_timestamps.clear()
@@ -318,6 +318,20 @@ def _run_scan_fragment(broker_choice, scoring_config):
                 try:
                     batch_data = get_stock_data(chunk, period="1y", interval="1d", group_by="ticker")
                     
+                    try:
+                        import stock_scanner.logic as local_logic
+                        chunk_meta = bulk_fetch_metadata(chunk, max_age_hours=12)
+                        with local_logic._META_LOCK:
+                            for t in chunk:
+                                if t in chunk_meta:
+                                    local_logic._INFO_CACHE[t] = chunk_meta[t]['info_json']
+                                    news_data = chunk_meta[t]['news_json']
+                                    local_logic._NEWS_CACHE[t] = news_data if isinstance(news_data, list) else []
+                                    local_logic._CAL_CACHE[t] = local_logic._safe_dict_to_df(chunk_meta[t]['cal_json'])
+                                    local_logic._EARN_CACHE[t] = local_logic._safe_dict_to_df(chunk_meta[t]['earn_json'])
+                    except Exception as meta_e:
+                        print(f"Meta bulk load error: {meta_e}")
+                        
                     import concurrent.futures
 
                     def process_ticker(ticker):
