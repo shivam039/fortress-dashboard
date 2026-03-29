@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
-from utils.db import DB_NAME
+from utils.db import DB_NAME, _read_df
 from stock_scanner.logic import backtest_top_picks
 
 KEY_COLUMNS = [
@@ -32,12 +32,13 @@ def get_full_scan_history(limit=1000):
     LIMIT {limit}
     """
     try:
-        conn = st.connection("neon", type="sql")
-        df = conn.query(query, ttl="5m")
+        return _read_df(query)
     except Exception:
-        with sqlite3.connect(DB_NAME, timeout=15.0) as sqlite_conn:
-            df = pd.read_sql_query(query, sqlite_conn)
-    return df
+        try:
+            with sqlite3.connect(DB_NAME, timeout=15.0) as sqlite_conn:
+                return pd.read_sql_query(query, sqlite_conn)
+        except Exception:
+            return pd.DataFrame()
 
 @st.cache_data(ttl=1800)
 def get_unique_scan_timestamps():
@@ -48,20 +49,19 @@ def get_unique_scan_timestamps():
     ORDER BY scan_timestamp DESC
     LIMIT 50
     """
-
     try:
-        conn = st.connection("neon", type="sql")
-        df = conn.query(query, ttl="30m")
+        df = _read_df(query)
+        if df.empty:
+            raise ValueError("empty")
     except Exception:
-        fallback_query = """
-        SELECT DISTINCT scan_timestamp
-        FROM scan_history
-        WHERE scan_timestamp IS NOT NULL
-        ORDER BY scan_timestamp DESC
-        LIMIT 50
-        """
-        with sqlite3.connect(DB_NAME, timeout=15.0) as sqlite_conn:
-            df = pd.read_sql_query(fallback_query, sqlite_conn)
+        # Fallback: derive timestamps from scans table
+        try:
+            df = _read_df(
+                "SELECT timestamp AS scan_timestamp FROM scans "
+                "WHERE status='Completed' ORDER BY timestamp DESC LIMIT 50"
+            )
+        except Exception:
+            pass
 
     if df.empty:
         return []
@@ -72,27 +72,31 @@ def get_unique_scan_timestamps():
 
 @st.cache_data(ttl=1800)
 def get_scan_data_for_timestamp(selected_timestamp):
-    query = """
-    SELECT *
-    FROM scan_history_details
-    WHERE scan_timestamp = :ts
-    ORDER BY conviction_score DESC
-    """
-    params = {"ts": selected_timestamp}
-
     try:
-        conn = st.connection("neon", type="sql")
-        raw_df = conn.query(query, params=params, ttl="30m")
+        raw_df = _read_df(
+            """
+            SELECT * FROM scan_history_details
+            WHERE scan_timestamp = :ts
+            ORDER BY conviction_score DESC
+            """,
+            params={"ts": selected_timestamp},
+        )
     except Exception:
-        sqlite_query = """
-        SELECT d.*, s.timestamp AS scan_timestamp_fallback
-        FROM scan_history_details d
-        LEFT JOIN scans s ON d.scan_id = s.scan_id
-        WHERE COALESCE(d.scan_timestamp, s.timestamp) = ?
-        ORDER BY d.conviction_score DESC
-        """
-        with sqlite3.connect(DB_NAME, timeout=15.0) as sqlite_conn:
-            raw_df = pd.read_sql_query(sqlite_query, sqlite_conn, params=(selected_timestamp,))
+        try:
+            with sqlite3.connect(DB_NAME, timeout=15.0) as sqlite_conn:
+                raw_df = pd.read_sql_query(
+                    """
+                    SELECT d.*, s.timestamp AS scan_timestamp_fallback
+                    FROM scan_history_details d
+                    LEFT JOIN scans s ON d.scan_id = s.scan_id
+                    WHERE COALESCE(d.scan_timestamp, s.timestamp) = ?
+                    ORDER BY d.conviction_score DESC
+                    """,
+                    sqlite_conn,
+                    params=(selected_timestamp,),
+                )
+        except Exception:
+            return pd.DataFrame()
 
     if raw_df.empty:
         return pd.DataFrame()
