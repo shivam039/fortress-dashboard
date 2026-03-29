@@ -6,7 +6,7 @@ import sqlite3
 import time
 import random
 from datetime import datetime
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
 import streamlit as st
@@ -120,7 +120,7 @@ def get_table_name_from_universe(u):
     retry=retry_if_exception(_should_retry_db_error),
     reraise=True,
 )
-def _exec(sql: str, params: dict[str, Any] | None = None):
+def _exec(sql: str, params: Optional[Dict[str, Any]] = None):
     if _can_use_neon():
         engine = get_db_engine()
         with engine.begin() as conn:
@@ -137,7 +137,7 @@ def _exec(sql: str, params: dict[str, Any] | None = None):
     retry=retry_if_exception(_should_retry_db_error),
     reraise=True,
 )
-def _read_df_cached(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
+def _read_df_cached(sql: str, params: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
     """Cached read for standard queries (default 5m TTL)."""
     engine = get_db_engine()
     with engine.connect() as conn:
@@ -150,14 +150,14 @@ def _read_df_cached(sql: str, params: dict[str, Any] | None = None) -> pd.DataFr
     retry=retry_if_exception(_should_retry_db_error),
     reraise=True,
 )
-def _read_df_uncached(sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
+def _read_df_uncached(sql: str, params: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
     """Direct read for schema checks and fresh data."""
     engine = get_db_engine()
     with engine.connect() as conn:
         return pd.read_sql_query(text(sql), conn, params=params or {})
 
 
-def _read_df(sql: str, params: dict[str, Any] | None = None, ttl: str | None = None) -> pd.DataFrame:
+def _read_df(sql: str, params: Optional[Dict[str, Any]] = None, ttl: Optional[str] = None) -> pd.DataFrame:
     if _can_use_neon():
         # Dispatch based on TTL
         use_cache = True
@@ -424,7 +424,7 @@ def _ensure_ohlcv_cache_neon():
         )
     """)
 
-def fetch_ohlcv_cache(symbol: str, period: str = "5y", max_age_hours: int = 20) -> "pd.DataFrame | None":
+def fetch_ohlcv_cache(symbol: str, period: str = "5y", max_age_hours: int = 20) -> Optional[pd.DataFrame]:
     """Return a DataFrame from Neon cache if fresh, else None."""
     if not _can_use_neon():
         return None
