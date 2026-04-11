@@ -2,7 +2,7 @@
  * Optimized fetch utility for proxying requests to the backend with timeout and retries.
  */
 
-export const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || 
+export const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || process.env.BACKEND_URL ||
   (process.env.NODE_ENV === 'production'
     ? 'https://shivam039-dev-fortress-engine.hf.space'
     : 'http://localhost:8000');
