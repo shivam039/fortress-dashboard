@@ -12,11 +12,34 @@ export async function GET(request: NextRequest) {
     const url = limit
       ? `${BACKEND_URL}/api/mf-analysis?limit=${limit}`
       : `${BACKEND_URL}/api/mf-analysis`;
+    
+    console.log(`[MFAnalysis] Fetching from: ${url}`);
 
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      timeout: 10000,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    console.log(`[MFAnalysis] Response status: ${response.status}`);
+    
+    if (!response.ok) {
+      console.error(`[MFAnalysis] Backend returned status ${response.status}`);
+      return NextResponse.json(
+        { error: `Backend error: ${response.status}` },
+        { status: 502 }
+      );
+    }
+    
     const data = await response.json();
+    console.log(`[MFAnalysis] Success`);
     return NextResponse.json(data);
   } catch (error) {
-    return NextResponse.json({ error: 'Backend unavailable' }, { status: 500 });
+    console.error(`[MFAnalysis] Error:`, error instanceof Error ? error.message : String(error));
+    return NextResponse.json(
+      { error: 'Backend unavailable', details: error instanceof Error ? error.message : String(error) },
+      { status: 502 }
+    );
   }
 }

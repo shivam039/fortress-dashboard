@@ -6,10 +6,33 @@ const BACKEND_URL = process.env.NODE_ENV === 'production'
 
 export async function GET() {
   try {
-    const response = await fetch(`${BACKEND_URL}/api/health`);
+    console.log(`[Health] Fetching from: ${BACKEND_URL}/api/health`);
+    
+    const response = await fetch(`${BACKEND_URL}/api/health`, {
+      timeout: 10000,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    console.log(`[Health] Response status: ${response.status}`);
+    
+    if (!response.ok) {
+      console.error(`[Health] Backend returned status ${response.status}`);
+      return NextResponse.json(
+        { error: `Backend error: ${response.status}` },
+        { status: 502 }
+      );
+    }
+    
     const data = await response.json();
+    console.log(`[Health] Success:`, data);
     return NextResponse.json(data);
   } catch (error) {
-    return NextResponse.json({ error: 'Backend unavailable' }, { status: 500 });
+    console.error(`[Health] Error:`, error instanceof Error ? error.message : String(error));
+    return NextResponse.json(
+      { error: 'Backend unavailable', details: error instanceof Error ? error.message : String(error) },
+      { status: 502 }
+    );
   }
 }
