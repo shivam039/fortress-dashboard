@@ -1,45 +1,44 @@
 import { NextRequest, NextResponse } from 'next/server';
-
-const BACKEND_URL = process.env.NODE_ENV === 'production'
-  ? 'https://shivam039-dev-fortress-engine.hf.space'
-  : 'http://localhost:8000';
+import { fetchWithRetry, BACKEND_URL } from '@/lib/api';
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const limit = searchParams.get('limit');
-
-    const url = limit
-      ? `${BACKEND_URL}/api/mf-analysis?limit=${limit}`
-      : `${BACKEND_URL}/api/mf-analysis`;
     
-    console.log(`[MFAnalysis] Fetching from: ${url}`);
+    const endpoint = limit 
+      ? `/api/mf-analysis?limit=${limit}` 
+      : `/api/mf-analysis`;
+    const url = `${BACKEND_URL}${endpoint}`;
 
-    const response = await fetch(url, {
-      timeout: 10000,
+    console.log(`[API Proxy] MF Analysis GET: ${url}`);
+
+    const response = await fetchWithRetry(url, {
       headers: {
-        'Content-Type': 'application/json',
+        'Accept': 'application/json',
       },
     });
-    
-    console.log(`[MFAnalysis] Response status: ${response.status}`);
-    
+
     if (!response.ok) {
-      console.error(`[MFAnalysis] Backend returned status ${response.status}`);
+      const errorText = await response.text();
+      console.error(`[API Proxy] Backend error (${response.status}): ${errorText}`);
       return NextResponse.json(
-        { error: `Backend error: ${response.status}` },
+        { error: 'Backend error', status: response.status, details: errorText },
         { status: 502 }
       );
     }
-    
+
     const data = await response.json();
-    console.log(`[MFAnalysis] Success`);
     return NextResponse.json(data);
-  } catch (error) {
-    console.error(`[MFAnalysis] Error:`, error instanceof Error ? error.message : String(error));
+  } catch (error: any) {
+    console.error(`[API Proxy] Fatal error fetching MF analysis:`, error.message || error);
     return NextResponse.json(
-      { error: 'Backend unavailable', details: error instanceof Error ? error.message : String(error) },
-      { status: 502 }
+      { 
+        error: 'Backend unavailable', 
+        details: error.message || 'Network error or timeout',
+        hint: 'Check if the Hugging Face space is sleeping or down.'
+      },
+      { status: 503 }
     );
   }
 }
