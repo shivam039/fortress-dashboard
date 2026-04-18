@@ -1,4 +1,5 @@
 print("Loading utils.db ...")
+import functools
 import json
 import logging
 import os
@@ -85,14 +86,19 @@ def _should_retry_db_error(exc: Exception) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=1)
 def _can_use_neon() -> bool:
     if _sqlite_only_mode():
         return False
     try:
-        # Verify configuration and connectivity
+        # Verify configuration is present before trying to connect.
         _ = _get_neon_url()
-        # Optional: We could test connection here, but lazy loading is often better.
-        # However, to maintain existing behavior of fallback if connection fails:
+    except Exception as exc:
+        logger.info("Neon unavailable, falling back to SQLite: %s", exc)
+        return False
+
+    try:
+        # Lazy connectivity check; cache the result to avoid repeated log spam.
         engine = get_db_engine()
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))

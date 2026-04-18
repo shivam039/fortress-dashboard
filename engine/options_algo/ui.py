@@ -37,7 +37,7 @@ def render(broker_choice="Zerodha"):
         return
 
     chain_df = chain_df.fillna(0)
-    st.dataframe(chain_df[["Strike", "Type", "IV", "Delta", "OI", "Premium"]], use_container_width=True)
+    st.dataframe(chain_df[["Strike", "Type", "IV", "Delta", "OI", "Premium"]], width="stretch")
     st.download_button("⬇️ Export Options CSV", chain_df.to_csv(index=False).encode("utf-8"), "options_chain.csv", "text/csv")
 
     lots = max(1, int((risk_pct / 100) * 100))
@@ -49,7 +49,7 @@ def render(broker_choice="Zerodha"):
     strat_df = scan_strategies(chain_df, oi_threshold=oi_threshold)
     if not strat_df.empty:
         st.subheader("Strategy Scanner")
-        st.dataframe(strat_df, use_container_width=True)
+        st.dataframe(strat_df, width="stretch")
         picked = st.selectbox("Payoff strategy", strat_df["Strategy"].tolist())
         p = float(strat_df[strat_df["Strategy"] == picked]["Premium"].iloc[0])
         grid = np.linspace(spot * 0.9, spot * 1.1, 120)
@@ -57,7 +57,7 @@ def render(broker_choice="Zerodha"):
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=grid, y=pnl, mode="lines", name=picked))
         fig.update_layout(title="Strategy Payoff", xaxis_title="Underlying", yaxis_title="P&L")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     try:
         scan_id = register_scan(datetime.now().strftime("%Y-%m-%d %H:%M:%S"), universe=underlying, scan_type="OPTIONS", status="Completed")
@@ -68,4 +68,4 @@ def render(broker_choice="Zerodha"):
 
     if debug_mode:
         st.write({"underlying": underlying, "expiry": expiry, "spot": spot})
-        st.dataframe(chain_df, use_container_width=True)
+        st.dataframe(chain_df, width="stretch")
