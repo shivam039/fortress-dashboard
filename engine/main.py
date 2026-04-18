@@ -85,16 +85,23 @@ def get_universes():
 
 @app.post("/api/scan")
 async def run_scan(req: ScanRequest):
+    from stock_scanner.pulse import get_current_regime
+
     tickers = TICKER_GROUPS.get(req.universe)
     if not tickers:
         raise HTTPException(status_code=404, detail="Universe not found")
-    
-    # Simple synchronous scan for now (as in Streamlit version)
+
+    # ── Fetch live market regime ONCE for the entire scan ──────────────────────
+    try:
+        regime_data = get_current_regime()
+        logger.info(f"Scan regime: {regime_data['Market_Regime']} (x{regime_data['Regime_Multiplier']})")
+    except Exception as e:
+        logger.warning(f"Regime fetch failed, defaulting to Range: {e}")
+        regime_data = {"Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0}
+
     results = []
-    
-    # Batch download to speed up
     batch_data = get_stock_data(tickers, period="1y", interval="1d", group_by="ticker")
-    
+
     for ticker in tickers:
         try:
             hist = batch_data[ticker].dropna() if len(tickers) > 1 else batch_data.dropna()
@@ -102,19 +109,20 @@ async def run_scan(req: ScanRequest):
                 res = check_institutional_fortress(
                     ticker,
                     hist,
-                    None, # tkr_obj not strictly used for core logic if hist is provided
+                    None,
                     req.portfolio_val,
                     req.risk_pct,
-                    selected_universe=req.universe
+                    selected_universe=req.universe,
+                    regime_data=regime_data,          # ← live regime passed
                 )
                 if res:
                     results.append(res)
         except Exception as e:
-            print(f"Error scanning {ticker}: {e}")
-            
+            logger.warning(f"Error scanning {ticker}: {e}")
+
     if not results:
         return {"results": [], "summary": "No tickers met criteria"}
-    
+
     df = pd.DataFrame(results)
     scoring_config = DEFAULT_SCORING_CONFIG.copy()
     scoring_config.update({
@@ -122,16 +130,18 @@ async def run_scan(req: ScanRequest):
         "liquidity_cr_min": req.liquidity_cr_min,
         "market_cap_cr_min": req.market_cap_cr_min,
         "price_min": req.price_min,
+        "regime": regime_data,                        # ← live regime for apply_advanced_scoring
     })
     if req.weights:
         scoring_config["weights"] = req.weights
-        
+
     df = apply_advanced_scoring(df, scoring_config)
-    
+
     # Generate action links
     df["Actions"] = df.apply(lambda row: generate_action_link(row, req.broker), axis=1)
-    
+
     return df.to_dict(orient="records")
+
 
 @app.get("/api/sector-pulse")
 async def get_sector_pulse(universe: str = "Nifty 50"):

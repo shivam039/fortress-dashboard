@@ -37,8 +37,10 @@ DEFAULT_SCORING_CONFIG = {
 }
 
 REGIME_LABELS = {
+    "Strong Bull": "🟢🟢 Strong Bull",
     "Bull": "🟢 Bull",
     "Range": "🟡 Range",
+    "Caution": "🟠 Caution",
     "Bear": "🔴 Bear",
 }
 
@@ -292,7 +294,8 @@ def apply_advanced_scoring(df, scoring_config=None):
         conviction_z = conviction_raw.groupby(df["Sector"]).transform(_sector_zscore).fillna(0.0)
         df["Sector_RSI_Z"] = rsi_z.round(3)
         df["Sector_Conviction_Z"] = conviction_z.round(3)
-        df["Context_Raw"] += ((rsi_z + conviction_z) * 5.0)
+        # Clip z-scores to ±2σ to prevent outliers from distorting cross-sector ranking
+        df["Context_Raw"] += ((rsi_z.clip(-2, 2) + conviction_z.clip(-2, 2)) * 5.0)
 
     # Normalize category sub-scores within scan universe
     df["Technical_Score"] = _normalize_series(df.get("Technical_Raw", 50)).round(2)
@@ -300,14 +303,8 @@ def apply_advanced_scoring(df, scoring_config=None):
     df["Sentiment_Score"] = _normalize_series(df.get("Sentiment_Raw", 50)).round(2)
     df["Context_Score"] = _normalize_series(df.get("Context_Raw", 50)).round(2)
 
-    # Why: RSI tiers reduce false positives by rewarding healthy momentum instead of exhaustion.
-    rsi = pd.to_numeric(df.get("RSI", np.nan), errors="coerce")
-    rsi_bonus = np.select(
-        [rsi.between(45, 65, inclusive="both"), rsi.between(40, 72, inclusive="both")],
-        [15, 8],
-        default=0,
-    )
-    df["Technical_Score"] = (df["Technical_Score"] + rsi_bonus).clip(lower=0, upper=100)
+    # RSI influence flows through technical_raw → Technical_Score normalization.
+    # Post-normalization RSI bonus removed to prevent double-counting with check_institutional_fortress.
 
     # RS ranking and top quartile bonus
     rs_base = pd.to_numeric(df.get("RS_6M", df.get("RS_Composite", np.nan)), errors="coerce")
@@ -522,9 +519,6 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             if perfect_alignment:
                 conviction += 15 # True alignment reward
                 
-            if 48<=rsi<=62: conviction+=20
-            elif 40<=rsi<=72: conviction+=10
-            
             # ADX trend strength filter
             if adx_val > 25:
                 conviction += 12
@@ -553,11 +547,15 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         except:
             rs_score = 0.0
 
-        if rs_score > 0:
-            conviction += 15
+        # Tiered RS conviction: magnitude of outperformance matters
+        if rs_score > 5:
+            conviction += 18   # Strong outperformer vs Nifty
+        elif rs_score > 0:
+            conviction += 8    # Mild outperformer
+        elif rs_score < -3:
+            conviction -= 10   # Meaningful underperformer
 
-        # Multi-horizon RS
-        benchmark_close = _get_benchmark_series(NIFTY_SYMBOL)
+        # Multi-horizon RS — reuse benchmark_close already fetched above
         rs_3m = _return_ratio(close, 63) / max(_return_ratio(benchmark_close, 63), 1e-6)
         rs_6m = _return_ratio(close, 126) / max(_return_ratio(benchmark_close, 126), 1e-6)
         rs_12m = _return_ratio(close, 252) / max(_return_ratio(benchmark_close, 252), 1e-6)
@@ -576,10 +574,13 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         # Volatility contraction (VCP-like)
         volume_dry_up = _safe_float(volume.tail(5).mean()) < avg_volume_20
         is_coiling = atr > 0 and atr100 > 0 and atr < (atr100 * 0.6) and volume_dry_up
-        if is_coiling:
-            conviction += 20 # True squeeze reward
+        # VCP bonus requires uptrend context + not too far from highs to be actionable
+        if is_coiling and tech_base and distance_to_high_pct < 30:
+            conviction += 20  # VCP: coiling in uptrend near highs = high-quality signal
+        elif is_coiling:
+            conviction += 5   # Coiling without trend context
         elif atr > 0 and atr100 > 0 and atr < (atr100 * 0.8):
-            conviction += 5 # Mild squeeze
+            conviction += 3   # Mild volatility contraction only
 
         # Mean reversion / over-extension guard
         extension_pct = ((price - ema50) / ema50) * 100 if ema50 > 0 else 0.0
