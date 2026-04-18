@@ -55,7 +55,8 @@ def render(broker_choice="Zerodha"):
         # Find highly recommended
         recs = strat_df[strat_df["Recommendation"] == "⭐ Highly Recommended"]
         if not recs.empty:
-            st.success(f"**Top Pick For Today:** {recs.iloc[0]['Strategy']} | **Why?** Prevailing ATM IV is {recs.iloc[0]['IV']*100:.1f}%")
+            best = recs.iloc[0]
+            st.success(f"**Top Pick:** {best['Strategy']} | **Entry:** {best['Entry']} | **Target:** {best['Target Profit']} | **SL:** {best['Stop Loss']}")
             
         st.dataframe(strat_df, width="stretch")
         picked = st.selectbox("Analyze Payoff strategy", strat_df["Strategy"].tolist())

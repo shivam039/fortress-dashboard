@@ -177,12 +177,18 @@ def scan_strategies(chain_df: pd.DataFrame, oi_threshold: int = 10000):
             "Strategy": "Short Straddle", "Category": "Neutral / Theta Decay",
             "Recommendation": "⭐ Highly Recommended",
             "Legs": f"Sell {atm_strike} CE & PE",
+            "Entry": round(straddle_premium, 2),
+            "Target Profit": f"Collect {round(straddle_premium * 0.50, 2)} (50% decay)",
+            "Stop Loss": f"Exit at {round(straddle_premium * 1.30, 2)} (+30% swell)",
             "Max Risk": "Unlimited", "Premium": straddle_premium, "IV": atm_iv
         })
         strategies.append({
             "Strategy": "Short Strangle", "Category": "Wide Neutral",
             "Recommendation": "Recommended",
             "Legs": f"Sell {strangle_pe['Strike'].iloc[0]} PE & {strangle_ce['Strike'].iloc[0]} CE",
+            "Entry": round(strangle_premium, 2),
+            "Target Profit": f"Collect {round(strangle_premium * 0.50, 2)} (50% decay)",
+            "Stop Loss": f"Exit at {round(strangle_premium * 1.30, 2)} (+30% swell)",
             "Max Risk": "Unlimited", "Premium": strangle_premium, "IV": atm_iv
         })
     else:
@@ -190,18 +196,27 @@ def scan_strategies(chain_df: pd.DataFrame, oi_threshold: int = 10000):
             "Strategy": "Long Straddle", "Category": "Volatile Breakout",
             "Recommendation": "⭐ Highly Recommended",
             "Legs": f"Buy {atm_strike} CE & PE",
+            "Entry": round(straddle_premium, 2),
+            "Target Profit": f"Sell at {round(straddle_premium * 1.50, 2)} (+50% spike)",
+            "Stop Loss": f"Exit at {round(straddle_premium * 0.50, 2)} (-50% decay)",
             "Max Risk": f"Limited to {straddle_premium:.2f}", "Premium": -straddle_premium, "IV": atm_iv
         })
         strategies.append({
             "Strategy": "Long Strangle", "Category": "Directional Expansion",
             "Recommendation": "Recommended",
             "Legs": f"Buy {strangle_pe['Strike'].iloc[0]} PE & {strangle_ce['Strike'].iloc[0]} CE",
+            "Entry": round(strangle_premium, 2),
+            "Target Profit": f"Sell at {round(strangle_premium * 1.50, 2)} (+50% spike)",
+            "Stop Loss": f"Exit at {round(strangle_premium * 0.50, 2)} (-50% decay)",
             "Max Risk": f"Limited to {strangle_premium:.2f}", "Premium": -strangle_premium, "IV": atm_iv
         })
         strategies.append({
             "Strategy": "Short Straddle", "Category": "Neutral / Theta Decay",
             "Recommendation": "Not Recommended (Low IV)",
             "Legs": f"Sell {atm_strike} CE & PE",
+            "Entry": round(straddle_premium, 2),
+            "Target Profit": f"Collect {round(straddle_premium * 0.50, 2)} (50% decay)",
+            "Stop Loss": f"Exit at {round(straddle_premium * 1.30, 2)} (+30% swell)",
             "Max Risk": "Unlimited", "Premium": straddle_premium, "IV": atm_iv
         })
 
