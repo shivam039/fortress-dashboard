@@ -13,7 +13,7 @@ sys.path.insert(0, ROOT_DIR)
 
 # Force the engine utils package to load from engine/utils, avoiding top-level namespace conflicts.
 utils_init = os.path.join(ENGINE_DIR, "utils", "__init__.py")
-if os.path.exists(utils_init):
+if "utils" not in sys.modules and os.path.exists(utils_init):
     spec = importlib.util.spec_from_file_location(
         "utils", 
         utils_init, 
@@ -25,7 +25,7 @@ if os.path.exists(utils_init):
 
 # Preload fortress_config dynamically to avoid Python 3.13 concurrent path import KeyErrors
 fc_path = os.path.join(ENGINE_DIR, "fortress_config.py")
-if os.path.exists(fc_path):
+if "fortress_config" not in sys.modules and os.path.exists(fc_path):
     spec_fc = importlib.util.spec_from_file_location("fortress_config", fc_path)
     mod_fc = importlib.util.module_from_spec(spec_fc)
     sys.modules["fortress_config"] = mod_fc
