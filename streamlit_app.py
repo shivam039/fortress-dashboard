@@ -97,7 +97,7 @@ def _authenticate(username: str, password: str) -> bool:
 def _sync_user_profile(username: str) -> Dict[str, Any]:
     from utils.db import get_app_user, upsert_app_user
 
-    user_config = _configured_users()[username]
+    user_config = _configured_users().get(username, {})
     upsert_app_user(
         username=username,
         full_name=user_config.get("full_name", ""),
