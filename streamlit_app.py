@@ -11,17 +11,19 @@ LEGACY_DIR = os.path.join(ENGINE_DIR, "legacy")
 sys.path.insert(0, ENGINE_DIR)
 sys.path.insert(0, ROOT_DIR)
 
-# Force the engine utils package to load from engine/utils, avoiding top-level namespace conflicts.
-utils_init = os.path.join(ENGINE_DIR, "utils", "__init__.py")
-if "utils" not in sys.modules and os.path.exists(utils_init):
-    spec = importlib.util.spec_from_file_location(
-        "utils", 
-        utils_init, 
-        submodule_search_locations=[os.path.dirname(utils_init)]
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["utils"] = module
-    spec.loader.exec_module(module)
+# Force all engine packages to load cleanly to avoid Python 3.13 Streamlit concurrent reload destruction
+engine_pkgs = ["utils", "mf_lab", "stock_scanner", "options_algo", "commodities"]
+for pkg in engine_pkgs:
+    pkg_init = os.path.join(ENGINE_DIR, pkg, "__init__.py")
+    if pkg not in sys.modules and os.path.exists(pkg_init):
+        spec = importlib.util.spec_from_file_location(
+            pkg, 
+            pkg_init, 
+            submodule_search_locations=[os.path.dirname(pkg_init)]
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[pkg] = module
+        spec.loader.exec_module(module)
 
 # Preload fortress_config dynamically to avoid Python 3.13 concurrent path import KeyErrors
 fc_path = os.path.join(ENGINE_DIR, "fortress_config.py")
