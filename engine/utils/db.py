@@ -664,6 +664,7 @@ def _ensure_fortress_orders_neon():
 
 def init_db():
     if _can_use_neon():
+        # Postgres / Neon Path
         _ensure_app_users_neon()
         _ensure_user_broker_connections_neon()
         _ensure_fortress_orders_neon()
@@ -674,35 +675,22 @@ def init_db():
         _ensure_options_chain_cache_neon()
         _ensure_mf_scheme_catalog_neon()
         
-        # Schema Migrations (Postgres)
         try:
             _exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS password_hash TEXT")
-        except Exception:
-            pass
+        except Exception: pass
         try:
             _exec("ALTER TABLE user_broker_connections ADD COLUMN IF NOT EXISTS broker_client_id TEXT")
-        except Exception:
-            pass
+        except Exception: pass
             
         try:
             _ensure_mf_scheme_batches_neon()
         except Exception as e:
             logger.warning("Failed to create mf_scheme_batches table: %s", e)
-    else:
-        # Schema Migrations (SQLite fallback)
-        with _sqlite_connection() as conn:
-            try:
-                conn.execute("ALTER TABLE app_users ADD COLUMN password_hash TEXT")
-            except Exception:
-                pass  # Likely already exists
-            try:
-                conn.execute("ALTER TABLE user_broker_connections ADD COLUMN broker_client_id TEXT")
-            except Exception:
-                pass
+            
         try:
             _ensure_mf_nav_cache_neon()
-        except Exception:
-            pass  # table creation is best-effort
+        except Exception: pass
+
         _exec("""
             CREATE TABLE IF NOT EXISTS mf_scan_results (
                 id          BIGSERIAL PRIMARY KEY,
@@ -714,9 +702,8 @@ def init_db():
                 UNIQUE (scheme_code, scan_date)
             )
         """)
-        _exec("CREATE INDEX IF NOT EXISTS idx_mf_scan_date ON mf_scan_results (scan_date DESC)")
-        _exec(
-            """
+        
+        _exec("""
             CREATE TABLE IF NOT EXISTS scans (
                 scan_id BIGSERIAL PRIMARY KEY,
                 timestamp TIMESTAMPTZ NOT NULL,
@@ -724,10 +711,9 @@ def init_db():
                 scan_type TEXT,
                 status TEXT
             )
-            """
-        )
-        _exec(
-            """
+        """)
+        
+        _exec("""
             CREATE TABLE IF NOT EXISTS scan_entries (
                 id BIGSERIAL PRIMARY KEY,
                 scan_id BIGINT,
@@ -738,30 +724,22 @@ def init_db():
                 price NUMERIC,
                 integrity_label TEXT,
                 drift_status TEXT,
-                drift_message TEXT
+                drift_message TEXT,
+                UNIQUE (scan_id, symbol, scheme_code)
             )
-            """
-        )
-        _exec(
-            """
+        """)
+        
+        _exec("""
             CREATE TABLE IF NOT EXISTS fund_metrics (
                 id BIGSERIAL PRIMARY KEY,
                 scan_id BIGINT,
                 symbol TEXT,
-                alpha NUMERIC,
-                beta NUMERIC,
-                te NUMERIC,
-                sortino NUMERIC,
-                max_dd NUMERIC,
-                win_rate NUMERIC,
-                upside NUMERIC,
-                downside NUMERIC,
-                cagr NUMERIC
+                alpha NUMERIC, beta NUMERIC, te NUMERIC, sortino NUMERIC,
+                max_dd NUMERIC, win_rate NUMERIC, upside NUMERIC, downside NUMERIC, cagr NUMERIC
             )
-            """
-        )
-        _exec(
-            """
+        """)
+
+        _exec("""
             CREATE TABLE IF NOT EXISTS alerts (
                 id BIGSERIAL PRIMARY KEY,
                 scan_id BIGINT,
@@ -771,20 +749,18 @@ def init_db():
                 message TEXT,
                 timestamp TIMESTAMPTZ
             )
-            """
-        )
-        _exec(
-            """
+        """)
+
+        _exec("""
             CREATE TABLE IF NOT EXISTS audit_logs (
                 timestamp TIMESTAMPTZ,
                 action TEXT,
                 universe TEXT,
                 details TEXT
             )
-            """
-        )
-        _exec(
-            """
+        """)
+
+        _exec("""
             CREATE TABLE IF NOT EXISTS algo_trade_log (
                 id BIGSERIAL PRIMARY KEY,
                 timestamp TIMESTAMPTZ NOT NULL,
@@ -794,169 +770,95 @@ def init_db():
                 details TEXT,
                 status TEXT
             )
-            """
-        )
+        """)
         return
 
+    # SQLite / Fallback Path
     with _sqlite_connection() as conn:
         c = conn.cursor()
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS app_users (
-                user_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                full_name TEXT,
-                email TEXT,
-                phone TEXT,
-                account_status TEXT DEFAULT 'Active',
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                last_login_at TEXT
-            )"""
-        )
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS user_broker_connections (
-                connection_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                broker_name TEXT NOT NULL,
-                access_token_encrypted TEXT,
-                refresh_token_encrypted TEXT,
-                expires_at TEXT,
-                connected_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                is_active INTEGER DEFAULT 1,
-                metadata_json TEXT,
-                UNIQUE (user_id, broker_name)
-            )"""
-        )
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS fortress_orders (
-                order_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                symbol TEXT NOT NULL,
-                stock_name TEXT,
-                order_type TEXT NOT NULL,
-                quantity REAL NOT NULL,
-                price REAL,
-                status TEXT DEFAULT 'Pending',
-                broker_name TEXT,
-                broker_order_id TEXT,
-                notes TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )"""
-        )
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS scans (
-                scan_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                universe TEXT,
-                scan_type TEXT,
-                status TEXT
-            )"""
-        )
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS scan_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_id INTEGER,
-                symbol TEXT,
-                scheme_code TEXT,
-                category TEXT,
-                score REAL,
-                price REAL,
-                integrity_label TEXT,
-                drift_status TEXT,
-                drift_message TEXT
-            )"""
-        )
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS fund_metrics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_id INTEGER,
-                symbol TEXT,
-                alpha REAL,
-                beta REAL,
-                te REAL,
-                sortino REAL,
-                max_dd REAL,
-                win_rate REAL,
-                upside REAL,
-                downside REAL,
-                cagr REAL
-            )"""
-        )
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS alerts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_id INTEGER,
-                symbol TEXT,
-                alert_type TEXT,
-                severity TEXT,
-                message TEXT,
-                timestamp TEXT
-            )"""
-        )
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS benchmark_history (
-                ticker TEXT,
-                date TEXT,
-                close REAL,
-                ret REAL,
-                PRIMARY KEY (ticker, date)
-            )"""
-        )
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS scan_commodities (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_id INTEGER,
-                symbol TEXT,
-                global_price REAL,
-                local_price REAL,
-                usd_inr REAL,
-                parity_price REAL,
-                spread REAL,
-                arb_yield REAL,
-                action_label TEXT
-            )"""
-        )
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS algo_trade_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                strategy_name TEXT,
-                symbol TEXT,
-                action TEXT,
-                details TEXT,
-                status TEXT
-            )"""
-        )
-        c.execute("""CREATE TABLE IF NOT EXISTS audit_logs (timestamp TEXT, action TEXT, universe TEXT, details TEXT)""")
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS scan_history_details (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_id INTEGER,
-                symbol TEXT,
-                raw_data TEXT
-            )"""
-        )
-        # TEMP DISABLE SQLITE SCHEMA ALTER - waiting for _sqlite_has_column fix
-        try:
-            # if not _sqlite_has_column(conn, "scan_history_details", "raw_data"):
-            #    c.execute("ALTER TABLE scan_history_details ADD COLUMN raw_data TEXT")
-            pass
-        except Exception as e:
-            logger.warning(f"SQLite column check/add failed: {e}")
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS scan_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                scan_timestamp TEXT,
-                symbol TEXT,
-                conviction_score REAL,
-                regime TEXT,
-                sub_scores TEXT,
-                raw_data TEXT
-            )"""
-        )
+        
+        # Identity & Auth
+        c.execute("""CREATE TABLE IF NOT EXISTS app_users (
+            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            full_name TEXT, email TEXT, phone TEXT, password_hash TEXT,
+            account_status TEXT DEFAULT 'Active',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            last_login_at TEXT
+        )""")
+        
+        c.execute("""CREATE TABLE IF NOT EXISTS user_broker_connections (
+            connection_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            broker_name TEXT NOT NULL,
+            broker_client_id TEXT,
+            access_token_encrypted TEXT,
+            refresh_token_encrypted TEXT,
+            expires_at TEXT,
+            connected_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            is_active INTEGER DEFAULT 1,
+            metadata_json TEXT,
+            UNIQUE (user_id, broker_name)
+        )""")
+
+        # Scans & Tracking
+        c.execute("""CREATE TABLE IF NOT EXISTS scans (
+            scan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            universe TEXT, scan_type TEXT, status TEXT
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS scan_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_id INTEGER,
+            symbol TEXT, scheme_code TEXT, category TEXT,
+            score REAL, price REAL,
+            integrity_label TEXT, drift_status TEXT, drift_message TEXT,
+            UNIQUE (scan_id, symbol, scheme_code)
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS mf_scan_results (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            scheme_code TEXT NOT NULL,
+            scheme_name TEXT,
+            scan_date   TEXT NOT NULL DEFAULT CURRENT_DATE,
+            result_json TEXT,
+            updated_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (scheme_code, scan_date)
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS algo_trade_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            strategy_name TEXT, symbol TEXT, action TEXT,
+            details TEXT, status TEXT
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS audit_logs (
+            timestamp TEXT, action TEXT, universe TEXT, details TEXT
+        )""")
+
+        c.execute("""CREATE TABLE IF NOT EXISTS scan_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scan_timestamp TEXT,
+            symbol TEXT,
+            conviction_score REAL,
+            regime TEXT,
+            sub_scores TEXT,
+            raw_data TEXT
+        )""")
+        
         c.execute("CREATE INDEX IF NOT EXISTS idx_scan_history_timestamp ON scan_history(scan_timestamp)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_scan_history_symbol ON scan_history(symbol)")
+        
+        # Migrations for existing DBs
+        try: c.execute("ALTER TABLE app_users ADD COLUMN password_hash TEXT")
+        except Exception: pass
+        try: c.execute("ALTER TABLE user_broker_connections ADD COLUMN broker_client_id TEXT")
+        except Exception: pass
+        
+        conn.commit()
 
 
 def _serialize_json(value: Optional[Dict[str, Any]]) -> str:
