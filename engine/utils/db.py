@@ -540,6 +540,30 @@ def upsert_options_chain_cache(symbol: str, expiry: str, chain_df: "pd.DataFrame
         logger.error("options_chain_cache upsert error %s/%s: %s", symbol, expiry, e)
 
 
+def _ensure_mf_scheme_catalog_neon():
+    """Create the MF scheme catalog table for monthly caching of 4000+ schemes."""
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS mf_scheme_catalog (
+            scheme_code TEXT PRIMARY KEY,
+            scheme_name TEXT NOT NULL,
+            category TEXT,
+            type TEXT,
+            subcategory TEXT,
+            amc_code TEXT,
+            amc_name TEXT,
+            isin_div_payout TEXT,
+            isin_div_reinvest TEXT,
+            isin_growth TEXT,
+            cached_date DATE DEFAULT CURRENT_DATE
+        )
+        """
+    )
+    _exec("CREATE INDEX IF NOT EXISTS idx_mf_scheme_type ON mf_scheme_catalog (type)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_mf_scheme_category ON mf_scheme_catalog (category)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_mf_scheme_cached_date ON mf_scheme_catalog (cached_date DESC)")
+
+
 def init_db():
     if _can_use_neon():
         _ensure_scan_history_table_neon()
@@ -547,6 +571,7 @@ def init_db():
         _ensure_ticker_metadata_neon()
         _ensure_ohlcv_cache_neon()
         _ensure_options_chain_cache_neon()
+        _ensure_mf_scheme_catalog_neon()
         try:
             _ensure_mf_nav_cache_neon()
         except Exception:

@@ -217,7 +217,7 @@ def _render_consistency_analysis():
         display_cols = [c for c in DISPLAY_COLS if c in filtered.columns]
         st.dataframe(
             filtered[display_cols].reset_index(drop=True),
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
         )
 
@@ -245,4 +245,4 @@ def _render_consistency_analysis():
 
     if debug_mode:
         st.markdown("### 🔍 Debug — Full Raw Cache")
-        st.dataframe(cached_df, use_container_width=True)
+        st.dataframe(cached_df, width='stretch')

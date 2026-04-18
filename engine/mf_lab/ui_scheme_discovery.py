@@ -88,7 +88,7 @@ def render_scheme_discovery_tab():
             breakdown_df = pd.DataFrame(breakdown_list)
             st.dataframe(
                 breakdown_df,
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "Type": st.column_config.TextColumn("Type"),
@@ -118,7 +118,7 @@ def render_scheme_discovery_tab():
         if display_format == "Table":
             st.dataframe(
                 type_schemes.sort_values("scheme_name"),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "scheme_name": st.column_config.TextColumn("Scheme Name"),
@@ -169,7 +169,7 @@ def render_scheme_discovery_tab():
             display_cols = ["scheme_name", "amc_name", "scheme_code", "category"]
             st.dataframe(
                 cat_schemes[display_cols].sort_values("scheme_name"),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "scheme_name": st.column_config.TextColumn("Scheme Name", width="large"),
@@ -211,7 +211,7 @@ def render_scheme_discovery_tab():
 
                 st.dataframe(
                     results.sort_values("scheme_name"),
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
                     column_config={
                         "scheme_name": st.column_config.TextColumn("Scheme Name", width="large"),

@@ -80,4 +80,9 @@ elif selected_view == "🤖 Options Algos":
         if debug_mode:
             st.exception(e)
 else:
-    history.ui.render()
+    try:
+        history.ui.render()
+    except Exception as e:
+        st.warning("History load failed - retry or check logs")
+        if debug_mode:
+            st.exception(e)

@@ -147,12 +147,18 @@ def classify_scheme_category(scheme_name: str) -> Dict[str, str]:
         return {"category": "Fund Of Funds", "type": "Other", "subcategory": "Other"}
 
 
-def _parse_scheme_list(raw_schemes: List[Dict]) -> List[Dict[str, str]]:
+def _parse_scheme_list(raw_schemes: List[Dict], direct_growth_only: bool = True) -> List[Dict[str, str]]:
     """
     Parse raw scheme list from mfapi.in and enrich with categorization.
+    Filters for Direct-Growth schemes by default (recommended for performance).
     Returns list of enriched scheme dicts.
     """
     enriched = []
+
+    # Keywords for categorization
+    equity_keywords = ["flexi", "multi", "large", "mid", "small", "focused", "value", "contra", "elss"]
+    debt_keywords = ["liquid", "gilt", "bond", "duration", "overnight", "corporate"]
+    all_keywords = equity_keywords + debt_keywords
 
     for scheme in raw_schemes:
         scheme_code = str(scheme.get("schemeCode", "")).strip()
@@ -160,6 +166,22 @@ def _parse_scheme_list(raw_schemes: List[Dict]) -> List[Dict[str, str]]:
 
         if not scheme_code or not scheme_name:
             continue
+
+        # ✓ FILTER: Only Direct-Growth schemes for performance
+        if direct_growth_only:
+            name_lower = scheme_name.lower()
+            
+            # Must have both "direct" and "growth"
+            if not ("direct" in name_lower and "growth" in name_lower):
+                continue
+            
+            # Must have at least one category keyword
+            if not any(kw in name_lower for kw in all_keywords):
+                continue
+            
+            # Exclude Regular and IDCW variants
+            if any(ex in name_lower for ex in ["regular", "idcw"]):
+                continue
 
         # Categorize
         cat_info = classify_scheme_category(scheme_name)
@@ -186,23 +208,24 @@ def _parse_scheme_list(raw_schemes: List[Dict]) -> List[Dict[str, str]]:
 
 def fetch_all_schemes_from_api(max_retries: int = 3) -> List[Dict]:
     """
-    Fetch ALL schemes (4000+) from mfapi.in.
+    Fetch Direct-Growth schemes from mfapi.in (~4000 schemes).
+    Filters automatically for Direct + Growth variants only.
     Includes rate-limiting and retry logic.
     """
     url = "https://api.mfapi.in/mf"
 
     for attempt in range(max_retries):
         try:
-            logger.info(f"Fetching all schemes from mfapi.in (attempt {attempt + 1}/{max_retries})...")
+            logger.info(f"Fetching scheme catalog from mfapi.in (attempt {attempt + 1}/{max_retries})...")
             resp = requests.get(url, timeout=API_TIMEOUT)
             resp.raise_for_status()
 
             raw_schemes = resp.json()
-            logger.info(f"✓ Fetched {len(raw_schemes)} raw schemes from API")
+            logger.info(f"✓ Downloaded {len(raw_schemes)} total schemes from API")
 
-            # Parse and enrich
-            enriched = _parse_scheme_list(raw_schemes)
-            logger.info(f"✓ Enriched {len(enriched)} schemes with categories")
+            # Parse and enrich (with Direct-Growth filtering)
+            enriched = _parse_scheme_list(raw_schemes, direct_growth_only=True)
+            logger.info(f"✓ Filtered to {len(enriched)} Direct-Growth schemes and categorized")
 
             return enriched
 
