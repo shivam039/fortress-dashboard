@@ -234,12 +234,23 @@ def _delete_account_dialog(username: str) -> None:
 
 
 def _get_active_broker_names(username: str) -> List[str]:
-    from utils.db import list_user_broker_connections
+    """Returns cached active broker names. Refreshes from DB only on first call per session or after invalidation."""
+    if "active_brokers_cache" not in st.session_state:
+        from utils.db import list_user_broker_connections
+        df = list_user_broker_connections(username)
+        st.session_state["brokers_df_cache"] = df
+        st.session_state["active_brokers_cache"] = (
+            df[df["is_active"].astype(bool)]["broker_name"].dropna().astype(str).tolist()
+            if not df.empty else []
+        )
+    return st.session_state["active_brokers_cache"]
 
-    df = list_user_broker_connections(username)
-    if df.empty:
-        return []
-    return df[df["is_active"].astype(bool)]["broker_name"].dropna().astype(str).tolist()
+
+def _invalidate_broker_cache() -> None:
+    """Call after any broker connect/disconnect to force a fresh fetch on next render."""
+    st.session_state.pop("active_brokers_cache", None)
+    st.session_state.pop("brokers_df_cache", None)
+
 
 
 def _render_profile_section(profile: Dict[str, Any]) -> None:
@@ -259,18 +270,16 @@ def _render_profile_section(profile: Dict[str, Any]) -> None:
 def _connect_broker_dialog(username: str):
     from utils.db import upsert_user_broker_connection
     st.write("Link your Zerodha or Dhan account by providing an access token. All tokens are encrypted before storage.")
-    
+
     with st.form("broker_connection_form", clear_on_submit=True):
         broker_name = st.selectbox("Broker", BROKER_OPTIONS)
         broker_client_id = st.text_input("Client ID / User ID", placeholder="e.g. AB1234 or DHAN_ID")
         access_token = st.text_area("Access Token", placeholder="Paste your permanent or session access token here...", height=120)
-        
         col1, col2 = st.columns(2)
         with col1:
              expires_on = st.text_input("Expiry (Optional)", placeholder="YYYY-MM-DD")
         with col2:
              refresh_token = st.text_input("Refresh Token (Optional)", type="password")
-             
         submitted = st.form_submit_button("💾 Save & Connect", type="primary", use_container_width=True)
 
     if submitted:
@@ -285,6 +294,7 @@ def _connect_broker_dialog(username: str):
                 refresh_token=refresh_token.strip(),
                 expires_at=expires_on.strip() or None,
             )
+            _invalidate_broker_cache()
             st.success(f"✅ {broker_name} connection saved successfully.")
             st.rerun()
 
@@ -324,6 +334,7 @@ def _broker_login_dialog(username: str) -> None:
                         broker_client_id=client_id.strip(),
                         access_token=request_token.strip(),
                     )
+                    _invalidate_broker_cache()
                     st.success("✅ Zerodha token saved! You can now use it for order placement.")
                     st.rerun()
                 else:
@@ -346,6 +357,7 @@ def _broker_login_dialog(username: str) -> None:
                     broker_client_id=client_id.strip(),
                     access_token=access_token.strip(),
                 )
+                _invalidate_broker_cache()
                 st.success("✅ Dhan token saved! You can now use it for order placement.")
                 st.rerun()
             else:
@@ -367,16 +379,20 @@ def _handle_broker_oauth_callback(username: str) -> None:
             broker_name="Zerodha",
             access_token=request_token,
         )
-        # Clear the query params to avoid re-processing on refresh
+        _invalidate_broker_cache()
         st.query_params.clear()
         st.rerun()
 
 
 def _render_broker_settings_section(username: str) -> None:
-    from utils.db import delete_user_broker_connection, list_user_broker_connections
+    from utils.db import delete_user_broker_connection
 
     st.markdown("### 🔑 Broker Connections")
-    brokers_df = list_user_broker_connections(username)
+    # Use cached brokers_df from session state if available
+    brokers_df = st.session_state.get("brokers_df_cache", pd.DataFrame())
+    if brokers_df.empty:
+        _get_active_broker_names(username)  # populates cache
+        brokers_df = st.session_state.get("brokers_df_cache", pd.DataFrame())
 
     btn_col1, btn_col2 = st.columns(2)
     with btn_col1:
@@ -398,9 +414,11 @@ def _render_broker_settings_section(username: str) -> None:
                 with col_btn:
                     if st.button("Delete", key=f"del_{row['broker_name']}", type="secondary", use_container_width=True):
                         delete_user_broker_connection(username, row['broker_name'])
+                        _invalidate_broker_cache()
                         st.rerun()
     else:
         st.caption("No broker connections yet. Use the buttons above to connect.")
+
 
 
 def _render_mf_job_controls(api_url: str, key_prefix: str, sidebar: bool = False) -> None:
@@ -488,6 +506,7 @@ def _render_sidebar_module_filters(module: str, username: str, api_url: str) -> 
 
 
 
+@st.cache_data(ttl=300)
 def _fetch_universes(api_url: str) -> List[str]:
     try:
         response = requests.get(f"{api_url.rstrip('/')}/api/universes", timeout=10)
@@ -495,8 +514,8 @@ def _fetch_universes(api_url: str) -> List[str]:
         return response.json()
     except Exception:
         from fortress_config import TICKER_GROUPS
-
         return list(TICKER_GROUPS.keys())
+
 
 
 def _build_order_link(symbol: str, quantity: float, price: float, broker_name: str) -> str:
@@ -819,7 +838,12 @@ def _render_authenticated_app() -> None:
 
 
 _bootstrap_session_state()
-init_db()
+
+# Guard init_db() so it only runs ONCE per browser session, not on every rerender.
+# Without this guard, 15+ SQL statements fire on every single page interaction.
+if not st.session_state.get("_db_initialized"):
+    init_db()
+    st.session_state["_db_initialized"] = True
 
 if not st.session_state["logged_in"]:
     _render_login_screen()
