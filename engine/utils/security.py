@@ -37,3 +37,10 @@ def decrypt_token(token_encrypted: str) -> str:
     if not token_encrypted:
         return ""
     return get_fernet().decrypt(token_encrypted.encode("utf-8")).decode("utf-8")
+
+
+def hash_password(password: str) -> str:
+    """Simple SHA-256 hashing for user passwords."""
+    if not password:
+        return ""
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()

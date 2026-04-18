@@ -604,6 +604,7 @@ def _ensure_app_users_neon():
             full_name TEXT,
             email TEXT,
             phone TEXT,
+            password_hash TEXT,
             account_status TEXT DEFAULT 'Active',
             created_at TIMESTAMPTZ DEFAULT NOW(),
             last_login_at TIMESTAMPTZ
@@ -951,7 +952,16 @@ def _deserialize_json(value: Any) -> Dict[str, Any]:
     return {}
 
 
-def upsert_app_user(username: str, full_name: str = "", email: str = "", phone: str = "", account_status: str = "Active"):
+def upsert_app_user(
+    username: str,
+    full_name: str = "",
+    email: str = "",
+    phone: str = "",
+    account_status: str = "Active",
+    password: Optional[str] = None,
+):
+    from utils.security import hash_password
+
     if _can_use_neon():
         _ensure_app_users_neon()
     else:
@@ -963,43 +973,51 @@ def upsert_app_user(username: str, full_name: str = "", email: str = "", phone: 
                     full_name TEXT,
                     email TEXT,
                     phone TEXT,
+                    password_hash TEXT,
                     account_status TEXT DEFAULT 'Active',
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     last_login_at TEXT
                 )"""
             )
+
     payload = {
         "username": username.strip(),
         "full_name": full_name,
         "email": email,
         "phone": phone,
         "account_status": account_status,
+        "password_hash": hash_password(password) if password else None,
     }
+
     if _can_use_neon():
+        password_sql = ", password_hash = :password_hash" if password else ""
         _exec(
-            """
-            INSERT INTO app_users (username, full_name, email, phone, account_status, created_at)
-            VALUES (:username, :full_name, :email, :phone, :account_status, NOW())
+            f"""
+            INSERT INTO app_users (username, full_name, email, phone, account_status, password_hash)
+            VALUES (:username, :full_name, :email, :phone, :account_status, :password_hash)
             ON CONFLICT (username) DO UPDATE SET
                 full_name = EXCLUDED.full_name,
                 email = EXCLUDED.email,
                 phone = EXCLUDED.phone,
                 account_status = EXCLUDED.account_status
+                {password_sql}
             """,
             payload,
         )
         return
 
     with _sqlite_connection() as conn:
+        password_sql = ", password_hash = :password_hash" if password else ""
         conn.execute(
-            """
-            INSERT INTO app_users (username, full_name, email, phone, account_status)
-            VALUES (:username, :full_name, :email, :phone, :account_status)
-            ON CONFLICT(username) DO UPDATE SET
-                full_name=excluded.full_name,
-                email=excluded.email,
-                phone=excluded.phone,
-                account_status=excluded.account_status
+            f"""
+            INSERT INTO app_users (username, full_name, email, phone, account_status, password_hash)
+            VALUES (:username, :full_name, :email, :phone, :account_status, :password_hash)
+            ON CONFLICT (username) DO UPDATE SET
+                full_name = excluded.full_name,
+                email = excluded.email,
+                phone = excluded.phone,
+                account_status = excluded.account_status
+                {password_sql}
             """,
             payload,
         )
@@ -1041,6 +1059,28 @@ def _get_user_id(username: str) -> Optional[int]:
     if df.empty:
         return None
     return int(df.iloc[0]["user_id"])
+
+
+def verify_user_credentials(username: str, password: str) -> bool:
+    """Verifies user credentials against the database."""
+    from utils.security import hash_password
+
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return False
+    
+    res = _query(
+        "SELECT password_hash FROM app_users WHERE user_id = :user_id",
+        {"user_id": user_id}
+    )
+    if not res:
+        return False
+    
+    stored_hash = res[0].get("password_hash")
+    if not stored_hash:
+        return False
+        
+    return stored_hash == hash_password(password)
 
 
 def list_user_broker_connections(username: str) -> pd.DataFrame:

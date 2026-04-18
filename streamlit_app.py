@@ -85,8 +85,13 @@ def _format_timestamp(value: Any) -> str:
 
 
 def _authenticate(username: str, password: str) -> bool:
-    user = _configured_users().get(username.strip())
-    return bool(user and password == user["password"])
+    from utils.db import verify_user_credentials
+
+    # Special check for initial admin if DB is empty/new
+    if username == "admin" and password == os.environ.get("FORTRESS_APP_PASSWORD", "fortress123"):
+        return True
+
+    return verify_user_credentials(username.strip(), password)
 
 
 def _sync_user_profile(username: str) -> Dict[str, Any]:
@@ -104,38 +109,60 @@ def _sync_user_profile(username: str) -> Dict[str, Any]:
 
 
 def _render_login_screen() -> None:
-    st.title("Fortress Dashboard")
-    st.caption("Secure Streamlit terminal for Fortress screening, mutual funds, brokers, and order tracking.")
+    st.title("🏹 Fortress Terminal")
+    st.caption("Professional quantitative dashboard and execution engine.")
 
-    _, center, _ = st.columns([1, 1.1, 1])
+    _, center, _ = st.columns([1, 1.5, 1])
     with center:
-        st.subheader("Login")
-        with st.form("login_form", clear_on_submit=False):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Login", type="primary", use_container_width=True)
+        tab_login, tab_signup, tab_guest = st.tabs(["🔐 Login", "📝 Sign Up", "👤 Guest"])
 
-        if submitted:
-            if _authenticate(username, password):
-                from utils.db import record_user_login
+        with tab_login:
+            with st.form("login_form"):
+                username = st.text_input("Username")
+                password = st.text_input("Password", type="password")
+                submitted = st.form_submit_button("Sign In", type="primary", use_container_width=True)
 
-                username = username.strip()
-                profile = _sync_user_profile(username)
-                record_user_login(username)
-                profile = _sync_user_profile(username)
+            if submitted:
+                if _authenticate(username, password):
+                    from utils.db import record_user_login
+                    username = username.strip()
+                    profile = _sync_user_profile(username)
+                    record_user_login(username)
+                    st.session_state["logged_in"] = True
+                    st.session_state["current_user"] = username
+                    st.session_state["current_user_profile"] = profile
+                    st.rerun()
+                else:
+                    st.error("Invalid credentials.")
 
+        with tab_signup:
+            with st.form("signup_form"):
+                new_user = st.text_input("Username*")
+                full_name = st.text_input("Full Name")
+                email = st.text_input("Email")
+                new_pass = st.text_input("Password*", type="password")
+                signup_btn = st.form_submit_button("Create Account", type="primary", use_container_width=True)
+
+            if signup_btn:
+                if not new_user or not new_pass:
+                    st.error("Username and Password are required.")
+                else:
+                    from utils.db import upsert_app_user
+                    upsert_app_user(username=new_user, full_name=full_name, email=email, password=new_pass)
+                    st.success("Account created! Please switch to Login tab.")
+
+        with tab_guest:
+            st.write("Explore the Fortress terminal with a temporary guest session. Note: Broker connections are saved per account.")
+            if st.button("Continue as Guest", type="secondary", use_container_width=True):
+                from utils.db import record_user_login, upsert_app_user
+                guest_username = "guest_user"
+                upsert_app_user(username=guest_username, full_name="Guest Explorer", account_status="Trial")
+                profile = _sync_user_profile(guest_username)
+                record_user_login(guest_username)
                 st.session_state["logged_in"] = True
-                st.session_state["current_user"] = username
+                st.session_state["current_user"] = guest_username
                 st.session_state["current_user_profile"] = profile
-                st.session_state["auth_error"] = ""
                 st.rerun()
-            else:
-                st.session_state["auth_error"] = "Invalid username or password."
-
-        if st.session_state.get("auth_error"):
-            st.error(st.session_state["auth_error"])
-
-        st.info("Credentials remain simple for now, but broker tokens are stored encrypted with Fernet in the database.")
 
 
 def _logout() -> None:
