@@ -353,12 +353,160 @@ def get_all_schemes_cached(force_refresh: bool = False) -> pd.DataFrame:
         except Exception as db_err:
             logger.warning(f"Could not cache schemes to database: {db_err}")
 
+        # ✓ OPTIMIZE: Pre-compute category/type batches for fast filtering
+        logger.info("Pre-computing category/type batches...")
+        _compute_category_batches()
+
         return df[
             ["scheme_code", "scheme_name", "category", "type", "subcategory", "amc_code", "amc_name"]
         ]
 
     except Exception as e:
         logger.error(f"Error in get_all_schemes_cached: {e}")
+        return pd.DataFrame()
+
+
+def _compute_category_batches():
+    """
+    Pre-compute batch statistics by (type, category) for instant filtering.
+    Stores counts and metadata so UI doesn't need to filter all schemes at runtime.
+    """
+    try:
+        from utils.db import _read_df, _exec
+
+        # Create batch table if not exists
+        _exec("""
+            CREATE TABLE IF NOT EXISTS mf_scheme_batches (
+                batch_id TEXT PRIMARY KEY,
+                type TEXT NOT NULL,
+                category TEXT NOT NULL,
+                scheme_count INT DEFAULT 0,
+                amc_count INT DEFAULT 0,
+                batch_created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Query all schemes and compute batches
+        df = _read_df("""
+            SELECT type, category, COUNT(*) as scheme_count, COUNT(DISTINCT amc_name) as amc_count
+            FROM mf_scheme_catalog
+            WHERE cached_date >= CURRENT_DATE - INTERVAL '30 days'
+            GROUP BY type, category
+            ORDER BY type, category
+        """, ttl="1m")
+
+        if df.empty:
+            logger.warning("No schemes to batch - skipping batch computation")
+            return
+
+        # Upsert batch records
+        for _, row in df.iterrows():
+            batch_id = f"{row['type']}_{row['category']}".replace(" ", "_").lower()
+            try:
+                _exec("""
+                    INSERT INTO mf_scheme_batches (batch_id, type, category, scheme_count, amc_count, batch_created_at)
+                    VALUES (:bid, :typ, :cat, :sc, :ac, CURRENT_TIMESTAMP)
+                    ON CONFLICT(batch_id) DO UPDATE SET
+                        scheme_count = EXCLUDED.scheme_count,
+                        amc_count = EXCLUDED.amc_count,
+                        batch_created_at = EXCLUDED.batch_created_at
+                """, {
+                    "bid": batch_id,
+                    "typ": row["type"],
+                    "cat": row["category"],
+                    "sc": int(row["scheme_count"]),
+                    "ac": int(row["amc_count"])
+                })
+            except Exception as batch_err:
+                logger.debug(f"Batch compute error for {batch_id}: {batch_err}")
+
+        logger.info(f"✓ Pre-computed {len(df)} category/type batches for instant filtering")
+
+    except Exception as e:
+        logger.error(f"Error computing category batches: {e}")
+
+
+def get_batch_stats() -> Dict[str, any]:
+    """
+    Get pre-computed batch statistics for UI display.
+    **O(1)** - pulls from mf_scheme_batches table (no filtering needed).
+    """
+    try:
+        from utils.db import _read_df
+
+        df = _read_df("""
+            SELECT type, category, scheme_count, amc_count
+            FROM mf_scheme_batches
+            ORDER BY type, category
+        """, ttl="1h")
+
+        if df.empty:
+            return {}
+
+        result = {}
+        total_schemes = 0
+        total_amcs = 0
+
+        for _, row in df.iterrows():
+            key = f"{row['type']} - {row['category']}"
+            result[key] = {
+                "scheme_count": int(row["scheme_count"]),
+                "amc_count": int(row["amc_count"])
+            }
+            total_schemes += int(row["scheme_count"])
+            total_amcs += int(row["amc_count"])
+
+        result["_metadata"] = {
+            "total_schemes": total_schemes,
+            "total_batches": len(df)
+        }
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error fetching batch stats: {e}")
+        return {}
+
+
+def get_batch_filtered_schemes(scheme_type: str = None, category: str = None) -> pd.DataFrame:
+    """
+    Get schemes filtered by type and/or category using indexed batch queries.
+    **O(index lookup + result fetch)** - much faster than in-memory filtering.
+    
+    Parameters:
+    - scheme_type: e.g., "Equity", "Debt", "Hybrid"
+    - category: e.g., "Large Cap", "Liquid", "Gilt"
+    
+    Returns filtered DataFrame.
+    """
+    try:
+        from utils.db import _read_df
+
+        where_clauses = ["cached_date >= CURRENT_DATE - INTERVAL '30 days'"]
+        params = {}
+
+        if scheme_type:
+            where_clauses.append("type = :typ")
+            params["typ"] = scheme_type
+
+        if category:
+            where_clauses.append("category = :cat")
+            params["cat"] = category
+
+        where_str = " AND ".join(where_clauses)
+
+        query = f"""
+            SELECT scheme_code, scheme_name, category, type, subcategory, amc_code, amc_name
+            FROM mf_scheme_catalog
+            WHERE {where_str}
+            ORDER BY scheme_name
+        """
+
+        df = _read_df(query, params, ttl="5m")
+        return df if not df.empty else pd.DataFrame()
+
+    except Exception as e:
+        logger.error(f"Error fetching batch-filtered schemes: {e}")
         return pd.DataFrame()
 
 

@@ -1,8 +1,9 @@
 """
 MF Scheme Browser & Discovery UI
 - Browse all 4000+ schemes by category
-- View categorization stats
+- View categorization stats (from pre-computed batches)
 - Select schemes for detailed analysis
+- **OPTIMIZED:** Uses pre-batched database queries for instant filtering
 """
 
 import streamlit as st
@@ -12,6 +13,8 @@ from mf_lab.services.scheme_discovery import (
     get_schemes_by_category,
     get_category_stats,
     get_schemes_summary,
+    get_batch_stats,
+    get_batch_filtered_schemes,
     SCHEME_CATEGORIES,
 )
 
@@ -98,19 +101,20 @@ def render_scheme_discovery_tab():
                 }
             )
 
-    # TAB 2: BY TYPE (EQUITY / DEBT / HYBRID)
+    # TAB 2: BY TYPE (EQUITY / DEBT / HYBRID) — OPTIMIZED with pre-computed batches
     with tab_by_type:
         st.subheader("Browse by Fund Type")
 
         scheme_types = sorted(all_schemes["type"].unique())
         selected_type = st.selectbox("Select Fund Type:", scheme_types)
 
-        type_schemes = all_schemes[all_schemes["type"] == selected_type]
+        # ✨ OPTIMIZED: Query uses database index instead of in-memory filtering
+        type_schemes = get_batch_filtered_schemes(scheme_type=selected_type)
 
         col1, col2 = st.columns([2, 1])
 
         with col1:
-            st.write(f"**{len(type_schemes)} {selected_type} Schemes**")
+            st.write(f"**{len(type_schemes)} {selected_type} Schemes** (from pre-computed batch)")
 
         with col2:
             display_format = st.radio("Display:", ["Table", "List"], horizontal=True, key="type_format")
@@ -137,7 +141,7 @@ def render_scheme_discovery_tab():
                     with col2:
                         st.code(row['scheme_code'], language=None)
 
-    # TAB 3: BY CATEGORY (DETAILED)
+    # TAB 3: BY CATEGORY (DETAILED) — OPTIMIZED with pre-computed batches
     with tab_by_category:
         st.subheader("Browse by Category")
 
@@ -145,7 +149,8 @@ def render_scheme_discovery_tab():
         categories = sorted(set(SCHEME_CATEGORIES.keys()))
         selected_category = st.selectbox("Select Category:", categories)
 
-        cat_schemes = get_schemes_by_category(selected_category)
+        # ✨ OPTIMIZED: Query uses database index instead of in-memory filtering
+        cat_schemes = get_batch_filtered_schemes(category=selected_category)
 
         if cat_schemes.empty:
             st.info(f"No schemes found for category: {selected_category}")
@@ -161,7 +166,7 @@ def render_scheme_discovery_tab():
             with col3:
                 cat_info = SCHEME_CATEGORIES.get(selected_category, {})
                 cat_type = cat_info.get("type", "Unknown")
-                st.metric("Type", cat_type)
+                st.metric("Type (from batch)", cat_type)
 
             st.divider()
 
