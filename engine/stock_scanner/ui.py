@@ -39,9 +39,13 @@ def generate_action_link(row, broker_choice):
     price = row.get("Price", 0)
 
     if broker_choice == "Zerodha":
-        return generate_zerodha_url(symbol, qty)
+        url = generate_zerodha_url(symbol, qty)
     else:
-        return generate_dhan_url(symbol, qty, price)
+        url = generate_dhan_url(symbol, qty, price)
+        
+    if not url: return "-"
+    
+    return f"<a href='{url}' target='_blank' style='text-decoration:none;' class='px-3 py-1 bg-blue-600/20 text-blue-400 hover:bg-blue-600/40 rounded border border-blue-500/30 text-[10px] font-black uppercase tracking-widest transition-colors'>⚡ Buy</a>"
 
 def get_column_config(display_cols, broker_choice):
     st_column_config = {}

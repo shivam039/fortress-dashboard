@@ -11,6 +11,7 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 from datetime import datetime
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -28,8 +29,8 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 # ── In-process caches ────────────────────────────────────────────────────────
-_BENCH_CACHE: dict[str, pd.Series] = {}
-_DISCOVERY_CACHE: list[str] | None = None   # refreshed once per process
+_BENCH_CACHE: Dict[str, pd.Series] = {}
+_DISCOVERY_CACHE: Optional[List[str]] = None   # refreshed once per process
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -86,7 +87,10 @@ def _get_benchmark_series(ticker: str) -> pd.Series:
             upsert_ohlcv_cache(ticker, "5y", d)
         except Exception:
             pass
-        return (d.get("Close") or d.iloc[:, 0]).pct_change().dropna()
+        close_series = d.get("Close")
+        if close_series is None or close_series.empty:
+            close_series = d.iloc[:, 0]
+        return close_series.pct_change().dropna()
 
     s = _retry(_dl, f"bench_{ticker}")
     _BENCH_CACHE[ticker] = s
@@ -163,7 +167,7 @@ def backtest_vs_benchmark(scheme_code: str) -> pd.DataFrame:
 #  Per-fund scorer (runs inside thread)
 # ────────────────────────────────────────────────────────────────────────────
 
-def _score_fund(code: str, bench_default: pd.Series) -> dict | None:
+def _score_fund(code: str, bench_default: pd.Series) -> Optional[Dict[str, Any]]:
     try:
         history = fetch_nav_history(str(code))
         if history.empty:
@@ -230,7 +234,7 @@ def _score_fund(code: str, bench_default: pd.Series) -> dict | None:
 #  Fund Discovery
 # ────────────────────────────────────────────────────────────────────────────
 
-def discover_all_funds(limit: int | None = None) -> list[str]:
+def discover_all_funds(limit: Optional[int] = None) -> List[str]:
     global _DISCOVERY_CACHE
     if _DISCOVERY_CACHE is not None:
         return _DISCOVERY_CACHE[:limit] if limit else _DISCOVERY_CACHE
@@ -266,7 +270,7 @@ def discover_all_funds(limit: int | None = None) -> list[str]:
 #  Pre-seed NAV cache from Neon  (warm up before parallel scoring)
 # ────────────────────────────────────────────────────────────────────────────
 
-def _bulk_preseed_nav_cache(codes: list[str]) -> dict[str, pd.DataFrame]:
+def _bulk_preseed_nav_cache(codes: List[str]) -> Dict[str, pd.DataFrame]:
     """
     Single SQL query to pull ALL non-stale NAV rows from Neon in one shot.
     Avoids N×SELECT inside threads and cuts cold-start latency dramatically.
@@ -294,7 +298,7 @@ def _bulk_preseed_nav_cache(codes: list[str]) -> dict[str, pd.DataFrame]:
                 params
             ).fetchall()
 
-        cache: dict[str, pd.DataFrame] = {}
+        cache: Dict[str, pd.DataFrame] = {}
         import json as _json
         for r in rows:
             try:
@@ -315,10 +319,10 @@ def _bulk_preseed_nav_cache(codes: list[str]) -> dict[str, pd.DataFrame]:
 # ────────────────────────────────────────────────────────────────────────────
 
 # Thread-local NAV cache (populated once per session key)
-_NAV_MEM_CACHE: dict[str, pd.DataFrame] = {}
+_NAV_MEM_CACHE: Dict[str, pd.DataFrame] = {}
 
 
-def _score_fund_fast(code: str, bench_default: pd.Series) -> dict | None:
+def _score_fund_fast(code: str, bench_default: pd.Series) -> Optional[Dict[str, Any]]:
     """Same as _score_fund but reads nav from the in-memory cache first."""
     global _NAV_MEM_CACHE
     try:
@@ -383,7 +387,7 @@ def _score_fund_fast(code: str, bench_default: pd.Series) -> dict | None:
 def run_full_mf_scan(
     progress_callback=None,
     max_workers: int = 30,
-    limit: int | None = None,
+    limit: Optional[int] = None,
 ) -> pd.DataFrame:
     """
     Full parallel MF scan with:
@@ -405,7 +409,7 @@ def run_full_mf_scan(
     _NAV_MEM_CACHE.update(seeded)
     logger.info("Pre-seeded %d navs from Neon", len(seeded))
 
-    rows: list[dict] = []
+    rows: List[Dict[str, Any]] = []
     done = 0
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -453,7 +457,7 @@ def run_full_mf_scan(
 
 # ── Legacy aliases ────────────────────────────────────────────────────────────
 
-def fetch_mf_snapshot(scheme_codes: list[str]) -> pd.DataFrame:
+def fetch_mf_snapshot(scheme_codes: List[str]) -> pd.DataFrame:
     bench = _get_benchmark_series(INDEX_BENCHMARKS.get("Nifty 50", "^NSEI"))
     rows  = [r for c in scheme_codes if (r := _score_fund(str(c), bench)) is not None]
     if not rows:

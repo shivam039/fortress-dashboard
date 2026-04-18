@@ -80,7 +80,9 @@ def compute_atr(df: pd.DataFrame, window: int = 14) -> float:
     return float(tr.rolling(window).mean().iloc[-1]) if len(tr) > window else float(tr.mean())
 
 
-def build_commodities_frame(selection: str | None = None) -> pd.DataFrame:
+from typing import Optional
+
+def build_commodities_frame(selection: Optional[str] = None) -> pd.DataFrame:
     from utils.conviction_engine import score_commodity
 
     usdinr = fetch_price_series("INR=X", period="1mo")
