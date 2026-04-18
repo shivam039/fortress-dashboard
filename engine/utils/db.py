@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Union
 import pandas as pd
 import streamlit as st
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from utils.security import decrypt_token, encrypt_token
 
 try:
     from sqlalchemy import create_engine, text
@@ -583,8 +584,76 @@ def _ensure_mf_scheme_batches_neon():
     _exec("CREATE INDEX IF NOT EXISTS idx_mf_batches_cached_date ON mf_scheme_batches (cached_date DESC)")
 
 
+def _ensure_app_users_neon():
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS app_users (
+            user_id BIGSERIAL PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            full_name TEXT,
+            email TEXT,
+            phone TEXT,
+            account_status TEXT DEFAULT 'Active',
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            last_login_at TIMESTAMPTZ
+        )
+        """
+    )
+    _exec("CREATE INDEX IF NOT EXISTS idx_app_users_username ON app_users (username)")
+
+
+def _ensure_user_broker_connections_neon():
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS user_broker_connections (
+            connection_id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES app_users(user_id) ON DELETE CASCADE,
+            broker_name TEXT NOT NULL,
+            access_token_encrypted TEXT,
+            refresh_token_encrypted TEXT,
+            expires_at TIMESTAMPTZ,
+            connected_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            is_active BOOLEAN DEFAULT TRUE,
+            metadata_json JSONB,
+            UNIQUE (user_id, broker_name)
+        )
+        """
+    )
+    _exec("CREATE INDEX IF NOT EXISTS idx_broker_connections_user ON user_broker_connections (user_id)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_broker_connections_active ON user_broker_connections (is_active)")
+
+
+def _ensure_fortress_orders_neon():
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS fortress_orders (
+            order_id BIGSERIAL PRIMARY KEY,
+            user_id BIGINT NOT NULL REFERENCES app_users(user_id) ON DELETE CASCADE,
+            symbol TEXT NOT NULL,
+            stock_name TEXT,
+            order_type TEXT NOT NULL,
+            quantity NUMERIC NOT NULL,
+            price NUMERIC,
+            status TEXT DEFAULT 'Pending',
+            broker_name TEXT,
+            broker_order_id TEXT,
+            notes TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )
+        """
+    )
+    _exec("CREATE INDEX IF NOT EXISTS idx_fortress_orders_user ON fortress_orders (user_id)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_fortress_orders_status ON fortress_orders (status)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_fortress_orders_created_at ON fortress_orders (created_at DESC)")
+
+
 def init_db():
     if _can_use_neon():
+        _ensure_app_users_neon()
+        _ensure_user_broker_connections_neon()
+        _ensure_fortress_orders_neon()
         _ensure_scan_history_table_neon()
         _ensure_scan_history_details_neon()
         _ensure_ticker_metadata_neon()
@@ -696,6 +765,50 @@ def init_db():
 
     with _sqlite_connection() as conn:
         c = conn.cursor()
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS app_users (
+                user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                full_name TEXT,
+                email TEXT,
+                phone TEXT,
+                account_status TEXT DEFAULT 'Active',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_login_at TEXT
+            )"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS user_broker_connections (
+                connection_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                broker_name TEXT NOT NULL,
+                access_token_encrypted TEXT,
+                refresh_token_encrypted TEXT,
+                expires_at TEXT,
+                connected_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                is_active INTEGER DEFAULT 1,
+                metadata_json TEXT,
+                UNIQUE (user_id, broker_name)
+            )"""
+        )
+        c.execute(
+            """CREATE TABLE IF NOT EXISTS fortress_orders (
+                order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                symbol TEXT NOT NULL,
+                stock_name TEXT,
+                order_type TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                price REAL,
+                status TEXT DEFAULT 'Pending',
+                broker_name TEXT,
+                broker_order_id TEXT,
+                notes TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
         c.execute(
             """CREATE TABLE IF NOT EXISTS scans (
                 scan_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -809,6 +922,328 @@ def init_db():
         )
         c.execute("CREATE INDEX IF NOT EXISTS idx_scan_history_timestamp ON scan_history(scan_timestamp)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_scan_history_symbol ON scan_history(symbol)")
+
+
+def _serialize_json(value: Optional[Dict[str, Any]]) -> str:
+    return json.dumps(value or {})
+
+
+def _deserialize_json(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return json.loads(value)
+        except Exception:
+            return {}
+    return {}
+
+
+def upsert_app_user(username: str, full_name: str = "", email: str = "", phone: str = "", account_status: str = "Active"):
+    payload = {
+        "username": username.strip(),
+        "full_name": full_name,
+        "email": email,
+        "phone": phone,
+        "account_status": account_status,
+    }
+    if _can_use_neon():
+        _exec(
+            """
+            INSERT INTO app_users (username, full_name, email, phone, account_status, created_at)
+            VALUES (:username, :full_name, :email, :phone, :account_status, NOW())
+            ON CONFLICT (username) DO UPDATE SET
+                full_name = EXCLUDED.full_name,
+                email = EXCLUDED.email,
+                phone = EXCLUDED.phone,
+                account_status = EXCLUDED.account_status
+            """,
+            payload,
+        )
+        return
+
+    with _sqlite_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_users (username, full_name, email, phone, account_status)
+            VALUES (:username, :full_name, :email, :phone, :account_status)
+            ON CONFLICT(username) DO UPDATE SET
+                full_name=excluded.full_name,
+                email=excluded.email,
+                phone=excluded.phone,
+                account_status=excluded.account_status
+            """,
+            payload,
+        )
+
+
+def get_app_user(username: str) -> Dict[str, Any]:
+    df = _read_df(
+        "SELECT * FROM app_users WHERE username = :username LIMIT 1",
+        {"username": username.strip()},
+        ttl="30s",
+    )
+    if df.empty:
+        return {}
+    return df.iloc[0].to_dict()
+
+
+def record_user_login(username: str):
+    upsert_app_user(username=username)
+    if _can_use_neon():
+        _exec(
+            "UPDATE app_users SET last_login_at = NOW() WHERE username = :username",
+            {"username": username.strip()},
+        )
+        return
+
+    with _sqlite_connection() as conn:
+        conn.execute(
+            "UPDATE app_users SET last_login_at = CURRENT_TIMESTAMP WHERE username = :username",
+            {"username": username.strip()},
+        )
+
+
+def _get_user_id(username: str) -> Optional[int]:
+    df = _read_df(
+        "SELECT user_id FROM app_users WHERE username = :username LIMIT 1",
+        {"username": username.strip()},
+        ttl="30s",
+    )
+    if df.empty:
+        return None
+    return int(df.iloc[0]["user_id"])
+
+
+def list_user_broker_connections(username: str) -> pd.DataFrame:
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return pd.DataFrame()
+
+    df = _read_df(
+        """
+        SELECT connection_id, broker_name, expires_at, connected_at, updated_at, is_active, metadata_json
+        FROM user_broker_connections
+        WHERE user_id = :user_id
+        ORDER BY connected_at DESC
+        """,
+        {"user_id": user_id},
+        ttl="30s",
+    )
+    if df.empty:
+        return df
+    if "metadata_json" in df.columns:
+        df["metadata_json"] = df["metadata_json"].apply(_deserialize_json)
+    return df
+
+
+def upsert_user_broker_connection(
+    username: str,
+    broker_name: str,
+    access_token: str,
+    expires_at: Optional[str] = None,
+    refresh_token: str = "",
+    is_active: bool = True,
+    metadata: Optional[Dict[str, Any]] = None,
+):
+    upsert_app_user(username=username)
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return
+
+    payload = {
+        "user_id": user_id,
+        "broker_name": broker_name,
+        "access_token_encrypted": encrypt_token(access_token),
+        "refresh_token_encrypted": encrypt_token(refresh_token),
+        "expires_at": expires_at,
+        "is_active": is_active,
+        "metadata_json": _serialize_json(metadata),
+    }
+
+    if _can_use_neon():
+        _exec(
+            """
+            INSERT INTO user_broker_connections (
+                user_id, broker_name, access_token_encrypted, refresh_token_encrypted,
+                expires_at, connected_at, updated_at, is_active, metadata_json
+            )
+            VALUES (
+                :user_id, :broker_name, :access_token_encrypted, :refresh_token_encrypted,
+                :expires_at, NOW(), NOW(), :is_active, CAST(:metadata_json AS JSONB)
+            )
+            ON CONFLICT (user_id, broker_name) DO UPDATE SET
+                access_token_encrypted = EXCLUDED.access_token_encrypted,
+                refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
+                expires_at = EXCLUDED.expires_at,
+                updated_at = NOW(),
+                is_active = EXCLUDED.is_active,
+                metadata_json = EXCLUDED.metadata_json
+            """,
+            payload,
+        )
+        return
+
+    with _sqlite_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO user_broker_connections (
+                user_id, broker_name, access_token_encrypted, refresh_token_encrypted,
+                expires_at, is_active, metadata_json
+            )
+            VALUES (
+                :user_id, :broker_name, :access_token_encrypted, :refresh_token_encrypted,
+                :expires_at, :is_active, :metadata_json
+            )
+            ON CONFLICT(user_id, broker_name) DO UPDATE SET
+                access_token_encrypted=excluded.access_token_encrypted,
+                refresh_token_encrypted=excluded.refresh_token_encrypted,
+                expires_at=excluded.expires_at,
+                updated_at=CURRENT_TIMESTAMP,
+                is_active=excluded.is_active,
+                metadata_json=excluded.metadata_json
+            """,
+            payload,
+        )
+
+
+def deactivate_user_broker_connection(username: str, broker_name: str):
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return
+    params = {"user_id": user_id, "broker_name": broker_name}
+    if _can_use_neon():
+        _exec(
+            """
+            UPDATE user_broker_connections
+            SET is_active = FALSE, updated_at = NOW()
+            WHERE user_id = :user_id AND broker_name = :broker_name
+            """,
+            params,
+        )
+        return
+    with _sqlite_connection() as conn:
+        conn.execute(
+            """
+            UPDATE user_broker_connections
+            SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = :user_id AND broker_name = :broker_name
+            """,
+            params,
+        )
+
+
+def get_broker_access_token(username: str, broker_name: str) -> str:
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return ""
+    df = _read_df(
+        """
+        SELECT access_token_encrypted
+        FROM user_broker_connections
+        WHERE user_id = :user_id AND broker_name = :broker_name AND is_active = :is_active
+        LIMIT 1
+        """,
+        {"user_id": user_id, "broker_name": broker_name, "is_active": True if _can_use_neon() else 1},
+        ttl="30s",
+    )
+    if df.empty:
+        return ""
+    return decrypt_token(str(df.iloc[0]["access_token_encrypted"]))
+
+
+def create_fortress_order(
+    username: str,
+    symbol: str,
+    order_type: str,
+    quantity: float,
+    price: Optional[float],
+    status: str,
+    broker_name: str,
+    stock_name: str = "",
+    broker_order_id: str = "",
+    notes: str = "",
+):
+    upsert_app_user(username=username)
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return
+    payload = {
+        "user_id": user_id,
+        "symbol": symbol,
+        "stock_name": stock_name or symbol,
+        "order_type": order_type,
+        "quantity": quantity,
+        "price": price,
+        "status": status,
+        "broker_name": broker_name,
+        "broker_order_id": broker_order_id,
+        "notes": notes,
+    }
+    if _can_use_neon():
+        _exec(
+            """
+            INSERT INTO fortress_orders (
+                user_id, symbol, stock_name, order_type, quantity, price, status,
+                broker_name, broker_order_id, notes, created_at, updated_at
+            )
+            VALUES (
+                :user_id, :symbol, :stock_name, :order_type, :quantity, :price, :status,
+                :broker_name, :broker_order_id, :notes, NOW(), NOW()
+            )
+            """,
+            payload,
+        )
+        return
+    with _sqlite_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO fortress_orders (
+                user_id, symbol, stock_name, order_type, quantity, price, status,
+                broker_name, broker_order_id, notes
+            )
+            VALUES (
+                :user_id, :symbol, :stock_name, :order_type, :quantity, :price, :status,
+                :broker_name, :broker_order_id, :notes
+            )
+            """,
+            payload,
+        )
+
+
+def fetch_fortress_orders(
+    username: str,
+    status: Optional[str] = None,
+    broker_name: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> pd.DataFrame:
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return pd.DataFrame()
+
+    conditions = ["user_id = :user_id"]
+    params: Dict[str, Any] = {"user_id": user_id}
+    if status and status != "All":
+        conditions.append("status = :status")
+        params["status"] = status
+    if broker_name and broker_name != "All":
+        conditions.append("broker_name = :broker_name")
+        params["broker_name"] = broker_name
+    if date_from:
+        conditions.append("created_at >= :date_from")
+        params["date_from"] = date_from
+    if date_to:
+        conditions.append("created_at <= :date_to")
+        params["date_to"] = date_to
+
+    query = f"""
+    SELECT order_id, symbol, stock_name, order_type, quantity, price, status, broker_name, broker_order_id, notes, created_at, updated_at
+    FROM fortress_orders
+    WHERE {' AND '.join(conditions)}
+    ORDER BY created_at DESC
+    """
+    return _read_df(query, params, ttl="30s")
 
 
 def _infer_sql_type(series):
