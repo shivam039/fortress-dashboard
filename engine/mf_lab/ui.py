@@ -10,6 +10,7 @@ from mf_lab.logic import (
     classify_category,
     run_full_mf_scan,
 )
+from mf_lab.ui_scheme_discovery import render_scheme_discovery_tab
 from utils.db import fetch_mf_cached_results, log_audit, log_scan_results, upsert_mf_scan_results
 
 logger = logging.getLogger(__name__)
@@ -112,8 +113,26 @@ def _scorecard(row: dict):
 def render():
     st.subheader("🛡️ Fortress MF Pro: Consistency Lab")
 
-    # ── Sidebar filters ──────────────────────────────────────────────
+    # ── Main tabs: Analysis vs Scheme Discovery ──────────────────────
+    tab_analysis, tab_discovery = st.tabs([
+        "📊 Consistency Analysis",
+        "🔍 Scheme Browser (4000+ Schemes)"
+    ])
+
+    # ==================== TAB 1: CONSISTENCY ANALYSIS ====================
+    with tab_analysis:
+        _render_consistency_analysis()
+
+    # ==================== TAB 2: SCHEME DISCOVERY ====================
+    with tab_discovery:
+        render_scheme_discovery_tab()
+
+
+def _render_consistency_analysis():
+    """Render the existing consistency analysis tab."""
+    # ── Sidebar toggles ──────────────────────────────────────────────
     debug_mode = st.sidebar.toggle("MF Debug Mode", value=False)
+    
     categories = st.sidebar.multiselect(
         "Category", ["Equity", "Debt", "Hybrid"],
         default=["Equity", "Debt", "Hybrid"]
