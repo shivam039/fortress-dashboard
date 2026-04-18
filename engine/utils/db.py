@@ -1021,9 +1021,6 @@ def verify_user_credentials(username: str, password: str) -> bool:
     return stored_hash == hash_password(password)
 
 
-    return stored_hash == hash_password(password)
-
-
 
 def delete_app_user(username: str) -> None:
     """Permanently deletes a user account and all associated data (broker connections, orders)."""
