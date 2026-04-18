@@ -39,11 +39,17 @@ async def catch_exceptions_middleware(request, call_next):
     try:
         return await call_next(request)
     except Exception as exc:
-        logger.error(f"Unhandled exception: {exc}")
+        # Full traceback is logged server-side — never exposed to the client
+        logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}")
         logger.error(traceback.format_exc())
         return JSONResponse(
             status_code=500,
-            content={"detail": str(exc), "traceback": traceback.format_exc().splitlines()[-3:]}
+            content={
+                "error": "An internal server error occurred. Please try again or contact support.",
+                "path": str(request.url.path),
+                # Error ID helps correlate with server logs without leaking internals
+                "error_id": f"{hash(str(exc)) & 0xFFFFFF:06X}",
+            },
         )
 
 app.add_middleware(

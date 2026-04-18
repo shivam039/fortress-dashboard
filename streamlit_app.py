@@ -384,6 +384,29 @@ def _handle_broker_oauth_callback(username: str) -> None:
         st.rerun()
 
 
+def _check_token_expiry(expires_at_raw) -> tuple[str, str]:
+    """Returns (badge_text, color) based on token expiry date."""
+    if not expires_at_raw or str(expires_at_raw).strip() in ("", "None", "nan"):
+        return ("", "")
+    try:
+        import datetime as dt
+        exp = pd.to_datetime(expires_at_raw, errors="coerce")
+        if pd.isna(exp):
+            return ("", "")
+        now = pd.Timestamp.now(tz=exp.tzinfo)
+        days_left = (exp - now).days
+        if days_left < 0:
+            return ("🔴 Token Expired", "#ff4b4b")
+        elif days_left <= 2:
+            return (f"🟠 Expires in {days_left}d", "#ffa500")
+        elif days_left <= 7:
+            return (f"🟡 Expires in {days_left}d", "#f0c040")
+        else:
+            return (f"🟢 Valid ({days_left}d)", "#00c851")
+    except Exception:
+        return ("", "")
+
+
 def _render_broker_settings_section(username: str) -> None:
     from utils.db import delete_user_broker_connection
 
@@ -405,12 +428,22 @@ def _render_broker_settings_section(username: str) -> None:
     if not brokers_df.empty:
         st.divider()
         for _, row in brokers_df.iterrows():
+            expiry_badge, expiry_color = _check_token_expiry(row.get("expires_at"))
+            is_expired = expiry_badge.startswith("🔴")
+
             with st.container(border=True):
                 col_info, col_btn = st.columns([3, 1])
                 with col_info:
                     st.write(f"**{row['broker_name']}** ({row.get('broker_client_id') or 'N/A'})")
-                    status = "✅ Active" if bool(row.get("is_active")) else "❌ Inactive"
+                    status = "❌ Inactive (Expired)" if is_expired else ("✅ Active" if bool(row.get("is_active")) else "❌ Inactive")
                     st.caption(f"{status} | Connected: {_format_timestamp(row.get('connected_at'))}")
+                    if expiry_badge:
+                        st.markdown(
+                            f'<span style="color:{expiry_color};font-size:0.8em;font-weight:600;">{expiry_badge}</span>',
+                            unsafe_allow_html=True,
+                        )
+                    if is_expired:
+                        st.warning("⚠️ Token expired — reconnect to restore broker access.", icon=None)
                 with col_btn:
                     if st.button("Delete", key=f"del_{row['broker_name']}", type="secondary", use_container_width=True):
                         delete_user_broker_connection(username, row['broker_name'])
@@ -418,6 +451,8 @@ def _render_broker_settings_section(username: str) -> None:
                         st.rerun()
     else:
         st.caption("No broker connections yet. Use the buttons above to connect.")
+
+
 
 
 
