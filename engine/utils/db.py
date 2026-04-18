@@ -1268,6 +1268,53 @@ def fetch_mf_cached_results(max_age_days: int = 31) -> pd.DataFrame:
         logger.error("fetch_mf_cached_results error: %s", e)
         return pd.DataFrame()
 
+def fetch_top_mf_picks(max_age_days: int = 31) -> pd.DataFrame:
+    """Return ONLY the Top 5 strongest schemes partitioned securely by Sub Category using DB engine logic."""
+    if not _can_use_neon():
+        # SQLite Fallback Window Function (SQLite 3.25+)
+        sql = f"""
+            SELECT result_json FROM (
+                SELECT result_json,
+                       ROW_NUMBER() OVER(
+                           PARTITION BY json_extract(result_json, '$.Category'), json_extract(result_json, '$."Sub Category"') 
+                           ORDER BY CAST(json_extract(result_json, '$."Conviction Score"') AS NUMERIC) DESC
+                       ) as rn
+                FROM mf_scan_results
+                WHERE scan_date >= date('now', '-{max_age_days} days')
+            ) sub
+            WHERE rn <= 5
+        """
+        try:
+            df = _read_df(sql)
+            if df.empty: return pd.DataFrame()
+            rows = [json.loads(r) if isinstance(r, str) else r for r in df["result_json"]]
+            return pd.DataFrame(rows)
+        except Exception as e:
+            logger.error("SQLite top picks failed (maybe old SQLite version): %s", e)
+            return pd.DataFrame()
+    
+    # Postgres Neon
+    try:
+        sql = f"""
+            SELECT result_json FROM (
+                SELECT result_json,
+                       ROW_NUMBER() OVER(
+                           PARTITION BY result_json->>'Category', result_json->>'Sub Category' 
+                           ORDER BY CAST(result_json->>'Conviction Score' AS NUMERIC) DESC
+                       ) as rn
+                FROM mf_scan_results
+                WHERE scan_date >= CURRENT_DATE - INTERVAL '{max_age_days} days'
+            ) sub
+            WHERE rn <= 5
+        """
+        df = _read_df(sql)
+        if df.empty: return pd.DataFrame()
+        rows = [json.loads(r) if isinstance(r, str) else r for r in df["result_json"]]
+        return pd.DataFrame(rows)
+    except Exception as e:
+        logger.error("fetch_top_mf_picks error: %s", e)
+        return pd.DataFrame()
+
 
 def upsert_mf_scan_results(df: pd.DataFrame):
     """Persist a full MF scan result DataFrame into Neon (one row per scheme, monthly UPSERT)."""

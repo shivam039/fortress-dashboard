@@ -11,7 +11,7 @@ from mf_lab.logic import (
     run_full_mf_scan,
 )
 from mf_lab.ui_scheme_discovery import render_scheme_discovery_tab
-from utils.db import fetch_mf_cached_results, log_audit, log_scan_results, upsert_mf_scan_results
+from utils.db import fetch_mf_cached_results, fetch_top_mf_picks, log_audit, log_scan_results, upsert_mf_scan_results
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 DISPLAY_COLS = [
     "Conviction Emoji", "Scheme", "Conviction Score", "Conviction Label",
     "NAV", "1Y Return", "3Y Return", "5Y Return",
-    "Sharpe", "Sortino", "Alpha", "Category", "Scheme Code",
+    "Sharpe", "Sortino", "Alpha", "Category", "Sub Category", "Scheme Code",
 ]
 
 LABEL_COLOR = {
@@ -38,7 +38,6 @@ def _post_process(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     df = df.copy()
-    df["Category"] = df.get("Scheme", pd.Series(dtype=str)).apply(classify_category)
     numeric_cols = ["NAV", "1Y Return", "3Y Return", "5Y Return", "Sharpe",
                     "Sortino", "Consistency Score", "Volatility", "Alpha", "Beta"]
     for col in numeric_cols:
@@ -98,7 +97,7 @@ def _scorecard(row: dict):
                 <div><span style="color:#8f8f8f; font-size:0.75rem;">Alpha</span><br>
                      <b style="color:#fff; font-size:0.95rem;">{row.get("Alpha",0):+.2f}%</b></div>
                 <div><span style="color:#8f8f8f; font-size:0.75rem;">Category</span><br>
-                     <b style="color:#fff; font-size:0.95rem;">{row.get("Category","—")}</b></div>
+                     <b style="color:#fff; font-size:0.95rem;">{row.get("Category","—")} ({row.get("Sub Category","—")})</b></div>
             </div>
         </div>
         """,
@@ -195,7 +194,7 @@ def _render_consistency_analysis():
 
     # ── Display results ───────────────────────────────────────────────
     if cached_df.empty:
-        st.info("No data yet. Click **🚀 Run Full MF Scan** to populate results (runs once a month).")
+        st.info("No data yet. Click **🚀 Run Full MF Scan** above to automatically scrape the newest AMFI data for this month.")
         return
 
     filtered = _apply_filters(cached_df, categories, min_sharpe)
@@ -204,13 +203,26 @@ def _render_consistency_analysis():
         st.warning("No funds match the current filters. Adjust Sharpe or Category in the sidebar.")
     else:
         # ── Top Conviction Picks ────────────────────────────────────
-        st.subheader("🎯 Top Conviction Picks")
-        top_picks = filtered[filtered["Conviction Label"].isin(["STRONG BUY", "BUY"])].head(5)
-        if not top_picks.empty:
-            for _, row in top_picks.iterrows():
-                _scorecard(row.to_dict())
+        st.subheader("🎯 Top 5 Coviction Picks By Category (DB Served)")
+        
+        # We query the Top 5 strictly from the database rank partition!
+        top_db_picks = fetch_top_mf_picks(max_age_days=31)
+        
+        if top_db_picks.empty:
+            st.info("No DB Ranking structure found. Showing raw filter results below.")
         else:
-            st.info("No funds currently meet the 'Strong Buy' or 'Buy' threshold. Showing all results below.")
+            top_db_picks = _post_process(top_db_picks)
+            for cat in ["Equity", "Debt", "Hybrid"]:
+                cat_df = top_db_picks[top_db_picks["Category"] == cat]
+                if cat_df.empty: continue
+                
+                st.markdown(f"### 🏆 Top {cat} Funds")
+                sub_cats = cat_df["Sub Category"].unique()
+                for sub in sub_cats:
+                    st.markdown(f"#### ⤷ {sub}")
+                    sub_df = cat_df[cat_df["Sub Category"] == sub].sort_values("Conviction Score", ascending=False)
+                    for _, row in sub_df.iterrows():
+                        _scorecard(row.to_dict())
 
         st.markdown("---")
         st.subheader("📋 Full Result Universe")
