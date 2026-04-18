@@ -620,6 +620,7 @@ def _ensure_user_broker_connections_neon():
             connection_id BIGSERIAL PRIMARY KEY,
             user_id BIGINT NOT NULL REFERENCES app_users(user_id) ON DELETE CASCADE,
             broker_name TEXT NOT NULL,
+            broker_client_id TEXT,
             access_token_encrypted TEXT,
             refresh_token_encrypted TEXT,
             expires_at TIMESTAMPTZ,
@@ -1052,6 +1053,7 @@ def list_user_broker_connections(username: str) -> pd.DataFrame:
                     connection_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
                     broker_name TEXT NOT NULL,
+                    broker_client_id TEXT,
                     access_token_encrypted TEXT,
                     refresh_token_encrypted TEXT,
                     expires_at TEXT,
@@ -1082,11 +1084,20 @@ def list_user_broker_connections(username: str) -> pd.DataFrame:
         df["metadata_json"] = df["metadata_json"].apply(_deserialize_json)
     return df
 
+def delete_user_broker_connection(username: str, broker_name: str) -> None:
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return
+    _exec(
+        "DELETE FROM user_broker_connections WHERE user_id = :user_id AND broker_name = :broker_name",
+        {"user_id": user_id, "broker_name": broker_name},
+    )
 
 def upsert_user_broker_connection(
     username: str,
     broker_name: str,
     access_token: str,
+    broker_client_id: str = "",
     expires_at: Optional[str] = None,
     refresh_token: str = "",
     is_active: bool = True,
@@ -1100,6 +1111,7 @@ def upsert_user_broker_connection(
     payload = {
         "user_id": user_id,
         "broker_name": broker_name,
+        "broker_client_id": broker_client_id,
         "access_token_encrypted": _encrypt_token(access_token),
         "refresh_token_encrypted": _encrypt_token(refresh_token),
         "expires_at": expires_at,
@@ -1111,14 +1123,15 @@ def upsert_user_broker_connection(
         _exec(
             """
             INSERT INTO user_broker_connections (
-                user_id, broker_name, access_token_encrypted, refresh_token_encrypted,
+                user_id, broker_name, broker_client_id, access_token_encrypted, refresh_token_encrypted,
                 expires_at, connected_at, updated_at, is_active, metadata_json
             )
             VALUES (
-                :user_id, :broker_name, :access_token_encrypted, :refresh_token_encrypted,
+                :user_id, :broker_name, :broker_client_id, :access_token_encrypted, :refresh_token_encrypted,
                 :expires_at, NOW(), NOW(), :is_active, CAST(:metadata_json AS JSONB)
             )
             ON CONFLICT (user_id, broker_name) DO UPDATE SET
+                broker_client_id = EXCLUDED.broker_client_id,
                 access_token_encrypted = EXCLUDED.access_token_encrypted,
                 refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
                 expires_at = EXCLUDED.expires_at,
@@ -1134,20 +1147,18 @@ def upsert_user_broker_connection(
         conn.execute(
             """
             INSERT INTO user_broker_connections (
-                user_id, broker_name, access_token_encrypted, refresh_token_encrypted,
+                user_id, broker_name, broker_client_id, access_token_encrypted, refresh_token_encrypted,
                 expires_at, is_active, metadata_json
             )
-            VALUES (
-                :user_id, :broker_name, :access_token_encrypted, :refresh_token_encrypted,
-                :expires_at, :is_active, :metadata_json
-            )
-            ON CONFLICT(user_id, broker_name) DO UPDATE SET
-                access_token_encrypted=excluded.access_token_encrypted,
-                refresh_token_encrypted=excluded.refresh_token_encrypted,
-                expires_at=excluded.expires_at,
-                updated_at=CURRENT_TIMESTAMP,
-                is_active=excluded.is_active,
-                metadata_json=excluded.metadata_json
+            VALUES (:user_id, :broker_name, :broker_client_id, :access_token_encrypted, :refresh_token_encrypted, :expires_at, :is_active, :metadata_json)
+            ON CONFLICT (user_id, broker_name) DO UPDATE SET
+                broker_client_id = excluded.broker_client_id,
+                access_token_encrypted = excluded.access_token_encrypted,
+                refresh_token_encrypted = excluded.refresh_token_encrypted,
+                expires_at = excluded.expires_at,
+                updated_at = CURRENT_TIMESTAMP,
+                is_active = excluded.is_active,
+                metadata_json = excluded.metadata_json
             """,
             payload,
         )

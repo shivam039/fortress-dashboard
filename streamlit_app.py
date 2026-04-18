@@ -146,82 +146,75 @@ def _get_active_broker_names(username: str) -> List[str]:
 
 
 def _render_profile_section(profile: Dict[str, Any]) -> None:
-    st.markdown("### Profile")
+    st.markdown("### 👤 Profile")
     with st.container(border=True):
+        st.markdown(f"#### {profile.get('full_name') or 'Fortress User'}")
+        st.caption(f"📧 {profile.get('email') or 'N/A'}")
+        st.caption(f"📱 {profile.get('phone') or 'N/A'}")
+        st.divider()
+        st.caption("Account Details")
+        st.write(f"**Status:** {profile.get('account_status') or 'Active'}")
+        st.write(f"**Joined:** {_format_timestamp(profile.get('created_at'))}")
+        st.write(f"**Last Login:** {_format_timestamp(profile.get('last_login_at'))}")
+
+
+@st.dialog("Connect Broker")
+def _connect_broker_dialog(username: str):
+    from utils.db import upsert_user_broker_connection
+    st.write("Link your Zerodha or Dhan account by providing an access token. All tokens are encrypted before storage.")
+    
+    with st.form("broker_connection_form", clear_on_submit=True):
+        broker_name = st.selectbox("Broker", BROKER_OPTIONS)
+        broker_client_id = st.text_input("Client ID / User ID", placeholder="e.g. AB1234 or DHAN_ID")
+        access_token = st.text_area("Access Token", placeholder="Paste your permanent or session access token here...", height=150)
+        
         col1, col2 = st.columns(2)
         with col1:
-            st.caption("Full Name")
-            st.write(profile.get("full_name") or "N/A")
-            st.caption("Email")
-            st.write(profile.get("email") or "N/A")
-            st.caption("Phone")
-            st.write(profile.get("phone") or "N/A")
+             expires_on = st.text_input("Expiry (Optional)", placeholder="YYYY-MM-DD")
         with col2:
-            st.caption("Account Created")
-            st.write(_format_timestamp(profile.get("created_at")))
-            st.caption("Last Login")
-            st.write(_format_timestamp(profile.get("last_login_at")))
-            st.caption("Account Status")
-            st.write(profile.get("account_status") or "Active")
+             refresh_token = st.text_input("Refresh Token (Optional)", type="password")
+             
+        submitted = st.form_submit_button("Save & Connect", type="primary", use_container_width=True)
+
+    if submitted:
+        if not access_token.strip():
+            st.error("Access token is required.")
+        else:
+            upsert_user_broker_connection(
+                username=username,
+                broker_name=broker_name,
+                broker_client_id=broker_client_id.strip(),
+                access_token=access_token.strip(),
+                refresh_token=refresh_token.strip(),
+                expires_at=expires_on.strip() or None,
+            )
+            st.success(f"{broker_name} connection saved successfully.")
+            st.rerun()
 
 
 def _render_broker_settings_section(username: str) -> None:
-    from utils.db import deactivate_user_broker_connection, list_user_broker_connections, upsert_user_broker_connection
+    from utils.db import delete_user_broker_connection, list_user_broker_connections
 
-    st.markdown("### Broker Settings")
+    st.markdown("### 🔑 Broker Connections")
     brokers_df = list_user_broker_connections(username)
+    
+    if st.button("➕ Connect New Broker", use_container_width=True):
+        _connect_broker_dialog(username)
 
-    with st.expander("Connected Brokers", expanded=True):
-        if brokers_df.empty:
-            st.caption("No broker connections yet.")
-        else:
-            for _, row in brokers_df.iterrows():
-                metadata = row.get("metadata_json") or {}
-                status = "Connected" if bool(row.get("is_active")) else "Disconnected"
-                expires_label = _format_timestamp(row.get("expires_at"))
-                with st.container(border=True):
-                    st.write(f"**{row['broker_name']}**")
-                    st.caption(
-                        f"Status: {status} | Connected: {_format_timestamp(row.get('connected_at'))} | "
-                        f"Expires: {expires_label}"
-                    )
-                    if metadata:
-                        st.caption(f"Metadata: {metadata}")
+    if not brokers_df.empty:
+        st.divider()
+        for _, row in brokers_df.iterrows():
+            with st.container(border=True):
+                col_info, col_btn = st.columns([3, 1])
+                with col_info:
+                    st.write(f"**{row['broker_name']}** ({row.get('broker_client_id') or 'N/A'})")
+                    status = "✅ Active" if bool(row.get("is_active")) else "❌ Inactive"
+                    st.caption(f"{status} | Joined: {_format_timestamp(row.get('connected_at'))}")
+                with col_btn:
+                    if st.button("Delete", key=f"del_{row['broker_name']}", type="secondary", use_container_width=True):
+                        delete_user_broker_connection(username, row['broker_name'])
+                        st.rerun()
 
-    with st.expander("Add or Update Broker", expanded=False):
-        with st.form("broker_connection_form", clear_on_submit=True):
-            broker_name = st.selectbox("Broker", BROKER_OPTIONS)
-            access_token = st.text_input("Access Token", type="password")
-            refresh_token = st.text_input("Refresh Token", type="password")
-            expires_on = st.text_input("Token Expiry (optional, ISO format)", placeholder="2026-12-31T23:59:59")
-            broker_note = st.text_input("Notes", placeholder="Optional note or client id")
-            submitted = st.form_submit_button("Save Broker Connection", type="primary", use_container_width=True)
-
-        if submitted:
-            if not access_token.strip():
-                st.error("Access token is required.")
-            else:
-                upsert_user_broker_connection(
-                    username=username,
-                    broker_name=broker_name,
-                    access_token=access_token.strip(),
-                    refresh_token=refresh_token.strip(),
-                    expires_at=expires_on.strip() or None,
-                    metadata={"note": broker_note.strip()},
-                )
-                st.success(f"{broker_name} connection saved.")
-                st.rerun()
-
-    with st.expander("Disconnect Broker", expanded=False):
-        active_brokers = brokers_df[brokers_df["is_active"].astype(bool)]["broker_name"].tolist() if not brokers_df.empty else []
-        if not active_brokers:
-            st.caption("No active brokers to disconnect.")
-        else:
-            broker_to_remove = st.selectbox("Active Broker", active_brokers, key="disconnect_broker_name")
-            if st.button("Disconnect Broker", use_container_width=True):
-                deactivate_user_broker_connection(username, broker_to_remove)
-                st.success(f"{broker_to_remove} disconnected.")
-                st.rerun()
 
 
 def _render_mf_job_controls(api_url: str, key_prefix: str, sidebar: bool = False) -> None:
@@ -544,12 +537,17 @@ def _render_authenticated_app() -> None:
     st.caption("Streamlit-first workspace with secure broker management, MF backend jobs, and Fortress order history.")
 
     with st.sidebar:
-        st.text_input("FastAPI Base URL", key="fastapi_url", help="Used for Streamlit-to-FastAPI calls.")
+        st.markdown("### 🏹 Fortress Terminal")
         _render_profile_section(profile)
+        st.divider()
         _render_broker_settings_section(username)
-        _render_mf_job_controls(st.session_state["fastapi_url"], key_prefix="mf_sidebar", sidebar=True)
-        st.markdown("### Logout")
-        if st.button("Logout", use_container_width=True):
+        st.divider()
+        with st.expander("⚙️ Server-Side Jobs", expanded=False):
+            _render_mf_job_controls(st.session_state["fastapi_url"], key_prefix="mf_sidebar", sidebar=True)
+            st.text_input("API URL", key="fastapi_url", help="Backend FastAPI endpoint.")
+        
+        st.divider()
+        if st.button("🚪 Logout", use_container_width=True, type="secondary"):
             _logout()
 
     tabs = st.tabs(["Dashboard", "Stock Screener", "MF Lab", "Orders", "Commodities", "Options", "Scan History"])
