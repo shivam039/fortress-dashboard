@@ -212,7 +212,7 @@ def _display_scan_results(df, universe, broker_choice, scoring_config, timestamp
         # Display Dashboard
         st.dataframe(
             sector_stats[["Sector", "Thesis", "Velocity", "Breadth (%)", "Avg Score", "On the Rise", "On the Fall"]].sort_values("Velocity", ascending=False),
-            use_container_width=True,
+            width='stretch',
             column_config={
                 "Velocity": st.column_config.NumberColumn("Momentum Vel", format="%.2f%%"),
                 "Breadth (%)": st.column_config.ProgressColumn("Inst. Breadth", min_value=0, max_value=100, format="%.1f%%"),

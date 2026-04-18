@@ -164,7 +164,7 @@ def _render_consistency_analysis():
         run_scan = st.button(
             "🚀 Run Full MF Scan",
             type="primary",
-            use_container_width=True,
+            width='stretch',
             help="Discovers ALL Direct-Growth funds from AMFI and scores them. Takes 5-15 mins. Results saved to DB for 30 days."
         )
 

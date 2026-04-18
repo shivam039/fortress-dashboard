@@ -263,7 +263,7 @@ def render():
                 combined.to_csv(index=False).encode("utf-8"),
                 f"scan_history_combined_{selected_label.replace(':', '-')}.csv",
                 "text/csv",
-                use_container_width=True
+                width='stretch'
             )
         with col2:
             pass
@@ -300,7 +300,7 @@ def render():
                         full_df.to_csv(index=False).encode("utf-8"),
                         f"full_scan_history_last1000_{datetime.now().strftime('%Y%m%d')}.csv",
                         "text/csv",
-                        use_container_width=False
+                        width='content'
                     )
                 else:
                     st.warning("No history data found.")
