@@ -31,8 +31,29 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("fortress-api")
 
+# API key auth — set FORTRESS_API_KEY env var to enable. Unset = local dev (no auth).
+_FORTRESS_API_KEY = os.environ.get("FORTRESS_API_KEY", "")
+if not _FORTRESS_API_KEY:
+    logger.warning("FORTRESS_API_KEY is not set — FastAPI endpoints are unauthenticated. Set this env var in production.")
+
 app = FastAPI(title="Fortress API", version="2.0")
 mf_router = APIRouter(prefix="/mf", tags=["mutual-funds"])
+
+
+@app.middleware("http")
+async def api_key_auth_middleware(request, call_next):
+    """Require X-API-Key header when FORTRESS_API_KEY env var is configured."""
+    if _FORTRESS_API_KEY:
+        # Health check and CORS preflight always pass
+        if request.url.path not in ("/api/health",) and request.method != "OPTIONS":
+            provided_key = request.headers.get("X-API-Key", "")
+            if provided_key != _FORTRESS_API_KEY:
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": "Unauthorized. Provide a valid X-API-Key header."},
+                )
+    return await call_next(request)
+
 
 @app.middleware("http")
 async def catch_exceptions_middleware(request, call_next):

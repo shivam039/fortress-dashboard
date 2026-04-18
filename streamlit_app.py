@@ -108,11 +108,20 @@ def _format_timestamp(value: Any) -> str:
 def _authenticate(username: str, password: str) -> bool:
     from utils.db import verify_user_credentials
 
-    # Special check for initial admin if DB is empty/new
-    if username == "admin" and password == os.environ.get("FORTRESS_APP_PASSWORD", "fortress123"):
-        return True
+    # Admin shortcut — uses FORTRESS_APP_PASSWORD env var
+    if username == "admin":
+        admin_pwd = os.environ.get("FORTRESS_APP_PASSWORD", "")
+        if not admin_pwd:
+            st.error(
+                "⚠️ Admin login is disabled: the **FORTRESS_APP_PASSWORD** "
+                "environment variable is not set. Contact the administrator.",
+                icon="🔐",
+            )
+            return False
+        return password == admin_pwd
 
     return verify_user_credentials(username.strip(), password)
+
 
 
 def _sync_user_profile(username: str) -> Dict[str, Any]:

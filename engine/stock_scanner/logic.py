@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 import pandas_ta as ta
 import datetime
+import logging
+import time
 import streamlit as st
 import yfinance as yf
 from fortress_config import (
@@ -13,6 +15,8 @@ from fortress_config import (
     TICKER_GROUPS,
 )
 from datetime import datetime
+
+_logger = logging.getLogger("fortress.scanner")
 
 # From development-db: Neon compatibility
 try:
@@ -55,19 +59,41 @@ def _safe_float(value, default=0.0):
 
 @st.cache_data(ttl="10m")
 def get_stock_data(symbol, period="1y", interval="1d", group_by="column"):
-    """Cached market data fetch to reduce repeated Yahoo calls across reruns."""
-    data = yf.download(symbol, period=period, interval=interval, group_by=group_by, progress=False, auto_adjust=False)
-    if isinstance(data.columns, pd.MultiIndex) and group_by == "column":
-        data.columns = data.columns.get_level_values(0)
-    return data
+    """Cached market data fetch with exponential-backoff retry on transient Yahoo failures."""
+    for attempt in range(3):
+        try:
+            data = yf.download(
+                symbol, period=period, interval=interval,
+                group_by=group_by, progress=False, auto_adjust=False,
+            )
+            if isinstance(data.columns, pd.MultiIndex) and group_by == "column":
+                data.columns = data.columns.get_level_values(0)
+            if not data.empty:
+                return data
+        except Exception as e:
+            _logger.warning(f"yfinance get_stock_data attempt {attempt+1}/3 failed for {symbol}: {e}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)  # 1s, then 2s
+    _logger.error(f"yfinance get_stock_data exhausted retries for {symbol}")
+    return pd.DataFrame()
 
 
 @st.cache_data(ttl="10m")
 def _download_close_series(symbol, period="1y", interval="1d"):
-    bench = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
-    if isinstance(bench.columns, pd.MultiIndex):
-        bench.columns = bench.columns.get_level_values(0)
-    return bench.get("Close", pd.Series(dtype=float)).dropna()
+    """Download close price series with exponential-backoff retry."""
+    for attempt in range(3):
+        try:
+            bench = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
+            if isinstance(bench.columns, pd.MultiIndex):
+                bench.columns = bench.columns.get_level_values(0)
+            series = bench.get("Close", pd.Series(dtype=float)).dropna()
+            if not series.empty:
+                return series
+        except Exception as e:
+            _logger.warning(f"yfinance _download_close_series attempt {attempt+1}/3 failed for {symbol}: {e}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+    return pd.Series(dtype=float)
 
 
 _INFO_CACHE = {}
@@ -158,7 +184,8 @@ def _get_benchmark_series(symbol):
         close = _download_close_series(symbol)
         _BENCHMARK_CACHE[symbol] = close
         return close
-    except:
+    except Exception as e:
+        _logger.warning(f"_get_benchmark_series failed for {symbol}: {e}")
         return pd.Series(dtype=float)
 
 
@@ -403,7 +430,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             adx_df = ta.adx(high, low, close, 14)
             adx_col = [c for c in adx_df.columns if c.startswith("ADX_")][0]
             adx_val = _safe_float(adx_df[adx_col].iloc[-1])
-        except:
+        except Exception as e:
+            _logger.debug(f"{ticker} ADX computation skipped: {e}")
             adx_val = 0.0
 
         # 52-Week High Calculation
@@ -482,7 +510,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
                 news_sentiment = "🚨 BLACK SWAN"
                 score_mod -= 40
                 black_swan_flag = 1
-        except: pass
+        except Exception as e:
+            _logger.debug(f"{ticker} news/black-swan check: {e}")
         try:
             # Optimized: Use cached calendar fetch
             cal = _get_ticker_calendar(ticker)
@@ -492,7 +521,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
                 if 0<=days_to<=7:
                     event_status = f"🚨 EARNINGS ({next_date.strftime('%d-%b')})"
                     score_mod -= 20
-        except: pass
+        except Exception as e:
+            _logger.debug(f"{ticker} calendar/earnings-risk check: {e}")
 
         analyst_count = target_high = target_low = target_median = target_mean = 0
         market_cap_cr = debt_to_equity = interest_coverage = 0.0
@@ -510,7 +540,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             market_cap_cr = _safe_info_float(info, "marketCap", 0.0) / 1e7
             debt_to_equity = _safe_info_float(info, "debtToEquity", 0.0)
             interest_coverage = _safe_info_float(info, "interestCoverage", 0.0)
-        except: pass
+        except Exception as e:
+            _logger.debug(f"{ticker} analyst/info fetch: {e}")
 
         try:
             # Optimized: Use cached earnings fetch
@@ -520,8 +551,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
                 earnings_ts = earnings.sort_index(ascending=False).index[0]
                 earnings_surprise = _safe_float(latest.get("Surprise(%)", 0.0), default=0.0)
                 negative_earnings_surprise = earnings_surprise < 0
-        except:
-            pass
+        except Exception as e:
+            _logger.debug(f"{ticker} earnings dates fetch: {e}")
 
         if tech_base:
             conviction += 50
@@ -674,7 +705,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
                 past_price = float(close.iloc[idx])
                 pct_change = ((price - past_price) / past_price) * 100
                 returns[f"Ret_{days}D"] = pct_change
-            except:
+            except Exception as e:
+                _logger.debug(f"{ticker} backtest return calc {days}D: {e}")
                 returns[f"Ret_{days}D"] = 0.0
 
         # --- Velocity & Strategy ---
@@ -751,7 +783,9 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             "Context_Raw": round(context_raw, 2),
             "Regime_Multiplier": round(regime_multiplier, 2)
         }
-    except: return None
+    except Exception as e:
+        _logger.warning(f"check_institutional_fortress failed for {ticker}: {e}")
+        return None
 
 
 def backtest_top_picks(scan_timestamp):
