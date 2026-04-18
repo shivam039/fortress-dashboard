@@ -67,6 +67,7 @@ def _bootstrap_session_state() -> None:
     st.session_state.setdefault("mf_job_controls_rendered", False)
     st.session_state.setdefault("screener_results", [])
     st.session_state.setdefault("screener_selected_broker", BROKER_OPTIONS[0])
+    st.session_state.setdefault("active_tab", "login")
 
 
 def _load_module(module_name: str):
@@ -114,7 +115,13 @@ def _render_login_screen() -> None:
 
     _, center, _ = st.columns([1, 1.5, 1])
     with center:
-        tab_login, tab_signup, tab_guest = st.tabs(["🔐 Login", "📝 Sign Up", "👤 Guest"])
+        active_tab = st.session_state.get("active_tab", "login")
+        if active_tab == "login":
+            tab_login, tab_signup, tab_guest = st.tabs(["🔐 Login", "📝 Sign Up", "👤 Guest"])
+        elif active_tab == "signup":
+            tab_signup, tab_login, tab_guest = st.tabs(["📝 Sign Up", "🔐 Login", "👤 Guest"])
+        else:
+            tab_login, tab_signup, tab_guest = st.tabs(["🔐 Login", "📝 Sign Up", "👤 Guest"])
 
         with tab_login:
             with st.form("login_form"):
@@ -149,7 +156,8 @@ def _render_login_screen() -> None:
                 else:
                     from utils.db import upsert_app_user
                     upsert_app_user(username=new_user, full_name=full_name, email=email, password=new_pass)
-                    st.success("Account created! Please switch to Login tab.")
+                    st.session_state["active_tab"] = "login"
+                    st.rerun()
 
         with tab_guest:
             st.write("Explore the Fortress terminal with a temporary guest session. Note: Broker connections are saved per account.")

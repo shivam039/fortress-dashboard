@@ -148,6 +148,25 @@ def _exec(sql: str, params: Optional[Dict[str, Any]] = None):
         conn.execute(sql, params or {})
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=4),
+    retry=retry_if_exception(_should_retry_db_error),
+    reraise=True,
+)
+def _query(sql: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Execute a query and return results as list of dicts."""
+    if _can_use_neon():
+        engine = get_db_engine()
+        with engine.connect() as conn:
+            result = conn.execute(text(sql), params or {}).fetchall()
+            return [dict(row._mapping) for row in result]
+    with _sqlite_connection() as conn:
+        cursor = conn.execute(sql, params or {})
+        columns = [desc[0] for desc in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
 @st.cache_data(ttl=300)
 @retry(
     stop=stop_after_attempt(3),
