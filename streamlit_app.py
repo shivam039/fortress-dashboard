@@ -17,6 +17,17 @@ for path in (str(ENGINE_DIR), str(ROOT_DIR)):
     if path not in sys.path:
         sys.path.insert(0, path)
 
+# Force all engine packages to load cleanly to avoid Python 3.13 Streamlit concurrent reload destruction.
+# Using import_module is more robust than manual exec_module for handling package hierarchies.
+engine_pkgs = ["utils", "mf_lab", "stock_scanner", "options_algo", "commodities", "fortress_config"]
+for pkg in engine_pkgs:
+    if pkg not in sys.modules:
+        try:
+            importlib.import_module(pkg)
+        except Exception as e:
+            # We log it but continue to let the app try to start
+            print(f"DEBUG: Pre-loading {pkg} failed or skipped: {e}")
+
 
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
 
