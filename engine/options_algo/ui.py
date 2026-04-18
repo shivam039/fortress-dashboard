@@ -19,6 +19,8 @@ def render(broker_choice="Zerodha"):
     debug_mode = st.sidebar.toggle("Options Debug Mode", value=False)
 
     underlying = st.sidebar.selectbox("Underlying", OPTIONS_UNDERLYINGS)
+    if "NSE" in underlying or ".NS" in underlying:
+        st.sidebar.info("⚠️ NSE Options API restricted; using high-fidelity math synthetic data for algo testing.")
     expiries = get_available_expiries(underlying)
     expiry = st.sidebar.selectbox("Expiry", expiries) if expiries else None
     risk_pct = st.sidebar.slider("Risk %", 0.5, 5.0, 1.0, 0.5)
