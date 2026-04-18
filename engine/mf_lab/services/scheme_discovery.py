@@ -628,7 +628,7 @@ def get_category_stats() -> Dict:
 def get_distinct_fund_types() -> List[str]:
     """
     Get all distinct fund types from the pre-computed batch table.
-    This eliminates the need to load all schemes just to populate a dropdown.
+    Falls back to loading from cached schemes if batch table unavailable.
     
     Returns: Alphabetically sorted list of types like ["Debt", "Equity", "Hybrid", "Other"]
     """
@@ -645,21 +645,29 @@ def get_distinct_fund_types() -> List[str]:
 
         df = _read_df(query, {}, ttl="1h")
         
-        if df.empty:
-            return []
-        
-        types = sorted(df["type"].unique().tolist())
-        return types
+        if not df.empty:
+            types = sorted(df["type"].unique().tolist())
+            return types
 
     except Exception as e:
-        logger.error(f"Error fetching distinct fund types: {e}")
-        return []
+        logger.debug(f"Batch table unavailable, falling back to cached schemes: {e}")
+
+    # Fallback: Load from monthly cached schemes
+    try:
+        all_schemes = get_all_schemes_cached()
+        if not all_schemes.empty:
+            types = sorted(all_schemes["type"].unique().tolist())
+            return types
+    except Exception as e:
+        logger.error(f"Error fetching scheme types from cache: {e}")
+    
+    return []
 
 
 def get_distinct_categories_for_type(scheme_type: str) -> List[str]:
     """
     Get all distinct categories for a given fund type.
-    Pre-computed from the batch table for instant dropdown population.
+    Falls back to loading from cached schemes if batch table unavailable.
     
     Parameters:
     - scheme_type: e.g., "Equity", "Debt", "Hybrid"
@@ -680,12 +688,21 @@ def get_distinct_categories_for_type(scheme_type: str) -> List[str]:
 
         df = _read_df(query, {"typ": scheme_type}, ttl="1h")
         
-        if df.empty:
-            return []
-        
-        categories = sorted(df["category"].unique().tolist())
-        return categories
+        if not df.empty:
+            categories = sorted(df["category"].unique().tolist())
+            return categories
 
     except Exception as e:
-        logger.error(f"Error fetching distinct categories for type '{scheme_type}': {e}")
+        logger.debug(f"Batch table unavailable for type '{scheme_type}', falling back to cached schemes: {e}")
+
+    # Fallback: Load from monthly cached schemes
+    try:
+        all_schemes = get_all_schemes_cached()
+        if not all_schemes.empty:
+            filtered = all_schemes[all_schemes["type"] == scheme_type]
+            if not filtered.empty:
+                categories = sorted(filtered["category"].unique().tolist())
+                return categories
+    except Exception as e:
+        logger.error(f"Error fetching categories from cache: {e}")
         return []

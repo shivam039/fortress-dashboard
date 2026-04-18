@@ -591,7 +591,10 @@ def init_db():
         _ensure_ohlcv_cache_neon()
         _ensure_options_chain_cache_neon()
         _ensure_mf_scheme_catalog_neon()
-        _ensure_mf_scheme_batches_neon()
+        try:
+            _ensure_mf_scheme_batches_neon()
+        except Exception as e:
+            logger.warning("Failed to create mf_scheme_batches table: %s", e)
         try:
             _ensure_mf_nav_cache_neon()
         except Exception:
