@@ -1,5 +1,5 @@
 # engine/main.py
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -20,6 +20,7 @@ from stock_scanner.logic import (
 )
 from stock_scanner.ui import generate_action_link
 from mf_lab.logic import run_full_mf_scan, fetch_nav_history
+from mf_lab.jobs import run_mf_background_job
 from commodities.logic import build_commodities_frame
 from fortress_config import TICKER_GROUPS
 
@@ -62,6 +63,13 @@ class ScanRequest(BaseModel):
     market_cap_cr_min: float = 1500.0
     price_min: float = 80.0
     broker: str = "Zerodha"
+
+
+class MFJobRequest(BaseModel):
+    """Request body for async MF background jobs."""
+    job_type: str            # e.g. 'full_refresh', 'update_metrics', 'recalculate_rankings'
+    force_refresh: bool = False
+    scheme_codes: Optional[List[str]] = None  # None = all schemes
 
 @app.get("/api/health")
 def health_check():
@@ -189,6 +197,40 @@ async def get_sector_pulse(universe: str = "Nifty 50"):
 async def get_mf_analysis(limit: Optional[int] = Query(None)):
     df = run_full_mf_scan(limit=limit)
     return df.to_dict(orient="records")
+
+
+@app.post("/mf/trigger-job", status_code=202)
+async def trigger_mf_job(req: MFJobRequest, background_tasks: BackgroundTasks):
+    """
+    Accepts a Mutual Fund processing job and immediately schedules it as a
+    background task (HTTP 202 Accepted). The caller (Streamlit) is never blocked.
+
+    supported job_type values:
+      - 'full_refresh'         → discover + score all Direct-Growth schemes (5-15 min)
+      - 'update_metrics'       → lightweight re-score (placeholder)
+      - 'recalculate_rankings' → re-run SQL ranking partitions (placeholder)
+    """
+    VALID_JOBS = {"full_refresh", "update_metrics", "recalculate_rankings"}
+    if req.job_type not in VALID_JOBS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown job_type '{req.job_type}'. Valid options: {sorted(VALID_JOBS)}"
+        )
+
+    background_tasks.add_task(
+        run_mf_background_job,
+        job_type=req.job_type,
+        force_refresh=req.force_refresh,
+        scheme_codes=req.scheme_codes,
+    )
+
+    logger.info(f"MF background job queued: {req.job_type} (force={req.force_refresh})")
+    return {
+        "status": "accepted",
+        "job_type": req.job_type,
+        "force_refresh": req.force_refresh,
+        "message": f"Job '{req.job_type}' is running on the server. Streamlit stays responsive."
+    }
 
 @app.get("/api/commodities")
 async def get_commodities():

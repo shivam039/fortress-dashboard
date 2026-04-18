@@ -1,7 +1,9 @@
 import logging
+import os
 from datetime import datetime
 
 import pandas as pd
+import requests
 import streamlit as st
 
 from mf_lab.logic import (
@@ -128,69 +130,81 @@ def render():
 
 
 def _render_consistency_analysis():
-    """Render the existing consistency analysis tab."""
-    # ── Sidebar toggles ──────────────────────────────────────────────
+    """Render the MF Consistency Analysis tab — all heavy work runs on the FastAPI backend."""
+    # ── Config ────────────────────────────────────────────────────────
+    BACKEND_URL = os.environ.get("FORTRESS_API_URL", "http://127.0.0.1:8000")
+    JOB_OPTIONS = {
+        "🔄 Full Consistency Refresh (All Funds)": "full_refresh",
+        "📐 Update Metrics (Lightweight)": "update_metrics",
+        "🏆 Recalculate Rankings": "recalculate_rankings",
+    }
     debug_mode = st.sidebar.toggle("MF Debug Mode", value=False)
-    
+
     categories = st.sidebar.multiselect(
         "Category", ["Equity", "Debt", "Hybrid"],
         default=["Equity", "Debt", "Hybrid"]
     )
     min_sharpe = st.sidebar.number_input("Min Sharpe", min_value=0.0, value=0.5, step=0.1)
 
+    # ── Server-Side Job Trigger ───────────────────────────────────────
+    with st.expander("⚙️ Server-Side Data Jobs", expanded=False):
+        st.caption(
+            "Trigger heavy MF processing on the **FastAPI backend**. "
+            "Streamlit stays fully responsive — the job runs headlessly and saves results to the DB."
+        )
+        col_job, col_force = st.columns([3, 1])
+        with col_job:
+            job_label = st.selectbox(
+                "Job Type",
+                options=list(JOB_OPTIONS.keys()),
+                key="mf_job_type",
+            )
+        with col_force:
+            force_refresh = st.checkbox("Force Refresh", value=False, key="mf_force_refresh")
+
+        if st.button("🚀 Trigger Job on Server", type="primary", key="mf_trigger_btn"):
+            job_type = JOB_OPTIONS[job_label]
+            try:
+                resp = requests.post(
+                    f"{BACKEND_URL}/mf/trigger-job",
+                    json={"job_type": job_type, "force_refresh": force_refresh},
+                    timeout=10,
+                )
+                if resp.status_code == 202:
+                    data = resp.json()
+                    st.success(
+                        f"✅ **Job accepted!** `{job_type}` is running in the background on the server. "
+                        "Streamlit will stay responsive. Results will appear on next page load once complete."
+                    )
+                    st.json(data)
+                else:
+                    st.error(f"❌ Server rejected job (HTTP {resp.status_code}): {resp.text}")
+            except requests.exceptions.ConnectionError:
+                st.warning(
+                    f"⚠️ Could not reach the backend at `{BACKEND_URL}`. "
+                    "Make sure the FastAPI server is running (`engine/main.py`)."
+                )
+            except requests.exceptions.Timeout:
+                st.warning("⚠️ Backend request timed out. The server may be busy.")
+            except Exception as e:
+                st.error(f"Unexpected error: {e}")
+
     # ── Load from Neon cache (instant) ───────────────────────────────
     cached_df = pd.DataFrame()
     cache_info_text = "No cached results yet."
-
     try:
         cached_df = fetch_mf_cached_results(max_age_days=31)
         if not cached_df.empty:
             cached_df = _post_process(cached_df)
-            # Show scan freshness
             if "scan_date" in cached_df.columns:
                 latest = cached_df["scan_date"].max()
-                cache_info_text = f"✅ Showing results from last scan: **{latest}** ({len(cached_df)} funds)"
+                cache_info_text = f"✅ Last scan: **{latest}** · {len(cached_df)} funds in DB"
             else:
-                cache_info_text = f"✅ Showing {len(cached_df)} cached funds."
+                cache_info_text = f"✅ {len(cached_df)} cached funds loaded from DB."
     except Exception as e:
         logger.error(f"Neon cache load failed: {e}")
 
-    # ── Run monthly scan button ───────────────────────────────────────
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.caption(cache_info_text)
-    with col2:
-        run_scan = st.button(
-            "🚀 Run Full MF Scan",
-            type="primary",
-            width='stretch',
-            help="Discovers ALL Direct-Growth funds from AMFI and scores them. Takes 5-15 mins. Results saved to DB for 30 days."
-        )
-
-    if run_scan:
-        st.info("⏳ Discovering all Direct-Growth funds from AMFI and scoring in parallel (20 workers)… This may take 5–15 minutes. You can switch tabs — results will be saved automatically.")
-
-        progress_bar = st.progress(0.0)
-        status_text  = st.empty()
-        results_holder = st.empty()
-
-        def _update_progress(done, total):
-            pct = done / total if total > 0 else 0
-            progress_bar.progress(min(pct, 1.0))
-            status_text.text(f"Scored {done}/{total} funds…")
-
-        try:
-            df = run_full_mf_scan(progress_callback=_update_progress, max_workers=20)
-            if not df.empty:
-                progress_bar.progress(1.0)
-                status_text.success(f"✅ Scan complete! {len(df)} funds scored and saved to Neon.")
-                cached_df = _post_process(df)
-                log_audit("MF Full Scan", "Mutual Funds", f"{len(df)} funds scored and saved")
-            else:
-                st.warning("Scan returned no results. Check AMFI API availability.")
-        except Exception as e:
-            st.error(f"Scan failed: {e}")
-            logger.error(f"MF full scan error: {e}")
+    st.caption(cache_info_text)
 
     # ── Display results ───────────────────────────────────────────────
     if cached_df.empty:
