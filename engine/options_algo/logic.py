@@ -96,8 +96,8 @@ def fetch_option_chain(symbol: str, expiry: str):
             calls, puts = [], []
             for s in strikes:
                 iv = 0.15 + 0.05 * np.abs(s - spot_val) / spot_val
-                calls.append({"strike": float(s), "openInterest": np.random.randint(1000, 100000), "impliedVolatility": iv, "lastPrice": max(0.5, spot_val - s + spot_val * iv * np.sqrt(t_val) * 0.4)})
-                puts.append({"strike": float(s), "openInterest": np.random.randint(1000, 100000), "impliedVolatility": iv, "lastPrice": max(0.5, s - spot_val + spot_val * iv * np.sqrt(t_val) * 0.4)})
+                calls.append({"strike": float(s), "openInterest": np.random.randint(1000, 100000), "impliedVolatility": iv, "lastPrice": max(0.5, spot_val - s + spot_val * iv * np.sqrt(t_val) * 0.4), "contractSymbol": f"{symbol}{s}CE"})
+                puts.append({"strike": float(s), "openInterest": np.random.randint(1000, 100000), "impliedVolatility": iv, "lastPrice": max(0.5, s - spot_val + spot_val * iv * np.sqrt(t_val) * 0.4), "contractSymbol": f"{symbol}{s}PE"})
             
             class SyntheticChain:
                 @property
