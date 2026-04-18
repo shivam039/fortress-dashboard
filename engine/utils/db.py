@@ -673,10 +673,32 @@ def init_db():
         _ensure_ohlcv_cache_neon()
         _ensure_options_chain_cache_neon()
         _ensure_mf_scheme_catalog_neon()
+        
+        # Schema Migrations (Postgres)
+        try:
+            _exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS password_hash TEXT")
+        except Exception:
+            pass
+        try:
+            _exec("ALTER TABLE user_broker_connections ADD COLUMN IF NOT EXISTS broker_client_id TEXT")
+        except Exception:
+            pass
+            
         try:
             _ensure_mf_scheme_batches_neon()
         except Exception as e:
             logger.warning("Failed to create mf_scheme_batches table: %s", e)
+    else:
+        # Schema Migrations (SQLite fallback)
+        with _sqlite_connection() as conn:
+            try:
+                conn.execute("ALTER TABLE app_users ADD COLUMN password_hash TEXT")
+            except Exception:
+                pass  # Likely already exists
+            try:
+                conn.execute("ALTER TABLE user_broker_connections ADD COLUMN broker_client_id TEXT")
+            except Exception:
+                pass
         try:
             _ensure_mf_nav_cache_neon()
         except Exception:
