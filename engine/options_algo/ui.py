@@ -69,7 +69,7 @@ def render(broker_choice="Zerodha"):
         
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=grid, y=pnl, mode="lines", name=picked, line=dict(color='yellow' if "Long" in picked else 'blue')))
-        fig.add_hline(y=0, line_width=1, line_dash="dash", lineColor="gray")
+        fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
         fig.update_layout(title=f"Strategy Payoff: {picked}", xaxis_title="Underlying Price", yaxis_title="P&L (Premium)")
         st.plotly_chart(fig, width="stretch")
 

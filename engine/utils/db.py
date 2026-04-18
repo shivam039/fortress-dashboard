@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Optional, Union
 import pandas as pd
 import streamlit as st
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
-from utils.security import decrypt_token, encrypt_token
 
 try:
     from sqlalchemy import create_engine, text
@@ -41,6 +40,18 @@ DB_MODE = "postgres" if "DATABASE_URL" in os.environ else "sqlite"
 logger.info(f"DB mode detected: {DB_MODE}")
 
 DB_NAME = "fortress_history.db"
+
+
+def _encrypt_token(value: str) -> str:
+    from utils.security import encrypt_token
+
+    return encrypt_token(value)
+
+
+def _decrypt_token(value: str) -> str:
+    from utils.security import decrypt_token
+
+    return decrypt_token(value)
 
 
 def _sqlite_connection():
@@ -1089,8 +1100,8 @@ def upsert_user_broker_connection(
     payload = {
         "user_id": user_id,
         "broker_name": broker_name,
-        "access_token_encrypted": encrypt_token(access_token),
-        "refresh_token_encrypted": encrypt_token(refresh_token),
+        "access_token_encrypted": _encrypt_token(access_token),
+        "refresh_token_encrypted": _encrypt_token(refresh_token),
         "expires_at": expires_at,
         "is_active": is_active,
         "metadata_json": _serialize_json(metadata),
@@ -1184,7 +1195,7 @@ def get_broker_access_token(username: str, broker_name: str) -> str:
     )
     if df.empty:
         return ""
-    return decrypt_token(str(df.iloc[0]["access_token_encrypted"]))
+    return _decrypt_token(str(df.iloc[0]["access_token_encrypted"]))
 
 
 def create_fortress_order(
