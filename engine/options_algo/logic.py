@@ -85,7 +85,7 @@ def fetch_option_chain(symbol: str, expiry: str):
             import datetime
             import numpy as np
             spot_data = _retry(lambda: yf.download(symbol, period="5d", progress=False), "options_synthetic_spot")
-            spot_val = float(spot_data["Close"].dropna().iloc[-1]) if not spot_data.empty else (22000.0 if "NSE" in symbol else 1000.0)
+            spot_val = float(spot_data["Close"].dropna().values.ravel()[-1]) if not spot_data.empty else (22000.0 if "NSE" in symbol else 1000.0)
             
             step = 50 if spot_val < 30000 else 100
             if spot_val < 1000: step = 5
@@ -109,7 +109,7 @@ def fetch_option_chain(symbol: str, expiry: str):
 
     chain = _retry(_load_chain, "options_chain")
     spot_data = _retry(lambda: yf.download(symbol, period="2d", progress=False), "options_spot")
-    spot = float(spot_data["Close"].dropna().iloc[-1]) if not spot_data.empty else 0.0
+    spot = float(spot_data["Close"].dropna().values.ravel()[-1]) if not spot_data.empty else 0.0
     t = max((datetime.strptime(expiry, "%Y-%m-%d") - datetime.now()).days / 365.0, 1 / 365)
 
     call_df = chain.calls.copy()
