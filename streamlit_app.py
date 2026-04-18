@@ -507,8 +507,32 @@ def _render_orders_tab(username: str) -> None:
     )
 
 
+def _render_commodities_tab(username: str) -> None:
+    commodities_ui = _load_module("commodities.ui")
+    active_brokers = _get_active_broker_names(username)
+    broker_choices = active_brokers or BROKER_OPTIONS
+    st.subheader("Commodities")
+    broker_name = st.selectbox("Broker", broker_choices, key="commodities_broker")
+    commodities_ui.render(broker_name)
+
+
+def _render_options_tab(username: str) -> None:
+    options_ui = _load_module("options_algo.ui")
+    active_brokers = _get_active_broker_names(username)
+    broker_choices = active_brokers or BROKER_OPTIONS
+    st.subheader("Options")
+    broker_name = st.selectbox("Broker", broker_choices, key="options_broker")
+    options_ui.render(broker_name)
+
+
+def _render_history_tab() -> None:
+    history_ui = _load_module("history.ui")
+    st.subheader("Scan History")
+    history_ui.render()
+
+
 def _render_authenticated_app() -> None:
-    from utils.db import fetch_fortress_orders, init_db
+    from utils.db import init_db
 
     init_db()
     username = st.session_state["current_user"]
@@ -528,7 +552,7 @@ def _render_authenticated_app() -> None:
         if st.button("Logout", use_container_width=True):
             _logout()
 
-    tabs = st.tabs(["Dashboard", "Stock Screener", "MF Lab", "Orders"])
+    tabs = st.tabs(["Dashboard", "Stock Screener", "MF Lab", "Orders", "Commodities", "Options", "Scan History"])
     st.session_state["mf_job_controls_rendered"] = False
 
     with tabs[0]:
@@ -539,6 +563,12 @@ def _render_authenticated_app() -> None:
         _render_mf_lab_tab(st.session_state["fastapi_url"])
     with tabs[3]:
         _render_orders_tab(username)
+    with tabs[4]:
+        _render_commodities_tab(username)
+    with tabs[5]:
+        _render_options_tab(username)
+    with tabs[6]:
+        _render_history_tab()
 
 
 _bootstrap_session_state()

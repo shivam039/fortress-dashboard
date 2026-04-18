@@ -940,6 +940,22 @@ def _deserialize_json(value: Any) -> Dict[str, Any]:
 
 
 def upsert_app_user(username: str, full_name: str = "", email: str = "", phone: str = "", account_status: str = "Active"):
+    if _can_use_neon():
+        _ensure_app_users_neon()
+    else:
+        with _sqlite_connection() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS app_users (
+                    user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    full_name TEXT,
+                    email TEXT,
+                    phone TEXT,
+                    account_status TEXT DEFAULT 'Active',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    last_login_at TEXT
+                )"""
+            )
     payload = {
         "username": username.strip(),
         "full_name": full_name,
@@ -1016,6 +1032,25 @@ def _get_user_id(username: str) -> Optional[int]:
 
 
 def list_user_broker_connections(username: str) -> pd.DataFrame:
+    if _can_use_neon():
+        _ensure_user_broker_connections_neon()
+    else:
+        with _sqlite_connection() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS user_broker_connections (
+                    connection_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    broker_name TEXT NOT NULL,
+                    access_token_encrypted TEXT,
+                    refresh_token_encrypted TEXT,
+                    expires_at TEXT,
+                    connected_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    is_active INTEGER DEFAULT 1,
+                    metadata_json TEXT,
+                    UNIQUE (user_id, broker_name)
+                )"""
+            )
     user_id = _get_user_id(username)
     if user_id is None:
         return pd.DataFrame()
@@ -1164,6 +1199,27 @@ def create_fortress_order(
     broker_order_id: str = "",
     notes: str = "",
 ):
+    if _can_use_neon():
+        _ensure_fortress_orders_neon()
+    else:
+        with _sqlite_connection() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS fortress_orders (
+                    order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    stock_name TEXT,
+                    order_type TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    price REAL,
+                    status TEXT DEFAULT 'Pending',
+                    broker_name TEXT,
+                    broker_order_id TEXT,
+                    notes TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
     upsert_app_user(username=username)
     user_id = _get_user_id(username)
     if user_id is None:
@@ -1218,6 +1274,27 @@ def fetch_fortress_orders(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
 ) -> pd.DataFrame:
+    if _can_use_neon():
+        _ensure_fortress_orders_neon()
+    else:
+        with _sqlite_connection() as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS fortress_orders (
+                    order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    symbol TEXT NOT NULL,
+                    stock_name TEXT,
+                    order_type TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    price REAL,
+                    status TEXT DEFAULT 'Pending',
+                    broker_name TEXT,
+                    broker_order_id TEXT,
+                    notes TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
     user_id = _get_user_id(username)
     if user_id is None:
         return pd.DataFrame()

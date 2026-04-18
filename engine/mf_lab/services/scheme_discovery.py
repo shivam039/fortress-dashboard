@@ -17,6 +17,14 @@ from typing import Dict, List, Optional, Tuple
 
 from mf_lab.services.config import logger, API_TIMEOUT, MAX_RETRIES, RETRY_DELAY
 
+
+def _recent_cache_predicate(days: int = 30) -> str:
+    from utils.db import _can_use_neon
+
+    if _can_use_neon():
+        return f"cached_date >= CURRENT_DATE - INTERVAL '{days} days'"
+    return f"cached_date >= date('now', '-{days} days')"
+
 # ────────────────────────────────────────────────────────────────────
 #  SCHEME CATEGORIZATION ENGINE
 # ────────────────────────────────────────────────────────────────────
@@ -377,20 +385,21 @@ def _compute_category_batches():
         # Create batch table if not exists
         _exec("""
             CREATE TABLE IF NOT EXISTS mf_scheme_batches (
-                batch_id TEXT PRIMARY KEY,
                 type TEXT NOT NULL,
                 category TEXT NOT NULL,
                 scheme_count INT DEFAULT 0,
                 amc_count INT DEFAULT 0,
-                batch_created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                cached_date DATE DEFAULT CURRENT_DATE,
+                PRIMARY KEY (type, category, cached_date)
             )
         """)
 
         # Query all schemes and compute batches
-        df = _read_df("""
+        cache_filter = _recent_cache_predicate(30)
+        df = _read_df(f"""
             SELECT type, category, COUNT(*) as scheme_count, COUNT(DISTINCT amc_name) as amc_count
             FROM mf_scheme_catalog
-            WHERE cached_date >= CURRENT_DATE - INTERVAL '30 days'
+            WHERE {cache_filter}
             GROUP BY type, category
             ORDER BY type, category
         """, ttl="1m")
@@ -401,24 +410,21 @@ def _compute_category_batches():
 
         # Upsert batch records
         for _, row in df.iterrows():
-            batch_id = f"{row['type']}_{row['category']}".replace(" ", "_").lower()
             try:
                 _exec("""
-                    INSERT INTO mf_scheme_batches (batch_id, type, category, scheme_count, amc_count, batch_created_at)
-                    VALUES (:bid, :typ, :cat, :sc, :ac, CURRENT_TIMESTAMP)
-                    ON CONFLICT(batch_id) DO UPDATE SET
+                    INSERT INTO mf_scheme_batches (type, category, scheme_count, amc_count, cached_date)
+                    VALUES (:typ, :cat, :sc, :ac, CURRENT_DATE)
+                    ON CONFLICT(type, category, cached_date) DO UPDATE SET
                         scheme_count = EXCLUDED.scheme_count,
-                        amc_count = EXCLUDED.amc_count,
-                        batch_created_at = EXCLUDED.batch_created_at
+                        amc_count = EXCLUDED.amc_count
                 """, {
-                    "bid": batch_id,
                     "typ": row["type"],
                     "cat": row["category"],
                     "sc": int(row["scheme_count"]),
                     "ac": int(row["amc_count"])
                 })
             except Exception as batch_err:
-                logger.debug(f"Batch compute error for {batch_id}: {batch_err}")
+                logger.debug(f"Batch compute error for {row['type']} / {row['category']}: {batch_err}")
 
         logger.info(f"✓ Pre-computed {len(df)} category/type batches for instant filtering")
 
@@ -433,10 +439,12 @@ def get_batch_stats() -> Dict[str, any]:
     """
     try:
         from utils.db import _read_df
+        cache_filter = _recent_cache_predicate(30)
 
-        df = _read_df("""
+        df = _read_df(f"""
             SELECT type, category, scheme_count, amc_count
             FROM mf_scheme_batches
+            WHERE {cache_filter}
             ORDER BY type, category
         """, ttl="1h")
 
@@ -482,7 +490,7 @@ def get_batch_filtered_schemes(scheme_type: str = None, category: str = None) ->
     try:
         from utils.db import _read_df
 
-        where_clauses = ["cached_date >= CURRENT_DATE - INTERVAL '30 days'"]
+        where_clauses = [_recent_cache_predicate(30)]
         params = {}
 
         if scheme_type:
@@ -634,12 +642,13 @@ def get_distinct_fund_types() -> List[str]:
     """
     try:
         from utils.db import _read_df
+        cache_filter = _recent_cache_predicate(30)
 
         # Query the pre-computed batch table to get distinct types
-        query = """
+        query = f"""
             SELECT DISTINCT type
             FROM mf_scheme_batches
-            WHERE cached_date >= CURRENT_DATE - INTERVAL '30 days'
+            WHERE {cache_filter}
             ORDER BY type
         """
 
@@ -676,13 +685,14 @@ def get_distinct_categories_for_type(scheme_type: str) -> List[str]:
     """
     try:
         from utils.db import _read_df
+        cache_filter = _recent_cache_predicate(30)
 
         # Query the pre-computed batch table
-        query = """
+        query = f"""
             SELECT DISTINCT category
             FROM mf_scheme_batches
             WHERE type = :typ
-            AND cached_date >= CURRENT_DATE - INTERVAL '30 days'
+            AND {cache_filter}
             ORDER BY category
         """
 
