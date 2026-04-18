@@ -6,15 +6,7 @@ import yfinance as yf
 # Must be first Streamlit command
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
 
-try:
-    from utils.db import init_db
-except Exception as e:
-    import traceback
-    traceback.print_exc()
-    raise ImportError(
-        "Failed to import init_db from utils.db. "
-        "Verify that the engine package is available and the repository root is on PYTHONPATH."
-    ) from e
+from utils.db import init_db
 
 import mf_lab.ui
 import stock_scanner.ui
