@@ -23,4 +23,12 @@ if os.path.exists(utils_init):
     sys.modules["utils"] = module
     spec.loader.exec_module(module)
 
+# Preload fortress_config dynamically to avoid Python 3.13 concurrent path import KeyErrors
+fc_path = os.path.join(ENGINE_DIR, "fortress_config.py")
+if os.path.exists(fc_path):
+    spec_fc = importlib.util.spec_from_file_location("fortress_config", fc_path)
+    mod_fc = importlib.util.module_from_spec(spec_fc)
+    sys.modules["fortress_config"] = mod_fc
+    spec_fc.loader.exec_module(mod_fc)
+
 runpy.run_path(os.path.join(LEGACY_DIR, "streamlit_app.py"), run_name="__main__")

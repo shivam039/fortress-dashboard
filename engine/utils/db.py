@@ -447,7 +447,8 @@ def fetch_ohlcv_cache(symbol: str, period: str = "5y", max_age_hours: int = 20) 
             ).fetchone()
         if row and row[0]:
             import pandas as pd
-            df = pd.read_json(json.dumps(row[0]), orient="split")
+            import io
+            df = pd.read_json(io.StringIO(json.dumps(row[0])), orient="split")
             df.index = pd.to_datetime(df.index)
             return df
     except Exception as e:
@@ -509,7 +510,8 @@ def fetch_options_chain_cache(symbol: str, expiry: str, max_age_minutes: int = 5
             ).fetchone()
         if row and row[0]:
             import pandas as pd
-            chain_df = pd.read_json(json.dumps(row[0]), orient="split")
+            import io
+            chain_df = pd.read_json(io.StringIO(json.dumps(row[0])), orient="split")
             return {"chain": chain_df, "spot": float(row[1] or 0)}
     except Exception as e:
         logger.error("options_chain_cache fetch error %s/%s: %s", symbol, expiry, e)
