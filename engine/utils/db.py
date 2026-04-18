@@ -1,6 +1,7 @@
 import functools
 import json
 import logging
+import math
 import os
 import sqlite3
 import time
@@ -563,6 +564,25 @@ def _ensure_mf_scheme_catalog_neon():
     _exec("CREATE INDEX IF NOT EXISTS idx_mf_scheme_cached_date ON mf_scheme_catalog (cached_date DESC)")
 
 
+def _ensure_mf_scheme_batches_neon():
+    """Create the MF scheme batches table for pre-computed type/category statistics."""
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS mf_scheme_batches (
+            type TEXT NOT NULL,
+            category TEXT NOT NULL,
+            scheme_count INT DEFAULT 0,
+            amc_count INT DEFAULT 0,
+            cached_date DATE DEFAULT CURRENT_DATE,
+            PRIMARY KEY (type, category, cached_date)
+        )
+        """
+    )
+    _exec("CREATE INDEX IF NOT EXISTS idx_mf_batches_type ON mf_scheme_batches (type)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_mf_batches_category ON mf_scheme_batches (category)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_mf_batches_cached_date ON mf_scheme_batches (cached_date DESC)")
+
+
 def init_db():
     if _can_use_neon():
         _ensure_scan_history_table_neon()
@@ -571,6 +591,7 @@ def init_db():
         _ensure_ohlcv_cache_neon()
         _ensure_options_chain_cache_neon()
         _ensure_mf_scheme_catalog_neon()
+        _ensure_mf_scheme_batches_neon()
         try:
             _ensure_mf_nav_cache_neon()
         except Exception:
@@ -1322,7 +1343,17 @@ def upsert_mf_scan_results(df: pd.DataFrame):
     try:
         for _, row in df.iterrows():
             record = row.to_dict()
-            record = {k: (None if (isinstance(v, float) and v != v) else v) for k, v in record.items()}
+            # Sanitize NaN and Infinity values (invalid in JSON/JSONB)
+            sanitized = {}
+            for k, v in record.items():
+                if isinstance(v, float):
+                    if math.isnan(v) or math.isinf(v):
+                        sanitized[k] = None
+                    else:
+                        sanitized[k] = v
+                else:
+                    sanitized[k] = v
+            record = sanitized
             scheme_code = str(record.get("Scheme Code") or record.get("scheme_code") or "UNKNOWN")
             scheme_name = str(record.get("Scheme") or record.get("scheme_name") or "")
             payload = json.dumps(record, default=str)
