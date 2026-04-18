@@ -20,6 +20,8 @@ for path in (str(ENGINE_DIR), str(ROOT_DIR)):
 
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
 
+from utils.db import init_db
+
 
 DEFAULT_API_URL = os.environ.get("FORTRESS_API_URL", "http://127.0.0.1:8000")
 MF_JOB_OPTIONS = {
@@ -540,6 +542,7 @@ def _render_authenticated_app() -> None:
 
 
 _bootstrap_session_state()
+init_db()
 
 if not st.session_state["logged_in"]:
     _render_login_screen()
