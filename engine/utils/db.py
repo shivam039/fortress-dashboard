@@ -1011,19 +1011,21 @@ def verify_user_credentials(username: str, password: str) -> bool:
     user_id = _get_user_id(username)
     if user_id is None:
         return False
-    
-    res = _query(
-        "SELECT password_hash FROM app_users WHERE user_id = :user_id",
-        {"user_id": user_id}
+
+    df = _read_df(
+        "SELECT password_hash FROM app_users WHERE user_id = :user_id LIMIT 1",
+        {"user_id": user_id},
+        ttl="5s",
     )
-    if not res:
+    if df.empty:
         return False
-    
-    stored_hash = res[0].get("password_hash")
+
+    stored_hash = df.iloc[0].get("password_hash")
     if not stored_hash:
         return False
-        
+
     return stored_hash == hash_password(password)
+
 
 
 def delete_app_user(username: str) -> None:
