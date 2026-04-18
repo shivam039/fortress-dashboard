@@ -1,4 +1,3 @@
-print("Loading streamlit_app ...")
 # streamlit_app.py - v9.6 MASTER TERMINAL
 import streamlit as st
 import yfinance as yf

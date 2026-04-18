@@ -1,4 +1,3 @@
-print("Loading utils.db ...")
 import functools
 import json
 import logging

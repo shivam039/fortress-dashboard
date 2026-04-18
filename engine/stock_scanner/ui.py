@@ -11,9 +11,6 @@ from datetime import datetime
 import numpy as np
 import sys
 
-print("Loading stock_scanner.ui ...")
-print(f"sys.path during ui.py load: {sys.path}")
-
 from fortress_config import TICKER_GROUPS, INDEX_BENCHMARKS
 from stock_scanner.logic import (
     check_institutional_fortress,

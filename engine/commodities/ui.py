@@ -1,4 +1,3 @@
-print("Loading commodities.ui ...")
 import logging
 from datetime import datetime
 
