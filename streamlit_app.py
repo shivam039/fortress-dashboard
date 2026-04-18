@@ -52,6 +52,16 @@ BROKER_LOGIN_URLS = {
 # Zerodha login generates a request_token in the redirect URL.
 # We read it from st.query_params and exchange or store it.
 
+MODULES = [
+    "🏠 Dashboard",
+    "📊 Stock Screener",
+    "📈 MF Lab",
+    "📋 Orders",
+    "🌍 Commodities",
+    "⚡ Options",
+    "🕐 Scan History",
+]
+
 
 def _configured_users() -> Dict[str, Dict[str, str]]:
     username = os.environ.get("FORTRESS_APP_USERNAME", "admin")
@@ -77,6 +87,7 @@ def _bootstrap_session_state() -> None:
     st.session_state.setdefault("screener_selected_broker", BROKER_OPTIONS[0])
     st.session_state.setdefault("active_tab", "login")
     st.session_state.setdefault("show_delete_confirm", False)
+    st.session_state.setdefault("active_module", MODULES[0])
 
 
 def _load_module(module_name: str):
@@ -394,18 +405,18 @@ def _render_broker_settings_section(username: str) -> None:
 
 def _render_mf_job_controls(api_url: str, key_prefix: str, sidebar: bool = False) -> None:
     target = st.sidebar if sidebar else st
-    target.markdown("### MF Lab" if sidebar else "### Server-Side MF Data Jobs")
+    target.markdown("**MF Data Jobs**" if sidebar else "### Server-Side MF Data Jobs")
     target.caption("Trigger heavy MF processing on FastAPI while Streamlit stays responsive.")
 
     job_label = target.selectbox("Job Type", list(MF_JOB_OPTIONS.keys()), key=f"{key_prefix}_job_type")
     force_refresh = target.checkbox("Force Refresh", value=False, key=f"{key_prefix}_force_refresh")
     scheme_code_text = target.text_input(
-        "Scheme Codes (optional, comma separated)",
+        "Scheme Codes (optional)",
         key=f"{key_prefix}_scheme_codes",
         placeholder="e.g. 120503, 120716",
     )
 
-    if target.button("🚀 Trigger Job on Server", type="primary", use_container_width=True, key=f"{key_prefix}_trigger_button"):
+    if target.button("🚀 Trigger Job", type="primary", use_container_width=True, key=f"{key_prefix}_trigger_button"):
         scheme_codes = [code.strip() for code in scheme_code_text.split(",") if code.strip()]
         payload = {
             "job_type": MF_JOB_OPTIONS[job_label],
@@ -415,15 +426,66 @@ def _render_mf_job_controls(api_url: str, key_prefix: str, sidebar: bool = False
         try:
             response = requests.post(f"{api_url.rstrip('/')}/mf/trigger-job", json=payload, timeout=10)
             if response.status_code == 202:
-                target.success(f"Job `{payload['job_type']}` accepted by the server.")
+                target.success(f"Job `{payload['job_type']}` accepted.")
             else:
                 try:
                     detail = response.json().get("detail", response.text)
                 except ValueError:
                     detail = response.text
-                target.error(f"Server rejected the job: {detail}")
+                target.error(f"Server rejected: {detail}")
         except requests.exceptions.RequestException as exc:
             target.error(f"Could not reach FastAPI at `{api_url}`: {exc}")
+
+
+def _render_sidebar_module_filters(module: str, username: str, api_url: str) -> dict:
+    """Renders contextual filter controls in the sidebar for the active module."""
+    filters: dict = {}
+
+    if module == "📊 Stock Screener":
+        st.markdown("**Scan Controls**")
+        universes = _fetch_universes(api_url)
+        active_brokers = _get_active_broker_names(username)
+        broker_choices = active_brokers or BROKER_OPTIONS
+        default_broker = st.session_state.get("screener_selected_broker", broker_choices[0])
+        if default_broker not in broker_choices:
+            default_broker = broker_choices[0]
+        filters["universe"] = st.selectbox("Universe", universes, key="sb_universe")
+        filters["portfolio_val"] = st.number_input(
+            "Portfolio (₹)", min_value=100_000.0, value=1_000_000.0, step=50_000.0, key="sb_portfolio_val"
+        )
+        filters["risk_pct"] = st.number_input(
+            "Risk %", min_value=0.1, value=1.0, step=0.1, format="%.1f", key="sb_risk_pct"
+        )
+        filters["broker"] = st.selectbox(
+            "Broker", broker_choices, index=broker_choices.index(default_broker), key="sb_broker"
+        )
+
+    elif module == "📈 MF Lab":
+        _render_mf_job_controls(api_url, key_prefix="mf_sidebar", sidebar=True)
+
+    elif module == "📋 Orders":
+        st.markdown("**Order Filters**")
+        active_brokers = _get_active_broker_names(username)
+        broker_filter_options = ["All"] + sorted(set(active_brokers + BROKER_OPTIONS))
+        filters["status"] = st.selectbox(
+            "Status", ["All"] + ORDER_STATUS_OPTIONS, key="sb_order_status"
+        )
+        filters["broker"] = st.selectbox("Broker", broker_filter_options, key="sb_order_broker")
+        filters["date_from"] = st.text_input(
+            "From Date", key="sb_date_from", placeholder="2026-04-01"
+        )
+        filters["date_to"] = st.text_input(
+            "To Date", key="sb_date_to", placeholder="2026-04-30"
+        )
+
+    elif module in ("🌍 Commodities", "⚡ Options"):
+        active_brokers = _get_active_broker_names(username)
+        broker_choices = active_brokers or BROKER_OPTIONS
+        safe_key = module.replace(" ", "_").replace("🌍", "com").replace("⚡", "opt")
+        filters["broker"] = st.selectbox("Broker", broker_choices, key=f"sb_{safe_key}_broker")
+
+    return filters
+
 
 
 def _fetch_universes(api_url: str) -> List[str]:
@@ -482,30 +544,31 @@ def _render_dashboard_tab(profile: Dict[str, Any], username: str) -> None:
             st.dataframe(orders_df[preview_cols].head(8), width="stretch", hide_index=True)
 
 
-def _render_stock_screener_tab(username: str, api_url: str) -> None:
+def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dict = None) -> None:
     from utils.db import create_fortress_order
 
-    st.subheader("Stock Screener")
-    st.caption("Run scans via FastAPI, review the returned setups, and record Fortress orders in one place.")
-
-    universes = _fetch_universes(api_url)
+    f = sidebar_filters or {}
+    universe = f.get("universe", "NIFTY50")
+    portfolio_val = f.get("portfolio_val", 1_000_000.0)
+    risk_pct = f.get("risk_pct", 1.0)
     active_brokers = _get_active_broker_names(username)
     broker_choices = active_brokers or BROKER_OPTIONS
-    default_broker = st.session_state.get("screener_selected_broker", broker_choices[0])
-    if default_broker not in broker_choices:
-        default_broker = broker_choices[0]
+    broker_name = f.get("broker", broker_choices[0])
 
-    control_col1, control_col2, control_col3, control_col4 = st.columns(4)
-    with control_col1:
-        universe = st.selectbox("Universe", universes, key="screener_universe")
-    with control_col2:
-        portfolio_val = st.number_input("Portfolio Value (₹)", min_value=100000.0, value=1000000.0, step=50000.0)
-    with control_col3:
-        risk_pct = st.number_input("Risk Per Trade (%)", min_value=0.1, value=1.0, step=0.1)
-    with control_col4:
-        broker_name = st.selectbox("Broker", broker_choices, index=broker_choices.index(default_broker), key="screener_broker")
+    st.subheader("📊 Stock Screener")
+    st.caption("Scan controls are in the sidebar. Use Advanced Settings below for fine-tuning.")
 
-    with st.expander("Advanced Scan Settings", expanded=False):
+    # Defaults (overridden by widgets inside the expander)
+    enable_regime = True
+    liquidity_cr_min = 8.0
+    market_cap_cr_min = 1500.0
+    price_min = 80.0
+    technical = 50
+    fundamental = 25
+    sentiment = 15
+    context_w = 10
+
+    with st.expander("⚙️ Advanced Scan Settings", expanded=False):
         col_a, col_b, col_c, col_d = st.columns(4)
         with col_a:
             enable_regime = st.checkbox("Enable Regime Scaling", value=True)
@@ -514,20 +577,21 @@ def _render_stock_screener_tab(username: str, api_url: str) -> None:
         with col_c:
             market_cap_cr_min = st.number_input("Market Cap Gate (₹ Cr)", min_value=0.0, value=1500.0, step=50.0)
         with col_d:
-            price_min = st.number_input("Minimum Price Gate (₹)", min_value=0.0, value=80.0, step=5.0)
+            price_min = st.number_input("Min Price Gate (₹)", min_value=0.0, value=80.0, step=5.0)
 
         w1, w2, w3, w4 = st.columns(4)
         with w1:
-            technical = st.slider("Technical Weight", 0, 100, 50, 1)
+            technical = st.slider("Technical", 0, 100, 50, 1)
         with w2:
-            fundamental = st.slider("Fundamental Weight", 0, 100, 25, 1)
+            fundamental = st.slider("Fundamental", 0, 100, 25, 1)
         with w3:
-            sentiment = st.slider("Sentiment Weight", 0, 100, 15, 1)
+            sentiment = st.slider("Sentiment", 0, 100, 15, 1)
         with w4:
-            context = st.slider("Context Weight", 0, 100, 10, 1)
+            context_w = st.slider("Context", 0, 100, 10, 1)
 
-    if st.button("Run Screener", type="primary", use_container_width=True):
-        total = max(technical + fundamental + sentiment + context, 1)
+
+    if st.button("🔍 Run Screener", type="primary", use_container_width=True):
+        total = max(technical + fundamental + sentiment + context_w, 1)
         payload = {
             "universe": universe,
             "portfolio_val": portfolio_val,
@@ -536,7 +600,7 @@ def _render_stock_screener_tab(username: str, api_url: str) -> None:
                 "technical": technical / total,
                 "fundamental": fundamental / total,
                 "sentiment": sentiment / total,
-                "context": context / total,
+                "context": context_w / total,
             },
             "enable_regime": enable_regime,
             "liquidity_cr_min": liquidity_cr_min,
@@ -606,38 +670,32 @@ def _render_stock_screener_tab(username: str, api_url: str) -> None:
 
 def _render_mf_lab_tab(api_url: str) -> None:
     mf_lab_ui = _load_module("mf_lab.ui")
-
-    st.subheader("MF Lab")
+    st.subheader("📈 MF Lab")
+    st.caption("Use the sidebar to trigger server-side MF jobs. Analysis results appear below.")
     st.session_state["mf_job_controls_rendered"] = True
-    _render_mf_job_controls(api_url, key_prefix="mf_tab", sidebar=False)
     st.markdown("---")
     mf_lab_ui.render()
 
 
-def _render_orders_tab(username: str) -> None:
+
+def _render_orders_tab(username: str, sidebar_filters: dict = None) -> None:
     from utils.db import fetch_fortress_orders
 
-    st.subheader("Orders")
-    st.caption("Review all Fortress orders placed from the screener with filters by date, status, and broker.")
+    f = sidebar_filters or {}
+    status_filter = f.get("status", "All")
+    broker_filter = f.get("broker", "All")
+    date_from = f.get("date_from", "").strip()
+    date_to = f.get("date_to", "").strip()
 
-    active_brokers = _get_active_broker_names(username)
-    broker_filter_options = ["All"] + sorted(set(active_brokers + BROKER_OPTIONS))
-    filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
-    with filter_col1:
-        status_filter = st.selectbox("Status", ["All"] + ORDER_STATUS_OPTIONS, key="orders_status_filter")
-    with filter_col2:
-        broker_filter = st.selectbox("Broker", broker_filter_options, key="orders_broker_filter")
-    with filter_col3:
-        date_from = st.text_input("From Date", key="orders_date_from", placeholder="2026-04-01")
-    with filter_col4:
-        date_to = st.text_input("To Date", key="orders_date_to", placeholder="2026-04-30T23:59:59")
+    st.subheader("📋 Orders")
+    st.caption("Filters are in the sidebar. Showing Fortress orders for your account.")
 
     orders_df = fetch_fortress_orders(
         username=username,
         status=status_filter,
         broker_name=broker_filter,
-        date_from=date_from.strip() or None,
-        date_to=date_to.strip() or None,
+        date_from=date_from or None,
+        date_to=date_to or None,
     )
 
     if orders_df.empty:
@@ -657,17 +715,10 @@ def _render_orders_tab(username: str) -> None:
     st.dataframe(
         orders_df.rename(
             columns={
-                "order_id": "Order ID",
-                "symbol": "Symbol",
-                "stock_name": "Stock Name",
-                "order_type": "Order Type",
-                "quantity": "Quantity",
-                "price": "Price",
-                "status": "Status",
-                "broker_name": "Broker",
-                "broker_order_id": "Broker Order ID",
-                "notes": "Notes",
-                "created_at": "Timestamp",
+                "order_id": "Order ID", "symbol": "Symbol", "stock_name": "Stock Name",
+                "order_type": "Order Type", "quantity": "Quantity", "price": "Price",
+                "status": "Status", "broker_name": "Broker", "broker_order_id": "Broker Order ID",
+                "notes": "Notes", "created_at": "Timestamp",
             }
         ),
         width="stretch",
@@ -675,80 +726,95 @@ def _render_orders_tab(username: str) -> None:
     )
 
 
-def _render_commodities_tab(username: str) -> None:
+def _render_commodities_tab(username: str, broker: str = None) -> None:
     commodities_ui = _load_module("commodities.ui")
     active_brokers = _get_active_broker_names(username)
-    broker_choices = active_brokers or BROKER_OPTIONS
-    st.subheader("Commodities")
-    broker_name = st.selectbox("Broker", broker_choices, key="commodities_broker")
+    broker_name = broker or (active_brokers[0] if active_brokers else BROKER_OPTIONS[0])
+    st.subheader("🌍 Commodities")
+    st.caption(f"Broker: **{broker_name}** — change in the sidebar.")
     commodities_ui.render(broker_name)
 
 
-def _render_options_tab(username: str) -> None:
+def _render_options_tab(username: str, broker: str = None) -> None:
     options_ui = _load_module("options_algo.ui")
     active_brokers = _get_active_broker_names(username)
-    broker_choices = active_brokers or BROKER_OPTIONS
-    st.subheader("Options")
-    broker_name = st.selectbox("Broker", broker_choices, key="options_broker")
+    broker_name = broker or (active_brokers[0] if active_brokers else BROKER_OPTIONS[0])
+    st.subheader("⚡ Options")
+    st.caption(f"Broker: **{broker_name}** — change in the sidebar.")
     options_ui.render(broker_name)
+
 
 
 def _render_history_tab() -> None:
     history_ui = _load_module("history.ui")
-    st.subheader("Scan History")
+    st.subheader("🕐 Scan History")
     history_ui.render()
 
 
 def _render_authenticated_app() -> None:
-    from utils.db import init_db
-
-    init_db()
     username = st.session_state["current_user"]
 
-    # Handle broker OAuth callback (e.g. from Zerodha Kite redirect)
+    # Handle broker OAuth callback (Zerodha request_token in URL params)
     _handle_broker_oauth_callback(username)
 
-    profile = _sync_user_profile(username)
-    st.session_state["current_user_profile"] = profile
-    os.environ["FORTRESS_API_URL"] = st.session_state["fastapi_url"]
+    # Use cached profile — only re-sync on first load after login, not every render
+    profile = st.session_state.get("current_user_profile") or {}
+    if not profile:
+        profile = _sync_user_profile(username)
+        st.session_state["current_user_profile"] = profile
 
-    st.title("Fortress Dashboard")
-    st.caption("Streamlit-first workspace with secure broker management, MF backend jobs, and Fortress order history.")
+    api_url = st.session_state["fastapi_url"]
+    os.environ["FORTRESS_API_URL"] = api_url
 
     with st.sidebar:
-        st.markdown("### 🏹 Fortress Terminal")
-        _render_profile_section(profile)
+        st.markdown("## 🏹 Fortress")
         st.divider()
-        _render_broker_settings_section(username)
+
+        # ── Navigation ──────────────────────────────────────────────────────
+        module = st.radio(
+            "Navigate",
+            MODULES,
+            key="active_module",
+            label_visibility="collapsed",
+        )
         st.divider()
-        with st.expander("⚙️ Server-Side Jobs", expanded=False):
-            _render_mf_job_controls(st.session_state["fastapi_url"], key_prefix="mf_sidebar", sidebar=True)
+
+        # ── Contextual Controls ─────────────────────────────────────────────
+        filters = _render_sidebar_module_filters(module, username, api_url)
+        st.divider()
+
+        # ── Account ─────────────────────────────────────────────────────────
+        with st.expander(f"👤 {profile.get('full_name') or username}", expanded=False):
+            _render_profile_section(profile)
+
+        with st.expander("🔑 Broker Connections", expanded=False):
+            _render_broker_settings_section(username)
+
+        with st.expander("⚙️ Settings", expanded=False):
             st.text_input("API URL", key="fastapi_url", help="Backend FastAPI endpoint.")
-        
+
         st.divider()
-        # Danger Zone
         if st.button("🚪 Logout", use_container_width=True, type="secondary"):
             _logout_dialog()
         if username != "guest_user":
             if st.button("🗑️ Delete Account", use_container_width=True, type="secondary"):
                 _delete_account_dialog(username)
 
-    tabs = st.tabs(["Dashboard", "Stock Screener", "MF Lab", "Orders", "Commodities", "Options", "Scan History"])
+    # ── Main Content ─────────────────────────────────────────────────────────
     st.session_state["mf_job_controls_rendered"] = False
-
-    with tabs[0]:
+    if module == "🏠 Dashboard":
         _render_dashboard_tab(profile, username)
-    with tabs[1]:
-        _render_stock_screener_tab(username, st.session_state["fastapi_url"])
-    with tabs[2]:
-        _render_mf_lab_tab(st.session_state["fastapi_url"])
-    with tabs[3]:
-        _render_orders_tab(username)
-    with tabs[4]:
-        _render_commodities_tab(username)
-    with tabs[5]:
-        _render_options_tab(username)
-    with tabs[6]:
+    elif module == "📊 Stock Screener":
+        _render_stock_screener_tab(username, api_url, filters)
+    elif module == "📈 MF Lab":
+        _render_mf_lab_tab(api_url)
+    elif module == "📋 Orders":
+        _render_orders_tab(username, filters)
+    elif module == "🌍 Commodities":
+        _render_commodities_tab(username, filters.get("broker"))
+    elif module == "⚡ Options":
+        _render_options_tab(username, filters.get("broker"))
+    elif module == "🕐 Scan History":
         _render_history_tab()
 
 

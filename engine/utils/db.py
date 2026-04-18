@@ -1005,24 +1005,21 @@ def _get_user_id(username: str) -> Optional[int]:
 
 
 def verify_user_credentials(username: str, password: str) -> bool:
-    """Verifies user credentials against the database."""
+    """Verify credentials with a single DB round-trip."""
     from utils.security import hash_password
 
-    user_id = _get_user_id(username)
-    if user_id is None:
-        return False
-
     df = _read_df(
-        "SELECT password_hash FROM app_users WHERE user_id = :user_id LIMIT 1",
-        {"user_id": user_id},
+        "SELECT password_hash FROM app_users WHERE username = :username LIMIT 1",
+        {"username": username.strip()},
         ttl="5s",
     )
     if df.empty:
         return False
-
     stored_hash = df.iloc[0].get("password_hash")
     if not stored_hash:
         return False
+    return stored_hash == hash_password(password)
+
 
     return stored_hash == hash_password(password)
 
