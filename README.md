@@ -53,3 +53,15 @@ These jobs are queued with FastAPI `BackgroundTasks`, so the Streamlit UI stays 
 - Heavy mutual fund refresh logic runs in the backend, not inside the Streamlit request cycle.
 - The project no longer includes the previous Next.js frontend.
 - Database settings are handled in `engine/utils/db_connection.py` and `engine/utils/db.py`.
+
+## Conviction Scoring Engine
+
+The stock screener uses a multi-phase scoring system to rank stocks by conviction level (0–100).
+
+📄 **[SCORING.md](./SCORING.md)** — Full documentation covering:
+- 5-phase scoring architecture (raw conviction → normalization → regime multiplier → quality gates)
+- Every signal factor, its point contribution, and the rationale behind each threshold
+- Regime detection (5-tier: Strong Bull → Bear) with VIX + EMA200/50 logic
+- Weight configuration and how to tune the scanner for different strategies
+- Design decisions (why rule-based over ML, why EMA200, why graduated earnings surprise)
+
