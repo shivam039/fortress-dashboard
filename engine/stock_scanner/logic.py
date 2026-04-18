@@ -239,13 +239,14 @@ def _apply_quality_gates(df, cfg):
     market_cap_col = "Market_Cap_Cr" if "Market_Cap_Cr" in df.columns else None
     debt_col = "Debt_To_Equity" if "Debt_To_Equity" in df.columns else None
     gate_conditions = {
-        f"Liquidity<{cfg['liquidity_cr_min']}Cr": pd.to_numeric(df.get("Avg_Value_20D_Cr", np.nan), errors="coerce") <= cfg["liquidity_cr_min"],
-        f"Price<{cfg['price_min']}": pd.to_numeric(df.get("Price", np.nan), errors="coerce") <= cfg["price_min"],
+        # Strict less-than: a stock at exactly the threshold should PASS, not FAIL
+        f"Liquidity<{cfg['liquidity_cr_min']}Cr": pd.to_numeric(df.get("Avg_Value_20D_Cr", np.nan), errors="coerce") < cfg["liquidity_cr_min"],
+        f"Price<{cfg['price_min']}": pd.to_numeric(df.get("Price", np.nan), errors="coerce") < cfg["price_min"],
     }
     if market_cap_col:
-        gate_conditions[f"MCap<{cfg['market_cap_cr_min']}Cr"] = pd.to_numeric(df.get(market_cap_col), errors="coerce") <= cfg["market_cap_cr_min"]
+        gate_conditions[f"MCap<{cfg['market_cap_cr_min']}Cr"] = pd.to_numeric(df.get(market_cap_col), errors="coerce") < cfg["market_cap_cr_min"]
     if debt_col:
-        gate_conditions[f"Debt/Equity>{cfg['max_debt_to_equity']}"] = pd.to_numeric(df.get(debt_col), errors="coerce") >= cfg["max_debt_to_equity"]
+        gate_conditions[f"Debt/Equity>{cfg['max_debt_to_equity']}"] = pd.to_numeric(df.get(debt_col), errors="coerce") > cfg["max_debt_to_equity"]
 
     # Fix: Ensure Liquidity_Flag is treated as Series and handle missing values safely
     if "Liquidity_Flag" in df.columns:
@@ -468,8 +469,16 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         try:
             # Optimized: Use cached news fetch
             news = _get_ticker_news(ticker) or []
-            titles = " ".join(n.get("title","").lower() for n in news[:5])
-            if any(k in titles for k in ["fraud","investigation","default","bankruptcy","scam","legal"]):
+            _BLACK_SWAN_TERMS = {
+                "fraud", "investigation", "default", "bankruptcy", "scam",
+                "class action", "sebi notice", "ed raid", "fir filed", "money laundering",
+            }
+            _FALSE_POSITIVE_GUARDS = {"victory", "compliance", "cleared", "acquit", "legal win", "no wrongdoing"}
+            combined_text = " ".join(
+                f"{n.get('title', '')} {n.get('summary', '')}".lower() for n in news[:10]
+            )
+            if (any(k in combined_text for k in _BLACK_SWAN_TERMS) and
+                    not any(fp in combined_text for fp in _FALSE_POSITIVE_GUARDS)):
                 news_sentiment = "🚨 BLACK SWAN"
                 score_mod -= 40
                 black_swan_flag = 1
@@ -519,17 +528,23 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             if perfect_alignment:
                 conviction += 15 # True alignment reward
                 
-            # ADX trend strength filter
-            if adx_val > 25:
-                conviction += 12
-            elif adx_val > 0 and adx_val < 20:
-                conviction -= 15 # Choppy penalty
+            # ADX trend strength: tiered to capture emerging → confirmed trend
+            if adx_val >= 30:
+                conviction += 15  # Strong confirmed trend
+            elif adx_val >= 25:
+                conviction += 12  # Trend building
+            elif adx_val >= 20:
+                conviction += 5   # Emerging trend (previously a dead zone)
+            elif adx_val > 0:
+                conviction -= 15  # Choppy / trendless market
 
-            # 52-week overhead resistance
-            if distance_to_high_pct < 10:
-                conviction += 10 # Near ATH sky
+            # 52-week distance: 3-tier to distinguish breakout vs consolidation vs resistance
+            if distance_to_high_pct < 5:
+                conviction += 15  # Near ATH — breakout zone
+            elif distance_to_high_pct < 15:
+                conviction += 8   # Healthy consolidation within striking range
             elif distance_to_high_pct > 35:
-                conviction -= 10 # Heavy resistance
+                conviction -= 10  # Heavy overhead resistance
                 
             conviction += score_mod
 
@@ -623,8 +638,18 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         if earnings_ts is not None:
             days_ago = max((datetime.now().date() - earnings_ts.date()).days, 0)
             decay = 0.5 ** (days_ago / half_life_days)
-        sentiment_raw += 10 * decay
-        sentiment_raw -= 15 if negative_earnings_surprise else 0
+        # Graduated earnings surprise: magnitude + recency decay
+        if earnings_ts is not None:
+            if earnings_surprise < -20:
+                sentiment_raw -= 25 * decay   # Significant miss
+            elif earnings_surprise < 0:
+                sentiment_raw -= 12 * decay   # Small miss
+            elif earnings_surprise > 20:
+                sentiment_raw += 15 * decay   # Strong beat
+            elif earnings_surprise > 5:
+                sentiment_raw += 8 * decay    # Moderate beat
+            else:
+                sentiment_raw += 5 * decay    # In-line / no surprise data
 
         context_raw = 30.0
         context_raw += 20 if mtf_aligned else 0
