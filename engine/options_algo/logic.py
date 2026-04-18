@@ -141,14 +141,16 @@ def fetch_option_chain(symbol: str, expiry: str):
     return result_df, spot, t
 
 
-def scan_strategies(chain_df: pd.DataFrame, oi_threshold: int = 10000, iv_threshold: float = 0.2):
+def scan_strategies(chain_df: pd.DataFrame, oi_threshold: int = 10000):
     if chain_df.empty:
         return pd.DataFrame()
-    eligible = chain_df[(chain_df["OI"] >= oi_threshold) & (chain_df["IV"] >= iv_threshold)]
+    # Filter by OI, fallback if too strict
+    eligible = chain_df[chain_df["OI"] >= oi_threshold]
     ce = eligible[eligible["Type"] == "CE"]
     pe = eligible[eligible["Type"] == "PE"]
     if ce.empty or pe.empty:
-        return pd.DataFrame()
+        ce = chain_df[chain_df["Type"] == "CE"]
+        pe = chain_df[chain_df["Type"] == "PE"]
 
     atm_strike = chain_df.iloc[(chain_df["Strike"] - chain_df["Strike"].median()).abs().argsort()].iloc[0]["Strike"]
     ce_atm = ce.iloc[(ce["Strike"] - atm_strike).abs().argsort()].head(1)
@@ -156,19 +158,66 @@ def scan_strategies(chain_df: pd.DataFrame, oi_threshold: int = 10000, iv_thresh
     if ce_atm.empty or pe_atm.empty:
         return pd.DataFrame()
 
+    atm_iv = float((ce_atm["IV"].iloc[0] + pe_atm["IV"].iloc[0]) / 2)
     straddle_premium = float(ce_atm["Premium"].iloc[0] + pe_atm["Premium"].iloc[0])
+    
     strangle_ce = ce[ce["Strike"] > atm_strike].sort_values("Strike").head(1)
     strangle_pe = pe[pe["Strike"] < atm_strike].sort_values("Strike", ascending=False).head(1)
+    
+    if strangle_ce.empty or strangle_pe.empty:
+        strangle_ce = ce_atm
+        strangle_pe = pe_atm
+        
     strangle_premium = float(strangle_ce["Premium"].sum() + strangle_pe["Premium"].sum())
+    
+    strategies = []
+    
+    if atm_iv > 0.18:
+        strategies.append({
+            "Strategy": "Short Straddle", "Category": "Neutral / Theta Decay",
+            "Recommendation": "⭐ Highly Recommended",
+            "Legs": f"Sell {atm_strike} CE & PE",
+            "Max Risk": "Unlimited", "Premium": straddle_premium, "IV": atm_iv
+        })
+        strategies.append({
+            "Strategy": "Short Strangle", "Category": "Wide Neutral",
+            "Recommendation": "Recommended",
+            "Legs": f"Sell {strangle_pe['Strike'].iloc[0]} PE & {strangle_ce['Strike'].iloc[0]} CE",
+            "Max Risk": "Unlimited", "Premium": strangle_premium, "IV": atm_iv
+        })
+    else:
+        strategies.append({
+            "Strategy": "Long Straddle", "Category": "Volatile Breakout",
+            "Recommendation": "⭐ Highly Recommended",
+            "Legs": f"Buy {atm_strike} CE & PE",
+            "Max Risk": f"Limited to {straddle_premium:.2f}", "Premium": -straddle_premium, "IV": atm_iv
+        })
+        strategies.append({
+            "Strategy": "Long Strangle", "Category": "Directional Expansion",
+            "Recommendation": "Recommended",
+            "Legs": f"Buy {strangle_pe['Strike'].iloc[0]} PE & {strangle_ce['Strike'].iloc[0]} CE",
+            "Max Risk": f"Limited to {strangle_premium:.2f}", "Premium": -strangle_premium, "IV": atm_iv
+        })
+        strategies.append({
+            "Strategy": "Short Straddle", "Category": "Neutral / Theta Decay",
+            "Recommendation": "Not Recommended (Low IV)",
+            "Legs": f"Sell {atm_strike} CE & PE",
+            "Max Risk": "Unlimited", "Premium": straddle_premium, "IV": atm_iv
+        })
 
-    return pd.DataFrame([
-        {"Strategy": "Short Straddle", "Strike": atm_strike, "Premium": straddle_premium, "IV": float((ce_atm["IV"].iloc[0] + pe_atm["IV"].iloc[0]) / 2)},
-        {"Strategy": "Short Strangle", "Strike": f"{strangle_pe['Strike'].iloc[0]} / {strangle_ce['Strike'].iloc[0]}", "Premium": strangle_premium, "IV": float((strangle_ce["IV"].iloc[0] + strangle_pe["IV"].iloc[0]) / 2)},
-    ])
-
+    return pd.DataFrame(strategies)
 
 def payoff_curve(strikes: np.ndarray, strategy: str, premium: float, atm: float):
-    if strategy == "Short Straddle":
+    strategy = strategy.replace("⭐", "").strip()
+    if "Short Straddle" in strategy:
         return premium - np.abs(strikes - atm)
+    elif "Long Straddle" in strategy:
+        return np.abs(strikes - atm) + premium
+    
     width = max(1, int(atm * 0.01))
-    return premium - np.maximum(0, strikes - (atm + width)) - np.maximum(0, (atm - width) - strikes)
+    if "Short Strangle" in strategy:
+        return premium - np.maximum(0, strikes - (atm + width)) - np.maximum(0, (atm - width) - strikes)
+    elif "Long Strangle" in strategy:
+        return np.maximum(0, strikes - (atm + width)) + np.maximum(0, (atm - width) - strikes) + premium
+        
+    return strikes * 0

@@ -50,15 +50,26 @@ def render(broker_choice="Zerodha"):
 
     strat_df = scan_strategies(chain_df, oi_threshold=oi_threshold)
     if not strat_df.empty:
-        st.subheader("Strategy Scanner")
+        st.markdown("---")
+        st.subheader("🎯 Strategy Recommendations")
+        # Find highly recommended
+        recs = strat_df[strat_df["Recommendation"] == "⭐ Highly Recommended"]
+        if not recs.empty:
+            st.success(f"**Top Pick For Today:** {recs.iloc[0]['Strategy']} | **Why?** Prevailing ATM IV is {recs.iloc[0]['IV']*100:.1f}%")
+            
         st.dataframe(strat_df, width="stretch")
-        picked = st.selectbox("Payoff strategy", strat_df["Strategy"].tolist())
-        p = float(strat_df[strat_df["Strategy"] == picked]["Premium"].iloc[0])
-        grid = np.linspace(spot * 0.9, spot * 1.1, 120)
-        pnl = payoff_curve(grid, picked, p, spot)
+        picked = st.selectbox("Analyze Payoff strategy", strat_df["Strategy"].tolist())
+        row = strat_df[strat_df["Strategy"] == picked].iloc[0]
+        p = float(row["Premium"])
+        
+        atm_val = chain_df.iloc[(chain_df["Strike"] - chain_df["Strike"].median()).abs().argsort()].iloc[0]["Strike"]
+        grid = np.linspace(atm_val * 0.9, atm_val * 1.1, 120)
+        pnl = payoff_curve(grid, picked, p, atm_val)
+        
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=grid, y=pnl, mode="lines", name=picked))
-        fig.update_layout(title="Strategy Payoff", xaxis_title="Underlying", yaxis_title="P&L")
+        fig.add_trace(go.Scatter(x=grid, y=pnl, mode="lines", name=picked, line=dict(color='yellow' if "Long" in picked else 'blue')))
+        fig.add_hline(y=0, line_width=1, line_dash="dash", lineColor="gray")
+        fig.update_layout(title=f"Strategy Payoff: {picked}", xaxis_title="Underlying Price", yaxis_title="P&L (Premium)")
         st.plotly_chart(fig, width="stretch")
 
     try:
