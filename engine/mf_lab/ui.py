@@ -122,11 +122,22 @@ def render():
 
     # ==================== TAB 1: CONSISTENCY ANALYSIS ====================
     with tab_analysis:
-        _render_consistency_analysis()
+        try:
+            _render_consistency_analysis()
+        except Exception as e:
+            logger.error("MF consistency analysis render failed: %s", e, exc_info=True)
+            st.error("Failed to render the MF analysis view.")
+            st.exception(e)
 
     # ==================== TAB 2: SCHEME DISCOVERY ====================
     with tab_discovery:
-        render_scheme_discovery_tab()
+        try:
+            render_scheme_discovery_tab()
+        except Exception as e:
+            logger.error("MF scheme discovery render failed: %s", e, exc_info=True)
+            st.warning("Scheme Browser is temporarily unavailable, but cached MF analysis can still be used.")
+            if st.sidebar.toggle("MF Discovery Debug", value=False):
+                st.exception(e)
 
 
 def _render_consistency_analysis():
@@ -145,6 +156,22 @@ def _render_consistency_analysis():
         default=["Equity", "Debt", "Hybrid"]
     )
     min_sharpe = st.sidebar.number_input("Min Sharpe", min_value=0.0, value=0.5, step=0.1)
+    cache_window_days = st.sidebar.selectbox(
+        "MF DB Window (days)",
+        options=[7, 31, 90, 180, 365],
+        index=1,
+        help="Load the latest cached mutual fund results directly from the database.",
+    )
+
+    col_db1, col_db2 = st.columns([2, 1])
+    with col_db1:
+        st.subheader("Latest MF Snapshot From DB")
+        st.caption("This view can load fully from cached database results without triggering any backend recalculation.")
+    with col_db2:
+        db_only_refresh = st.button("Load From DB", use_container_width=True, key="mf_db_refresh")
+        if db_only_refresh:
+            st.success("Reloading the latest MF snapshot from the database cache.")
+            st.rerun()
 
     # ── Server-Side Job Trigger ───────────────────────────────────────
     if not st.session_state.get("mf_job_controls_rendered"):
@@ -194,16 +221,13 @@ def _render_consistency_analysis():
     cached_df = pd.DataFrame()
     cache_info_text = "No cached results yet."
     try:
-        cached_df = fetch_mf_cached_results(max_age_days=31)
+        cached_df = fetch_mf_cached_results(max_age_days=cache_window_days)
         if not cached_df.empty:
             cached_df = _post_process(cached_df)
-            if "scan_date" in cached_df.columns:
-                latest = cached_df["scan_date"].max()
-                cache_info_text = f"✅ Last scan: **{latest}** · {len(cached_df)} funds in DB"
-            else:
-                cache_info_text = f"✅ {len(cached_df)} cached funds loaded from DB."
+            cache_info_text = f"✅ Loaded {len(cached_df)} funds from the DB cache (last {cache_window_days} days)."
     except Exception as e:
         logger.error(f"Neon cache load failed: {e}")
+        st.warning("Could not read cached MF results from the database.")
 
     st.caption(cache_info_text)
 
@@ -221,7 +245,7 @@ def _render_consistency_analysis():
         st.subheader("🎯 Top 5 Coviction Picks By Category (DB Served)")
         
         # We query the Top 5 strictly from the database rank partition!
-        top_db_picks = fetch_top_mf_picks(max_age_days=31)
+        top_db_picks = fetch_top_mf_picks(max_age_days=cache_window_days)
         
         if top_db_picks.empty:
             st.info("No DB Ranking structure found. Showing raw filter results below.")

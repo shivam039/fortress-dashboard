@@ -217,8 +217,8 @@ def render_scheme_discovery_tab():
                             label="Download CSV",
                             data=csv,
                             file_name=f"MF_{selected_category}.csv",
-                    mime="text/csv"
-                )
+                            mime="text/csv",
+                        )
 
     # TAB 4: SEARCH
     with tab_search:
