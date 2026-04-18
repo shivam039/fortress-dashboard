@@ -1,8 +1,8 @@
 # engine/main.py
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import pandas as pd
 import uvicorn
@@ -19,7 +19,7 @@ from stock_scanner.logic import (
     DEFAULT_SCORING_CONFIG
 )
 from stock_scanner.ui import generate_action_link
-from mf_lab.logic import run_full_mf_scan, fetch_nav_history
+from mf_lab.logic import run_full_mf_scan
 from mf_lab.jobs import run_mf_background_job
 from commodities.logic import build_commodities_frame
 from fortress_config import TICKER_GROUPS
@@ -32,6 +32,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("fortress-api")
 
 app = FastAPI(title="Fortress API", version="2.0")
+mf_router = APIRouter(prefix="/mf", tags=["mutual-funds"])
 
 @app.middleware("http")
 async def catch_exceptions_middleware(request, call_next):
@@ -67,9 +68,12 @@ class ScanRequest(BaseModel):
 
 class MFJobRequest(BaseModel):
     """Request body for async MF background jobs."""
-    job_type: str            # e.g. 'full_refresh', 'update_metrics', 'recalculate_rankings'
+    job_type: str = Field(
+        ...,
+        examples=["refresh_nav", "update_metrics", "full_refresh", "recalculate_rankings"],
+    )
     force_refresh: bool = False
-    scheme_codes: Optional[List[str]] = None  # None = all schemes
+    scheme_codes: Optional[List[str]] = None
 
 @app.get("/api/health")
 def health_check():
@@ -199,18 +203,19 @@ async def get_mf_analysis(limit: Optional[int] = Query(None)):
     return df.to_dict(orient="records")
 
 
-@app.post("/mf/trigger-job", status_code=202)
+@mf_router.post("/trigger-job", status_code=202)
 async def trigger_mf_job(req: MFJobRequest, background_tasks: BackgroundTasks):
     """
     Accepts a Mutual Fund processing job and immediately schedules it as a
     background task (HTTP 202 Accepted). The caller (Streamlit) is never blocked.
 
-    supported job_type values:
-      - 'full_refresh'         → discover + score all Direct-Growth schemes (5-15 min)
-      - 'update_metrics'       → lightweight re-score (placeholder)
-      - 'recalculate_rankings' → re-run SQL ranking partitions (placeholder)
+    Supported job types:
+      - 'refresh_nav'
+      - 'update_metrics'
+      - 'full_refresh'
+      - 'recalculate_rankings'
     """
-    VALID_JOBS = {"full_refresh", "update_metrics", "recalculate_rankings"}
+    VALID_JOBS = {"refresh_nav", "full_refresh", "update_metrics", "recalculate_rankings"}
     if req.job_type not in VALID_JOBS:
         raise HTTPException(
             status_code=400,
@@ -229,6 +234,7 @@ async def trigger_mf_job(req: MFJobRequest, background_tasks: BackgroundTasks):
         "status": "accepted",
         "job_type": req.job_type,
         "force_refresh": req.force_refresh,
+        "scheme_codes": req.scheme_codes or [],
         "message": f"Job '{req.job_type}' is running on the server. Streamlit stays responsive."
     }
 
@@ -236,6 +242,8 @@ async def trigger_mf_job(req: MFJobRequest, background_tasks: BackgroundTasks):
 async def get_commodities():
     df = build_commodities_frame()
     return df.to_dict(orient="records")
+
+app.include_router(mf_router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
