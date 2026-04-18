@@ -16,17 +16,7 @@ for path in (str(ENGINE_DIR), str(ROOT_DIR)):
         sys.path.insert(0, path)
 
 
-def _bootstrap_imports() -> None:
-    """Preload shared packages so Streamlit reloads don't see half-built modules."""
-    for module_name in ("utils", "utils.db", "fortress_config"):
-        importlib.import_module(module_name)
-
-
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
-
-_bootstrap_imports()
-
-from utils.db import init_db
 
 
 DEFAULT_API_URL = os.environ.get("FORTRESS_API_URL", "http://127.0.0.1:8000")
@@ -132,6 +122,8 @@ def _render_mf_server_jobs(api_url: str) -> None:
 
 
 def _render_app() -> None:
+    from utils.db import init_db
+
     init_db()
 
     st.title("🛡️ Fortress 95 Pro v9.6")
