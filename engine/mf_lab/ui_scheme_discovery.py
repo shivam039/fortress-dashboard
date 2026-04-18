@@ -15,6 +15,8 @@ from mf_lab.services.scheme_discovery import (
     get_schemes_summary,
     get_batch_stats,
     get_batch_filtered_schemes,
+    get_distinct_fund_types,
+    get_distinct_categories_for_type,
     SCHEME_CATEGORIES,
 )
 
@@ -105,92 +107,116 @@ def render_scheme_discovery_tab():
     with tab_by_type:
         st.subheader("Browse by Fund Type")
 
-        scheme_types = sorted(all_schemes["type"].unique())
-        selected_type = st.selectbox("Select Fund Type:", scheme_types)
-
-        # ✨ OPTIMIZED: Query uses database index instead of in-memory filtering
-        type_schemes = get_batch_filtered_schemes(scheme_type=selected_type)
-
-        col1, col2 = st.columns([2, 1])
-
-        with col1:
-            st.write(f"**{len(type_schemes)} {selected_type} Schemes** (from pre-computed batch)")
-
-        with col2:
-            display_format = st.radio("Display:", ["Table", "List"], horizontal=True, key="type_format")
-
-        if display_format == "Table":
-            st.dataframe(
-                type_schemes.sort_values("scheme_name"),
-                width='stretch',
-                hide_index=True,
-                column_config={
-                    "scheme_name": st.column_config.TextColumn("Scheme Name"),
-                    "category": st.column_config.TextColumn("Category"),
-                    "amc_name": st.column_config.TextColumn("AMC"),
-                    "scheme_code": st.column_config.NumberColumn("Code"),
-                }
-            )
+        # ✨ INSTANT: Get types from pre-computed batch table (NOT from all_schemes)
+        scheme_types = get_distinct_fund_types()
+        
+        if not scheme_types:
+            st.warning("No fund types available. Please refresh cache.")
         else:
-            for _, row in type_schemes.sort_values("scheme_name").iterrows():
-                with st.container(border=True):
-                    col1, col2 = st.columns([3, 1])
-                    with col1:
-                        st.write(f"**{row['scheme_name']}**")
-                        st.caption(f"{row['amc_name']} • {row['category']}")
-                    with col2:
-                        st.code(row['scheme_code'], language=None)
+            selected_type = st.selectbox("Select Fund Type:", scheme_types)
+
+            # ✨ OPTIMIZED: Query uses database index instead of in-memory filtering
+            type_schemes = get_batch_filtered_schemes(scheme_type=selected_type)
+
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                st.write(f"**{len(type_schemes)} {selected_type} Schemes** (from pre-computed batch)")
+
+            with col2:
+                display_format = st.radio("Display:", ["Table", "List"], horizontal=True, key="type_format")
+
+            if display_format == "Table":
+                st.dataframe(
+                    type_schemes.sort_values("scheme_name"),
+                    width='stretch',
+                    hide_index=True,
+                    column_config={
+                        "scheme_name": st.column_config.TextColumn("Scheme Name"),
+                        "category": st.column_config.TextColumn("Category"),
+                        "amc_name": st.column_config.TextColumn("AMC"),
+                        "scheme_code": st.column_config.NumberColumn("Code"),
+                    }
+                )
+            else:
+                for _, row in type_schemes.sort_values("scheme_name").iterrows():
+                    with st.container(border=True):
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.write(f"**{row['scheme_name']}**")
+                            st.caption(f"{row['amc_name']} • {row['category']}")
+                        with col2:
+                            st.code(row['scheme_code'], language=None)
 
     # TAB 3: BY CATEGORY (DETAILED) — OPTIMIZED with pre-computed batches
     with tab_by_category:
         st.subheader("Browse by Category")
 
-        # Show available categories
-        categories = sorted(set(SCHEME_CATEGORIES.keys()))
-        selected_category = st.selectbox("Select Category:", categories)
-
-        # ✨ OPTIMIZED: Query uses database index instead of in-memory filtering
-        cat_schemes = get_batch_filtered_schemes(category=selected_category)
-
-        if cat_schemes.empty:
-            st.info(f"No schemes found for category: {selected_category}")
+        # ✨ INSTANT: Get types from pre-computed batch table (NOT from all_schemes)
+        available_types = get_distinct_fund_types()
+        
+        if not available_types:
+            st.warning("No fund types available. Please refresh cache.")
         else:
-            col1, col2, col3 = st.columns(3)
-
+            # First select fund type
+            col1, col2 = st.columns(2)
             with col1:
-                st.metric("Schemes", len(cat_schemes))
-
+                selected_type = st.selectbox("Select Fund Type:", available_types, key="cat_type_selector")
+            
+            # Then get categories for that type
+            categories = get_distinct_categories_for_type(selected_type)
+            
             with col2:
-                st.metric("AMCs", cat_schemes["amc_name"].nunique())
+                if categories:
+                    selected_category = st.selectbox("Select Category:", categories)
+                else:
+                    st.warning(f"No categories found for {selected_type}")
+                    selected_category = None
 
-            with col3:
-                cat_info = SCHEME_CATEGORIES.get(selected_category, {})
-                cat_type = cat_info.get("type", "Unknown")
-                st.metric("Type (from batch)", cat_type)
+            if selected_category:
+                # ✨ OPTIMIZED: Query uses database index instead of in-memory filtering
+                cat_schemes = get_batch_filtered_schemes(
+                    scheme_type=selected_type, 
+                    category=selected_category
+                )
 
-            st.divider()
+                if cat_schemes.empty:
+                    st.info(f"No schemes found for {selected_type} → {selected_category}")
+                else:
+                    col1, col2, col3 = st.columns(3)
 
-            # Show schemes table
-            display_cols = ["scheme_name", "amc_name", "scheme_code", "category"]
-            st.dataframe(
-                cat_schemes[display_cols].sort_values("scheme_name"),
-                width='stretch',
-                hide_index=True,
-                column_config={
-                    "scheme_name": st.column_config.TextColumn("Scheme Name", width="large"),
-                    "amc_name": st.column_config.TextColumn("AMC", width="medium"),
-                    "scheme_code": st.column_config.NumberColumn("Code", width="small"),
-                    "category": st.column_config.TextColumn("Category", width="small"),
-                }
-            )
+                    with col1:
+                        st.metric("Schemes", len(cat_schemes))
 
-            # Export option
-            if st.button(f"📥 Export {selected_category} schemes to CSV"):
-                csv = cat_schemes.to_csv(index=False)
-                st.download_button(
-                    label="Download CSV",
-                    data=csv,
-                    file_name=f"MF_{selected_category}.csv",
+                    with col2:
+                        st.metric("AMCs", cat_schemes["amc_name"].nunique())
+
+                    with col3:
+                        st.metric("Type", selected_type)
+
+                    st.divider()
+
+                    # Show schemes table
+                    display_cols = ["scheme_name", "amc_name", "scheme_code", "category"]
+                    st.dataframe(
+                        cat_schemes[display_cols].sort_values("scheme_name"),
+                        width='stretch',
+                        hide_index=True,
+                        column_config={
+                            "scheme_name": st.column_config.TextColumn("Scheme Name", width="large"),
+                            "amc_name": st.column_config.TextColumn("AMC", width="medium"),
+                            "scheme_code": st.column_config.NumberColumn("Code", width="small"),
+                            "category": st.column_config.TextColumn("Category", width="small"),
+                        }
+                    )
+
+                    # Export option
+                    if st.button(f"📥 Export {selected_category} schemes to CSV"):
+                        csv = cat_schemes.to_csv(index=False)
+                        st.download_button(
+                            label="Download CSV",
+                            data=csv,
+                            file_name=f"MF_{selected_category}.csv",
                     mime="text/csv"
                 )
 

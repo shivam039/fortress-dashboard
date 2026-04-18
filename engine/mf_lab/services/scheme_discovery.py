@@ -619,3 +619,73 @@ def get_category_stats() -> Dict:
     stats["by_category"] = cat_stats
 
     return stats
+
+
+# ────────────────────────────────────────────────────────────────────
+#  DROPDOWN OPTION PRE-COMPUTATION (INSTANT UI SWITCHING)
+# ────────────────────────────────────────────────────────────────────
+
+def get_distinct_fund_types() -> List[str]:
+    """
+    Get all distinct fund types from the pre-computed batch table.
+    This eliminates the need to load all schemes just to populate a dropdown.
+    
+    Returns: Alphabetically sorted list of types like ["Debt", "Equity", "Hybrid", "Other"]
+    """
+    try:
+        from utils.db import _read_df
+
+        # Query the pre-computed batch table to get distinct types
+        query = """
+            SELECT DISTINCT type
+            FROM mf_scheme_batches
+            WHERE cached_date >= CURRENT_DATE - INTERVAL '30 days'
+            ORDER BY type
+        """
+
+        df = _read_df(query, {}, ttl="1h")
+        
+        if df.empty:
+            return []
+        
+        types = sorted(df["type"].unique().tolist())
+        return types
+
+    except Exception as e:
+        logger.error(f"Error fetching distinct fund types: {e}")
+        return []
+
+
+def get_distinct_categories_for_type(scheme_type: str) -> List[str]:
+    """
+    Get all distinct categories for a given fund type.
+    Pre-computed from the batch table for instant dropdown population.
+    
+    Parameters:
+    - scheme_type: e.g., "Equity", "Debt", "Hybrid"
+    
+    Returns: Alphabetically sorted list of categories for that type
+    """
+    try:
+        from utils.db import _read_df
+
+        # Query the pre-computed batch table
+        query = """
+            SELECT DISTINCT category
+            FROM mf_scheme_batches
+            WHERE type = :typ
+            AND cached_date >= CURRENT_DATE - INTERVAL '30 days'
+            ORDER BY category
+        """
+
+        df = _read_df(query, {"typ": scheme_type}, ttl="1h")
+        
+        if df.empty:
+            return []
+        
+        categories = sorted(df["category"].unique().tolist())
+        return categories
+
+    except Exception as e:
+        logger.error(f"Error fetching distinct categories for type '{scheme_type}': {e}")
+        return []
