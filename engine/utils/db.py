@@ -1026,6 +1026,25 @@ def verify_user_credentials(username: str, password: str) -> bool:
     return stored_hash == hash_password(password)
 
 
+def delete_app_user(username: str) -> None:
+    """Permanently deletes a user account and all associated data (broker connections, orders)."""
+    user_id = _get_user_id(username)
+    if user_id is None:
+        return
+
+    if _can_use_neon():
+        _exec("DELETE FROM user_broker_connections WHERE user_id = :uid", {"uid": user_id})
+        _exec("DELETE FROM fortress_orders WHERE user_id = :uid", {"uid": user_id})
+        _exec("DELETE FROM app_users WHERE user_id = :uid", {"uid": user_id})
+        return
+
+    with _sqlite_connection() as conn:
+        conn.execute("DELETE FROM user_broker_connections WHERE user_id = :uid", {"uid": user_id})
+        conn.execute("DELETE FROM fortress_orders WHERE user_id = :uid", {"uid": user_id})
+        conn.execute("DELETE FROM app_users WHERE user_id = :uid", {"uid": user_id})
+        conn.commit()
+
+
 def list_user_broker_connections(username: str) -> pd.DataFrame:
     if _can_use_neon():
         _ensure_user_broker_connections_neon()

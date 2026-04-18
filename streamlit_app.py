@@ -44,6 +44,14 @@ MF_JOB_OPTIONS = {
 ORDER_STATUS_OPTIONS = ["Pending", "Executed", "Rejected", "Cancelled"]
 BROKER_OPTIONS = ["Zerodha", "Dhan"]
 
+# Broker OAuth / Login URLs
+BROKER_LOGIN_URLS = {
+    "Zerodha": "https://kite.zerodha.com/connect/login?api_key={api_key}&v=3",
+    "Dhan": "https://api.dhan.co/v2/login",
+}
+# Zerodha login generates a request_token in the redirect URL.
+# We read it from st.query_params and exchange or store it.
+
 
 def _configured_users() -> Dict[str, Dict[str, str]]:
     username = os.environ.get("FORTRESS_APP_USERNAME", "admin")
@@ -68,6 +76,7 @@ def _bootstrap_session_state() -> None:
     st.session_state.setdefault("screener_results", [])
     st.session_state.setdefault("screener_selected_broker", BROKER_OPTIONS[0])
     st.session_state.setdefault("active_tab", "login")
+    st.session_state.setdefault("show_delete_confirm", False)
 
 
 def _load_module(module_name: str):
@@ -182,6 +191,37 @@ def _logout() -> None:
     st.rerun()
 
 
+@st.dialog("Confirm Logout")
+def _logout_dialog() -> None:
+    st.write("Are you sure you want to log out of the Fortress Terminal?")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Yes, Logout", type="primary", use_container_width=True):
+            _logout()
+    with col2:
+        if st.button("Cancel", use_container_width=True):
+            st.rerun()
+
+
+@st.dialog("⚠️ Delete Account")
+def _delete_account_dialog(username: str) -> None:
+    from utils.db import delete_app_user
+
+    st.error("This will **permanently delete** your account, all broker connections, and order history. This action cannot be undone.")
+    confirm_text = st.text_input("Type your username to confirm", placeholder=username)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Delete My Account", type="primary", use_container_width=True):
+            if confirm_text.strip() == username:
+                delete_app_user(username)
+                _logout()
+            else:
+                st.error("Username does not match. Please try again.")
+    with col2:
+        if st.button("Cancel", use_container_width=True):
+            st.rerun()
+
+
 def _get_active_broker_names(username: str) -> List[str]:
     from utils.db import list_user_broker_connections
 
@@ -212,7 +252,7 @@ def _connect_broker_dialog(username: str):
     with st.form("broker_connection_form", clear_on_submit=True):
         broker_name = st.selectbox("Broker", BROKER_OPTIONS)
         broker_client_id = st.text_input("Client ID / User ID", placeholder="e.g. AB1234 or DHAN_ID")
-        access_token = st.text_area("Access Token", placeholder="Paste your permanent or session access token here...", height=150)
+        access_token = st.text_area("Access Token", placeholder="Paste your permanent or session access token here...", height=120)
         
         col1, col2 = st.columns(2)
         with col1:
@@ -220,7 +260,7 @@ def _connect_broker_dialog(username: str):
         with col2:
              refresh_token = st.text_input("Refresh Token (Optional)", type="password")
              
-        submitted = st.form_submit_button("Save & Connect", type="primary", use_container_width=True)
+        submitted = st.form_submit_button("💾 Save & Connect", type="primary", use_container_width=True)
 
     if submitted:
         if not access_token.strip():
@@ -234,8 +274,91 @@ def _connect_broker_dialog(username: str):
                 refresh_token=refresh_token.strip(),
                 expires_at=expires_on.strip() or None,
             )
-            st.success(f"{broker_name} connection saved successfully.")
+            st.success(f"✅ {broker_name} connection saved successfully.")
             st.rerun()
+
+
+@st.dialog("🔗 Broker Login")
+def _broker_login_dialog(username: str) -> None:
+    """Guides user through broker OAuth login and captures the returned token."""
+    from utils.db import upsert_user_broker_connection
+
+    st.write("Choose your broker and follow the steps to authenticate via their official login page.")
+    broker_name = st.selectbox("Broker", BROKER_OPTIONS, key="broker_login_dialog_broker")
+
+    st.divider()
+
+    if broker_name == "Zerodha":
+        api_key = st.text_input(
+            "Your Kite API Key",
+            placeholder="Enter your Zerodha Kite API Key",
+            help="Get this from your Kite Connect developer account at https://developers.kite.trade",
+        )
+        if api_key:
+            login_url = f"https://kite.zerodha.com/connect/login?api_key={api_key.strip()}&v=3"
+            st.info("Click the button below to open Zerodha Kite login. After authentication you will be redirected back with a `request_token` in the URL. Copy and paste it below.")
+            st.link_button("🔐 Login via Zerodha Kite", login_url, use_container_width=True)
+
+            st.divider()
+            st.markdown("**Step 2: Paste the `request_token` from redirect URL**")
+            st.caption("After login, Zerodha redirects you to your redirect URL with `?request_token=XXXXX&status=success`. Copy the token value.")
+            request_token = st.text_input("Request Token / Access Token", type="password", placeholder="Paste token here...")
+            client_id = st.text_input("Client ID (optional)", placeholder="Your Zerodha User ID e.g. AB1234")
+
+            if st.button("✅ Save Zerodha Token", type="primary", use_container_width=True):
+                if request_token.strip():
+                    upsert_user_broker_connection(
+                        username=username,
+                        broker_name="Zerodha",
+                        broker_client_id=client_id.strip(),
+                        access_token=request_token.strip(),
+                    )
+                    st.success("✅ Zerodha token saved! You can now use it for order placement.")
+                    st.rerun()
+                else:
+                    st.error("Please paste the token before saving.")
+        else:
+            st.warning("Enter your API key to get the login URL.")
+
+    elif broker_name == "Dhan":
+        st.info("Dhan uses a permanent access token. Generate it from your Dhan developer console and paste it below.")
+        st.link_button("🔐 Open Dhan Console", "https://login.dhan.co", use_container_width=True)
+        st.divider()
+        client_id = st.text_input("Dhan Client ID", placeholder="Your Dhan User ID")
+        access_token = st.text_input("Access Token", type="password", placeholder="Paste your Dhan access token")
+
+        if st.button("✅ Save Dhan Token", type="primary", use_container_width=True):
+            if access_token.strip():
+                upsert_user_broker_connection(
+                    username=username,
+                    broker_name="Dhan",
+                    broker_client_id=client_id.strip(),
+                    access_token=access_token.strip(),
+                )
+                st.success("✅ Dhan token saved! You can now use it for order placement.")
+                st.rerun()
+            else:
+                st.error("Please paste the access token before saving.")
+
+
+def _handle_broker_oauth_callback(username: str) -> None:
+    """Reads query params after a broker OAuth redirect and auto-saves the token."""
+    from utils.db import upsert_user_broker_connection
+
+    params = st.query_params
+    request_token = params.get("request_token", "")
+    status = params.get("status", "")
+
+    if request_token and status == "success":
+        st.success("✅ Zerodha login successful! Saving your access token...")
+        upsert_user_broker_connection(
+            username=username,
+            broker_name="Zerodha",
+            access_token=request_token,
+        )
+        # Clear the query params to avoid re-processing on refresh
+        st.query_params.clear()
+        st.rerun()
 
 
 def _render_broker_settings_section(username: str) -> None:
@@ -243,9 +366,14 @@ def _render_broker_settings_section(username: str) -> None:
 
     st.markdown("### 🔑 Broker Connections")
     brokers_df = list_user_broker_connections(username)
-    
-    if st.button("➕ Connect New Broker", use_container_width=True):
-        _connect_broker_dialog(username)
+
+    btn_col1, btn_col2 = st.columns(2)
+    with btn_col1:
+        if st.button("🔗 Login via Broker", use_container_width=True, type="primary"):
+            _broker_login_dialog(username)
+    with btn_col2:
+        if st.button("➕ Manual Token", use_container_width=True):
+            _connect_broker_dialog(username)
 
     if not brokers_df.empty:
         st.divider()
@@ -255,12 +383,13 @@ def _render_broker_settings_section(username: str) -> None:
                 with col_info:
                     st.write(f"**{row['broker_name']}** ({row.get('broker_client_id') or 'N/A'})")
                     status = "✅ Active" if bool(row.get("is_active")) else "❌ Inactive"
-                    st.caption(f"{status} | Joined: {_format_timestamp(row.get('connected_at'))}")
+                    st.caption(f"{status} | Connected: {_format_timestamp(row.get('connected_at'))}")
                 with col_btn:
                     if st.button("Delete", key=f"del_{row['broker_name']}", type="secondary", use_container_width=True):
                         delete_user_broker_connection(username, row['broker_name'])
                         st.rerun()
-
+    else:
+        st.caption("No broker connections yet. Use the buttons above to connect.")
 
 
 def _render_mf_job_controls(api_url: str, key_prefix: str, sidebar: bool = False) -> None:
@@ -575,6 +704,10 @@ def _render_authenticated_app() -> None:
 
     init_db()
     username = st.session_state["current_user"]
+
+    # Handle broker OAuth callback (e.g. from Zerodha Kite redirect)
+    _handle_broker_oauth_callback(username)
+
     profile = _sync_user_profile(username)
     st.session_state["current_user_profile"] = profile
     os.environ["FORTRESS_API_URL"] = st.session_state["fastapi_url"]
@@ -593,8 +726,12 @@ def _render_authenticated_app() -> None:
             st.text_input("API URL", key="fastapi_url", help="Backend FastAPI endpoint.")
         
         st.divider()
+        # Danger Zone
         if st.button("🚪 Logout", use_container_width=True, type="secondary"):
-            _logout()
+            _logout_dialog()
+        if username != "guest_user":
+            if st.button("🗑️ Delete Account", use_container_width=True, type="secondary"):
+                _delete_account_dialog(username)
 
     tabs = st.tabs(["Dashboard", "Stock Screener", "MF Lab", "Orders", "Commodities", "Options", "Scan History"])
     st.session_state["mf_job_controls_rendered"] = False
