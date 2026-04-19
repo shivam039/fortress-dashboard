@@ -1,6 +1,8 @@
 import importlib
+import logging
 import os
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
@@ -470,6 +472,27 @@ def _render_broker_settings_section(username: str) -> None:
 
 
 
+def _run_mf_job_directly(payload: dict) -> None:
+    """Run an MF job in-process using the engine modules.
+    
+    Uses threading to keep Streamlit responsive since MF jobs can be heavy.
+    """
+    from mf_lab.jobs import _run_job_sync
+    
+    def _thread_target():
+        try:
+            _run_job_sync(
+                job_type=payload["job_type"],
+                force_refresh=payload.get("force_refresh", False),
+                scheme_codes=payload.get("scheme_codes")
+            )
+        except Exception as e:
+            logging.error(f"In-process MF job failed: {e}")
+
+    thread = threading.Thread(target=_thread_target, daemon=True)
+    thread.start()
+
+
 def _render_mf_job_controls(api_url: str, key_prefix: str, sidebar: bool = False) -> None:
     target = st.sidebar if sidebar else st
     target.markdown("**MF Data Jobs**" if sidebar else "### Server-Side MF Data Jobs")
@@ -490,18 +513,34 @@ def _render_mf_job_controls(api_url: str, key_prefix: str, sidebar: bool = False
             "force_refresh": force_refresh,
             "scheme_codes": scheme_codes or None,
         }
+        
+        # ── Try FastAPI first ────────────────────────────────────────────────
+        _used_direct = False
         try:
-            response = requests.post(f"{api_url.rstrip('/')}/mf/trigger-job", json=payload, timeout=10)
-            if response.status_code == 202:
-                target.success(f"Job `{payload['job_type']}` accepted.")
+            if api_url and api_url.strip().startswith("http"):
+                response = requests.post(f"{api_url.rstrip('/')}/mf/trigger-job", json=payload, timeout=10)
+                if response.status_code == 202:
+                    target.success(f"Job `{payload['job_type']}` accepted (FastAPI).")
+                else:
+                    try:
+                        detail = response.json().get("detail", response.text)
+                    except ValueError:
+                        detail = response.text
+                    target.error(f"Server rejected: {detail}")
             else:
-                try:
-                    detail = response.json().get("detail", response.text)
-                except ValueError:
-                    detail = response.text
-                target.error(f"Server rejected: {detail}")
+                raise requests.exceptions.ConnectionError("No valid API URL — running in-process.")
+        except requests.exceptions.ConnectionError:
+            _used_direct = True
         except requests.exceptions.RequestException as exc:
-            target.error(f"Could not reach FastAPI at `{api_url}`: {exc}")
+            target.error(f"Request failed: {exc}")
+
+        if _used_direct:
+            try:
+                _run_mf_job_directly(payload)
+                target.info(f"Job `{payload['job_type']}` started in-process (background thread).")
+                target.caption("Check server logs/audit for completion status.")
+            except Exception as e:
+                target.error(f"Direct job failure: {e}")
 
 
 def _render_sidebar_module_filters(module: str, username: str, api_url: str) -> dict:
