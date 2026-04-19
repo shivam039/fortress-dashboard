@@ -31,10 +31,9 @@ for pkg in engine_pkgs:
 
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
 
-from utils.db import init_db
 
 
-DEFAULT_API_URL = os.environ.get("FORTRESS_API_URL", "http://127.0.0.1:8000")
+DEFAULT_API_URL = os.environ.get("FORTRESS_API_URL", "").strip() or "http://127.0.0.1:8000"
 MF_JOB_OPTIONS = {
     "Refresh NAV Cache": "refresh_nav",
     "Update Metrics": "update_metrics",
@@ -885,7 +884,10 @@ _bootstrap_session_state()
 
 # Guard init_db() so it only runs ONCE per browser session, not on every rerender.
 # Without this guard, 15+ SQL statements fire on every single page interaction.
+# Import is deferred here (not at module top-level) so a transient import failure
+# during Streamlit's pre-load phase never causes a NameError at startup.
 if not st.session_state.get("_db_initialized"):
+    from utils.db import init_db
     init_db()
     st.session_state["_db_initialized"] = True
 
