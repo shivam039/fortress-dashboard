@@ -8,6 +8,8 @@ from typing import Any, Dict, List
 import pandas as pd
 import requests
 import streamlit as st
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -505,6 +507,7 @@ def _render_mf_job_controls(api_url: str, key_prefix: str, sidebar: bool = False
 def _render_sidebar_module_filters(module: str, username: str, api_url: str) -> dict:
     """Renders contextual filter controls in the sidebar for the active module."""
     filters: dict = {}
+    is_guest = (username == "guest_user")
 
     if module == "📊 Stock Screener":
         st.markdown("**Scan Controls**")
@@ -514,6 +517,7 @@ def _render_sidebar_module_filters(module: str, username: str, api_url: str) -> 
         default_broker = st.session_state.get("screener_selected_broker", broker_choices[0])
         if default_broker not in broker_choices:
             default_broker = broker_choices[0]
+        
         filters["universe"] = st.selectbox("Universe", universes, key="sb_universe")
         filters["portfolio_val"] = st.number_input(
             "Portfolio (₹)", min_value=100_000.0, value=1_000_000.0, step=50_000.0, key="sb_portfolio_val"
@@ -521,9 +525,12 @@ def _render_sidebar_module_filters(module: str, username: str, api_url: str) -> 
         filters["risk_pct"] = st.number_input(
             "Risk %", min_value=0.1, value=1.0, step=0.1, format="%.1f", key="sb_risk_pct"
         )
-        filters["broker"] = st.selectbox(
-            "Broker", broker_choices, index=broker_choices.index(default_broker), key="sb_broker"
-        )
+        if not is_guest:
+            filters["broker"] = st.selectbox(
+                "Broker", broker_choices, index=broker_choices.index(default_broker), key="sb_broker"
+            )
+        else:
+            filters["broker"] = broker_choices[0] # Hidden default for guest
 
     elif module == "📈 MF Lab":
         _render_mf_job_controls(api_url, key_prefix="mf_sidebar", sidebar=True)
@@ -535,7 +542,11 @@ def _render_sidebar_module_filters(module: str, username: str, api_url: str) -> 
         filters["status"] = st.selectbox(
             "Status", ["All"] + ORDER_STATUS_OPTIONS, key="sb_order_status"
         )
-        filters["broker"] = st.selectbox("Broker", broker_filter_options, key="sb_order_broker")
+        if not is_guest:
+            filters["broker"] = st.selectbox("Broker", broker_filter_options, key="sb_order_broker")
+        else:
+            filters["broker"] = "All"
+            
         filters["date_from"] = st.text_input(
             "From Date", key="sb_date_from", placeholder="2026-04-01"
         )
@@ -547,7 +558,10 @@ def _render_sidebar_module_filters(module: str, username: str, api_url: str) -> 
         active_brokers = _get_active_broker_names(username)
         broker_choices = active_brokers or BROKER_OPTIONS
         safe_key = module.replace(" ", "_").replace("🌍", "com").replace("⚡", "opt")
-        filters["broker"] = st.selectbox("Broker", broker_choices, key=f"sb_{safe_key}_broker")
+        if not is_guest:
+            filters["broker"] = st.selectbox("Broker", broker_choices, key=f"sb_{safe_key}_broker")
+        else:
+            filters["broker"] = broker_choices[0]
 
     return filters
 
@@ -578,12 +592,16 @@ def _render_dashboard_tab(profile: Dict[str, Any], username: str) -> None:
 
     brokers_df = list_user_broker_connections(username)
     orders_df = fetch_fortress_orders(username)
+    is_guest = (username == "guest_user")
 
     st.subheader("Dashboard")
     st.caption("Quick overview of your Fortress workspace, broker connectivity, and recent order flow.")
 
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Active Brokers", int(brokers_df["is_active"].astype(bool).sum()) if not brokers_df.empty else 0)
+    if not is_guest:
+        col1.metric("Active Brokers", int(brokers_df["is_active"].astype(bool).sum()) if not brokers_df.empty else 0)
+    else:
+        col1.metric("Account Type", "Guest Explorer")
     col2.metric("Total Orders", len(orders_df))
     col3.metric("Pending Orders", int((orders_df["status"] == "Pending").sum()) if not orders_df.empty else 0)
     col4.metric("Account Status", profile.get("account_status", "Active"))
@@ -824,8 +842,38 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
         submitted = st.form_submit_button("Save Order", type="primary", use_container_width=True)
 
     broker_link = _build_order_link(selected_symbol, quantity, price, broker_name)
-    if broker_link:
+    if broker_link and username != "guest_user":
         st.link_button("Open Broker Order Page", broker_link, use_container_width=False)
+
+    # ── Conviction Heatmap ──────────────────────────────────────────────
+    if not results.empty and "Score" in results.columns:
+        st.subheader("📊 Conviction Heatmap")
+        # Ensure Score is numeric
+        results["Score"] = pd.to_numeric(results["Score"], errors="coerce").fillna(0)
+        
+        plt.figure(figsize=(10, max(4, len(results) / 3)))
+        # Create conviction bands
+        def get_band(x):
+            if x >= 85: return "🔥 High (85+)"
+            if x >= 60: return "🚀 Pass (60-85)"
+            return "🟡 Watch (<60)"
+            
+        heatmap_df = results[["Symbol", "Score"]].copy()
+        heatmap_df["Conviction_Band"] = heatmap_df["Score"].apply(get_band)
+        
+        # Pivot for heatmap
+        pivot = heatmap_df.pivot_table(index="Symbol", columns="Conviction_Band", values="Score", fill_value=0)
+        
+        # Ensure all columns exist for consistent layout
+        for col in ["🔥 High (85+)", "🚀 Pass (60-85)", "🟡 Watch (<60)"]:
+            if col not in pivot.columns:
+                pivot[col] = 0.0
+        
+        # Reorder columns
+        pivot = pivot[["🔥 High (85+)", "🚀 Pass (60-85)", "🟡 Watch (<60)"]]
+        
+        sns.heatmap(pivot, annot=True, cmap="Greens", cbar=False, linewidths=0.5, linecolor='grey')
+        st.pyplot(plt)
 
     if submitted:
         create_fortress_order(
@@ -905,7 +953,8 @@ def _render_commodities_tab(username: str, broker: str = None) -> None:
     active_brokers = _get_active_broker_names(username)
     broker_name = broker or (active_brokers[0] if active_brokers else BROKER_OPTIONS[0])
     st.subheader("🌍 Commodities")
-    st.caption(f"Broker: **{broker_name}** — change in the sidebar.")
+    if username != "guest_user":
+        st.caption(f"Broker: **{broker_name}** — change in the sidebar.")
     commodities_ui.render(broker_name)
 
 
@@ -914,7 +963,8 @@ def _render_options_tab(username: str, broker: str = None) -> None:
     active_brokers = _get_active_broker_names(username)
     broker_name = broker or (active_brokers[0] if active_brokers else BROKER_OPTIONS[0])
     st.subheader("⚡ Options")
-    st.caption(f"Broker: **{broker_name}** — change in the sidebar.")
+    if username != "guest_user":
+        st.caption(f"Broker: **{broker_name}** — change in the sidebar.")
     options_ui.render(broker_name)
 
 
@@ -929,7 +979,8 @@ def _render_authenticated_app() -> None:
     username = st.session_state["current_user"]
 
     # Handle broker OAuth callback (Zerodha request_token in URL params)
-    _handle_broker_oauth_callback(username)
+    if username != "guest_user":
+        _handle_broker_oauth_callback(username)
 
     # Use cached profile — only re-sync on first load after login, not every render
     profile = st.session_state.get("current_user_profile") or {}
@@ -961,8 +1012,9 @@ def _render_authenticated_app() -> None:
         with st.expander(f"👤 {profile.get('full_name') or username}", expanded=False):
             _render_profile_section(profile)
 
-        with st.expander("🔑 Broker Connections", expanded=False):
-            _render_broker_settings_section(username)
+        if username != "guest_user":
+            with st.expander("🔑 Broker Connections", expanded=False):
+                _render_broker_settings_section(username)
 
         with st.expander("⚙️ Settings", expanded=False):
             st.text_input("API URL", key="fastapi_url", help="Backend FastAPI endpoint.")
