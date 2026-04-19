@@ -782,7 +782,22 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
         st.info("Run a scan to see actionable stock setups here.")
         return
 
-    st.markdown("#### Scan Results")
+    # ── Strategic Splits ──────────────────────────────────────────────────
+    momentum_picks = results[results["Strategy"] == "Momentum Pick"].copy()
+    lt_picks = results[results["Strategy"] == "Long-Term Pick"].copy()
+
+    if not momentum_picks.empty:
+        st.markdown(f"#### 🚀 Momentum Picks ({len(momentum_picks)})")
+        if "Actions" in momentum_picks.columns: momentum_picks.drop(columns=["Actions"], inplace=True)
+        st.dataframe(momentum_picks, width="stretch", hide_index=True)
+
+    if not lt_picks.empty:
+        st.markdown(f"#### 💎 Long-Term Picks ({len(lt_picks)})")
+        if "Actions" in lt_picks.columns: lt_picks.drop(columns=["Actions"], inplace=True)
+        st.dataframe(lt_picks, width="stretch", hide_index=True)
+
+    # ── Full Results ─────────────────────────────────────────────────────
+    st.markdown("#### 📋 All Actionable Setups")
     display_df = results.copy()
     if "Actions" in display_df.columns:
         display_df = display_df.drop(columns=["Actions"])
