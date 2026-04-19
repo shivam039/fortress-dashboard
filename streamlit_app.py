@@ -610,6 +610,77 @@ def _render_dashboard_tab(profile: Dict[str, Any], username: str) -> None:
             st.dataframe(orders_df[preview_cols].head(8), width="stretch", hide_index=True)
 
 
+def _run_scan_directly(payload: dict) -> list:
+    """Run the stock scan in-process using the engine modules directly.
+
+    This mirrors the logic in engine/main.py POST /api/scan so the screener
+    works on Streamlit Cloud where no separate FastAPI process is running.
+    """
+    import logging
+    from stock_scanner.logic import (
+        check_institutional_fortress,
+        apply_advanced_scoring,
+        get_stock_data,
+        DEFAULT_SCORING_CONFIG,
+    )
+    from stock_scanner.ui import generate_action_link
+    from stock_scanner.pulse import get_current_regime
+    from fortress_config import TICKER_GROUPS
+
+    logger = logging.getLogger("fortress-direct-scan")
+
+    universe = payload["universe"]
+    tickers = TICKER_GROUPS.get(universe)
+    if not tickers:
+        raise ValueError(f"Universe '{universe}' not found.")
+
+    try:
+        regime_data = get_current_regime()
+    except Exception as e:
+        logger.warning(f"Regime fetch failed, defaulting to Range: {e}")
+        regime_data = {"Market_Regime": "Range", "Regime_Multiplier": 1.0, "VIX": 20.0}
+
+    batch_data = get_stock_data(tickers, period="1y", interval="1d", group_by="ticker")
+    results = []
+    for ticker in tickers:
+        try:
+            hist = batch_data[ticker].dropna() if len(tickers) > 1 else batch_data.dropna()
+            if not hist.empty and len(hist) >= 210:
+                res = check_institutional_fortress(
+                    ticker,
+                    hist,
+                    None,
+                    payload["portfolio_val"],
+                    payload["risk_pct"],
+                    selected_universe=universe,
+                    regime_data=regime_data,
+                )
+                if res:
+                    results.append(res)
+        except Exception as e:
+            logger.warning(f"Error scanning {ticker}: {e}")
+
+    if not results:
+        return []
+
+    df = pd.DataFrame(results)
+    scoring_config = DEFAULT_SCORING_CONFIG.copy()
+    scoring_config.update({
+        "enable_regime": payload.get("enable_regime", True),
+        "liquidity_cr_min": payload.get("liquidity_cr_min", 8.0),
+        "market_cap_cr_min": payload.get("market_cap_cr_min", 1500.0),
+        "price_min": payload.get("price_min", 80.0),
+        "regime": regime_data,
+    })
+    if payload.get("weights"):
+        scoring_config["weights"] = payload["weights"]
+
+    df = apply_advanced_scoring(df, scoring_config)
+    broker = payload.get("broker", "Zerodha")
+    df["Actions"] = df.apply(lambda row: generate_action_link(row, broker), axis=1)
+    return df.to_dict(orient="records")
+
+
 def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dict = None) -> None:
     from utils.db import create_fortress_order
 
@@ -674,22 +745,37 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
             "price_min": price_min,
             "broker": broker_name,
         }
-        if not api_url or not api_url.strip().startswith("http"):
-            st.error(
-                f"⚠️ Invalid API URL: `{api_url!r}`. "
-                "Go to **Settings** in the sidebar and set a valid FastAPI URL "
-                "(e.g. `http://127.0.0.1:8000`)."
-            )
-            return
+        # ── Try FastAPI first (local dev / external deployment) ─────────────
+        # Fall back to direct in-process engine call when no server is running
+        # (e.g. Streamlit Cloud where only streamlit_app.py is executed).
+        _used_direct = False
         try:
-            with st.spinner("Running scan on FastAPI..."):
-                response = requests.post(f"{api_url.rstrip('/')}/api/scan", json=payload, timeout=180)
-                response.raise_for_status()
-                st.session_state["screener_results"] = response.json()
-                st.session_state["screener_selected_broker"] = broker_name
-            st.success("Stock scan completed.")
+            if api_url and api_url.strip().startswith("http"):
+                with st.spinner("Running scan via FastAPI..."):
+                    response = requests.post(
+                        f"{api_url.rstrip('/')}/api/scan", json=payload, timeout=180
+                    )
+                    response.raise_for_status()
+                    st.session_state["screener_results"] = response.json()
+                    st.session_state["screener_selected_broker"] = broker_name
+                st.success("Stock scan completed (FastAPI).")
+            else:
+                raise requests.exceptions.ConnectionError("No valid API URL — running in-process.")
+        except requests.exceptions.ConnectionError:
+            # FastAPI not reachable — run the scan directly inside Streamlit.
+            _used_direct = True
         except requests.exceptions.RequestException as exc:
             st.error(f"Scan failed: {exc}")
+
+        if _used_direct:
+            try:
+                with st.spinner("Running scan in-process (engine)..."):
+                    records = _run_scan_directly(payload)
+                st.session_state["screener_results"] = records
+                st.session_state["screener_selected_broker"] = broker_name
+                st.success(f"Stock scan completed — {len(records)} results.")
+            except Exception as exc:
+                st.error(f"Direct scan failed: {exc}")
 
     results = pd.DataFrame(st.session_state.get("screener_results", []))
     if results.empty:
