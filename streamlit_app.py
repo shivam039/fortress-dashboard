@@ -80,7 +80,11 @@ def _bootstrap_session_state() -> None:
     st.session_state.setdefault("auth_error", "")
     st.session_state.setdefault("current_user", "")
     st.session_state.setdefault("current_user_profile", {})
+    # Use setdefault first, then actively repair blank/None values that may have
+    # been persisted from earlier sessions (setdefault won't overwrite them).
     st.session_state.setdefault("fastapi_url", DEFAULT_API_URL)
+    if not str(st.session_state.get("fastapi_url", "")).strip():
+        st.session_state["fastapi_url"] = DEFAULT_API_URL
     st.session_state.setdefault("mf_job_controls_rendered", False)
     st.session_state.setdefault("screener_results", [])
     st.session_state.setdefault("screener_selected_broker", BROKER_OPTIONS[0])
@@ -670,6 +674,13 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
             "price_min": price_min,
             "broker": broker_name,
         }
+        if not api_url or not api_url.strip().startswith("http"):
+            st.error(
+                f"⚠️ Invalid API URL: `{api_url!r}`. "
+                "Go to **Settings** in the sidebar and set a valid FastAPI URL "
+                "(e.g. `http://127.0.0.1:8000`)."
+            )
+            return
         try:
             with st.spinner("Running scan on FastAPI..."):
                 response = requests.post(f"{api_url.rstrip('/')}/api/scan", json=payload, timeout=180)
