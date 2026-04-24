@@ -192,8 +192,7 @@ def _render_login_screen() -> None:
                 else:
                     from utils.db import upsert_app_user
                     upsert_app_user(username=new_user, full_name=full_name, email=email, password=new_pass)
-                    st.session_state["active_tab"] = "login"
-                    st.rerun()
+                    st.success("Account created successfully! Please click the Login tab.")
 
         with tab_guest:
             st.write("Explore the Fortress terminal with a temporary guest session. Note: Broker connections are saved per account.")
