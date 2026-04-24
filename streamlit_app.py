@@ -93,6 +93,7 @@ def _bootstrap_session_state() -> None:
     st.session_state.setdefault("screener_results", [])
     st.session_state.setdefault("screener_selected_broker", BROKER_OPTIONS[0])
     st.session_state.setdefault("active_tab", "login")
+    st.session_state.setdefault("signup_notice", "")
     st.session_state.setdefault("show_delete_confirm", False)
     st.session_state.setdefault("active_module", MODULES[0])
 
@@ -115,9 +116,11 @@ def _format_timestamp(value: Any) -> str:
 def _authenticate(username: str, password: str) -> bool:
     from utils.db import verify_user_credentials
 
+    username = username.strip()
+
     # Admin shortcut — uses FORTRESS_APP_PASSWORD env var
     if username == "admin":
-        admin_pwd = os.environ.get("FORTRESS_APP_PASSWORD", "")
+        admin_pwd = os.environ.get("FORTRESS_APP_PASSWORD", "fortress123")
         if not admin_pwd:
             st.error(
                 "⚠️ Admin login is disabled: the **FORTRESS_APP_PASSWORD** "
@@ -160,6 +163,9 @@ def _render_login_screen() -> None:
             tab_login, tab_signup, tab_guest = st.tabs(["🔐 Login", "📝 Sign Up", "👤 Guest"])
 
         with tab_login:
+            if st.session_state.get("signup_notice"):
+                st.success(st.session_state["signup_notice"])
+                st.session_state["signup_notice"] = ""
             with st.form("login_form"):
                 username = st.text_input("Username")
                 password = st.text_input("Password", type="password")
@@ -187,12 +193,21 @@ def _render_login_screen() -> None:
                 signup_btn = st.form_submit_button("Create Account", type="primary", use_container_width=True)
 
             if signup_btn:
-                if not new_user or not new_pass:
+                from utils.db import get_app_user, upsert_app_user
+
+                clean_user = new_user.strip()
+                clean_pass = new_pass.strip()
+                existing_user = get_app_user(clean_user) if clean_user else {}
+
+                if not clean_user or not clean_pass:
                     st.error("Username and Password are required.")
+                elif existing_user and existing_user.get("password_hash"):
+                    st.error("Username already exists. Please choose a different username.")
                 else:
-                    from utils.db import upsert_app_user
-                    upsert_app_user(username=new_user, full_name=full_name, email=email, password=new_pass)
-                    st.success("Account created successfully! Please click the Login tab.")
+                    upsert_app_user(username=clean_user, full_name=full_name, email=email, password=clean_pass)
+                    st.session_state["active_tab"] = "login"
+                    st.session_state["signup_notice"] = "Account created successfully. Please sign in."
+                    st.rerun()
 
         with tab_guest:
             st.write("Explore the Fortress terminal with a temporary guest session. Note: Broker connections are saved per account.")

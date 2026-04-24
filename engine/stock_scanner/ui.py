@@ -169,7 +169,9 @@ def _display_scan_results(df, universe, broker_choice, scoring_config, timestamp
     st.subheader("🔥 Sector Intelligence & Rotation")
 
     # Aggregate Sector Metrics
-    if "Sector" in df.columns and "Velocity" in df.columns:
+    if "Sector" in df.columns:
+        if "Velocity" not in df.columns:
+            df["Velocity"] = pd.to_numeric(df.get("Ret_7D", 0), errors="coerce").fillna(0) - pd.to_numeric(df.get("Ret_30D", 0), errors="coerce").fillna(0)
         sector_stats = df.groupby("Sector").agg({
             "Velocity": "mean",
             "Above_EMA200": "mean", # Breadth (0-1)
@@ -417,7 +419,8 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
 
     # ---------------- SEARCH FEATURE ----------------
     search_symbol = st.text_input("🔍 Search Stock (Symbol)", placeholder="e.g., RELIANCE.NS")
-    if search_symbol:
+    run_search = st.button("Search Stock", use_container_width=True)
+    if run_search and search_symbol:
         search_symbol = search_symbol.upper().strip()
         if "." not in search_symbol:
             search_symbol += ".NS"
@@ -434,6 +437,7 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
                     search_tkr,
                     portfolio_val,
                     risk_pct,
+                    selected_universe=selected_universe,
                     regime_data=scoring_config.get("regime")
                 )
                 if search_res:
@@ -442,6 +446,8 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
 
                     # Show columns based on sidebar selection
                     search_cols = [c for c in st.session_state["selected_columns"] if c in search_df.columns]
+                    if not search_cols:
+                        search_cols = [c for c in ["Symbol", "Score", "Verdict", "Price", "RSI", "Sector", "Actions"] if c in search_df.columns]
                     search_config = get_column_config(search_cols, broker_choice)
 
                     st.dataframe(search_df[search_cols], width='stretch', hide_index=True, column_config=search_config)
@@ -451,6 +457,8 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
                 st.error(f"No data found for {search_symbol}. Check ticker symbol.")
         except Exception as e:
             st.error(f"Search Error: {str(e)}")
+    elif run_search and not search_symbol:
+        st.warning("Please enter a stock symbol to search.")
 
 
     # ---------------- MAIN SCAN ----------------
