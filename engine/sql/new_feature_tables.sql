@@ -4,20 +4,22 @@
 CREATE TABLE IF NOT EXISTS users (
     user_id BIGSERIAL PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
-    full_name TEXT,
-    email TEXT UNIQUE,
-    password_hash TEXT,
-    account_status TEXT NOT NULL DEFAULT 'Active',
+    email TEXT NOT NULL UNIQUE,
+    full_name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_login_at TIMESTAMPTZ
+    last_login TIMESTAMPTZ,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE
 );
 
 COMMENT ON TABLE users IS 'Optional enhanced user management table for feature-flagged flows.';
 COMMENT ON COLUMN users.username IS 'Unique login identifier.';
-COMMENT ON COLUMN users.last_login_at IS 'Most recent successful login timestamp.';
+COMMENT ON COLUMN users.last_login IS 'Most recent successful login timestamp.';
+COMMENT ON COLUMN users.is_active IS 'Whether the account can authenticate and transact.';
 
 CREATE INDEX IF NOT EXISTS idx_users_username ON users (username);
 CREATE INDEX IF NOT EXISTS idx_users_created_at ON users (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_users_is_active ON users (is_active);
 
 CREATE TABLE IF NOT EXISTS user_broker_connections (
     connection_id BIGSERIAL PRIMARY KEY,
