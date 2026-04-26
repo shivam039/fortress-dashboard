@@ -922,10 +922,11 @@ def ensure_users_table() -> None:
 
 
 def seed_dummy_users() -> int:
-    """Seed five fixed dummy users into `users` table. Returns number of new rows inserted."""
+    """Seed five fixed dummy users into `app_users` table. Returns number of new rows inserted."""
     from utils.security import hash_password
 
-    ensure_users_table()
+    if _can_use_neon():
+        _ensure_app_users_neon()
     password_hash = hash_password("password123")
     dummy_users = [
         {"username": "rahul", "email": "rahul.sharma@email.com", "full_name": "Rahul Sharma"},
@@ -939,15 +940,15 @@ def seed_dummy_users() -> int:
     if _can_use_neon():
         for user in dummy_users:
             before = _query(
-                "SELECT user_id FROM users WHERE username = :username OR email = :email LIMIT 1",
+                "SELECT user_id FROM app_users WHERE username = :username OR email = :email LIMIT 1",
                 {"username": user["username"], "email": user["email"]},
             )
             if before:
                 continue
             _exec(
                 """
-                INSERT INTO users (username, email, full_name, password_hash, is_active)
-                VALUES (:username, :email, :full_name, :password_hash, TRUE)
+                INSERT INTO app_users (username, email, full_name, password_hash)
+                VALUES (:username, :email, :full_name, :password_hash)
                 ON CONFLICT (username) DO NOTHING
                 """,
                 {**user, "password_hash": password_hash},
@@ -958,15 +959,15 @@ def seed_dummy_users() -> int:
     with _sqlite_connection() as conn:
         for user in dummy_users:
             row = conn.execute(
-                "SELECT user_id FROM users WHERE username = :username OR email = :email LIMIT 1",
+                "SELECT user_id FROM app_users WHERE username = :username OR email = :email LIMIT 1",
                 {"username": user["username"], "email": user["email"]},
             ).fetchone()
             if row:
                 continue
             conn.execute(
                 """
-                INSERT INTO users (username, email, full_name, password_hash, is_active)
-                VALUES (:username, :email, :full_name, :password_hash, 1)
+                INSERT INTO app_users (username, email, full_name, password_hash)
+                VALUES (:username, :email, :full_name, :password_hash)
                 """,
                 {**user, "password_hash": password_hash},
             )
