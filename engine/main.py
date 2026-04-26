@@ -38,6 +38,7 @@ if not _FORTRESS_API_KEY:
 
 app = FastAPI(title="Fortress API", version="2.0")
 mf_router = APIRouter(prefix="/mf", tags=["mutual-funds"])
+ENABLE_NEW_FEATURES = os.environ.get("FORTRESS_ENABLE_NEW_FEATURES", "false").strip().lower() == "true"
 
 
 @app.middleware("http")
@@ -104,7 +105,7 @@ class MFJobRequest(BaseModel):
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "healthy", "version": "2.0"}
+    return {"status": "healthy", "version": "2.0", "enable_new_features": ENABLE_NEW_FEATURES}
 
 @app.get("/api/universes")
 def get_universes():

@@ -36,6 +36,8 @@ for pkg in engine_pkgs:
 st.set_page_config(page_title="Fortress 95 Pro", layout="wide")
 
 
+ENABLE_NEW_FEATURES = False
+
 
 DEFAULT_API_URL = os.environ.get("FORTRESS_API_URL", "").strip() or "http://127.0.0.1:8000"
 MF_JOB_OPTIONS = {
@@ -55,7 +57,7 @@ BROKER_LOGIN_URLS = {
 # Zerodha login generates a request_token in the redirect URL.
 # We read it from st.query_params and exchange or store it.
 
-MODULES = [
+BASE_MODULES = [
     "🏠 Dashboard",
     "📊 Stock Screener",
     "📈 MF Lab",
@@ -64,6 +66,13 @@ MODULES = [
     "⚡ Options",
     "🕐 Scan History",
 ]
+
+
+def _available_modules() -> List[str]:
+    modules = list(BASE_MODULES)
+    if st.session_state.get("ENABLE_NEW_FEATURES", False):
+        modules.insert(1, "👤 Profile")
+    return modules
 
 
 def _configured_users() -> Dict[str, Dict[str, str]]:
@@ -80,6 +89,7 @@ def _configured_users() -> Dict[str, Dict[str, str]]:
 
 
 def _bootstrap_session_state() -> None:
+    st.session_state.setdefault("ENABLE_NEW_FEATURES", ENABLE_NEW_FEATURES)
     st.session_state.setdefault("logged_in", False)
     st.session_state.setdefault("auth_error", "")
     st.session_state.setdefault("current_user", "")
@@ -95,7 +105,7 @@ def _bootstrap_session_state() -> None:
     st.session_state.setdefault("active_tab", "login")
     st.session_state.setdefault("signup_notice", "")
     st.session_state.setdefault("show_delete_confirm", False)
-    st.session_state.setdefault("active_module", MODULES[0])
+    st.session_state.setdefault("active_module", BASE_MODULES[0])
 
 
 def _load_module(module_name: str):
@@ -151,6 +161,8 @@ def _sync_user_profile(username: str) -> Dict[str, Any]:
 def _render_login_screen() -> None:
     st.title("🏹 Fortress Terminal")
     st.caption("Professional quantitative dashboard and execution engine.")
+    if st.session_state.get("ENABLE_NEW_FEATURES", False):
+        st.info("Enhanced workspace mode is enabled for this session.", icon="✨")
 
     _, center, _ = st.columns([1, 1.5, 1])
     with center:
@@ -295,6 +307,55 @@ def _render_profile_section(profile: Dict[str, Any]) -> None:
         st.write(f"**Joined:** {_format_timestamp(profile.get('created_at'))}")
         st.write(f"**Last Login:** {_format_timestamp(profile.get('last_login_at'))}")
 
+
+def _render_profile_page(profile: Dict[str, Any], username: str) -> None:
+    st.subheader("👤 Profile")
+    st.caption("Professional account summary and sign-in details.")
+    card_data = [
+        ("Name", profile.get("full_name") or username),
+        ("Email", profile.get("email") or "N/A"),
+        ("Account Created", _format_timestamp(profile.get("created_at"))),
+        ("Last Login", _format_timestamp(profile.get("last_login_at"))),
+        ("Status", profile.get("account_status") or "Active"),
+    ]
+    row1 = st.columns(2)
+    row2 = st.columns(3)
+    card_cols = [row1[0], row1[1], row2[0], row2[1], row2[2]]
+    for idx, (label, value) in enumerate(card_data):
+        with card_cols[idx]:
+            with st.container(border=True):
+                st.caption(label)
+                st.markdown(f"**{value}**")
+
+
+def _render_enhanced_orders_table(username: str) -> None:
+    from utils.db import fetch_fortress_orders
+
+    orders_df = fetch_fortress_orders(username=username)
+    if orders_df.empty:
+        st.info("No orders placed from Fortress yet.")
+        return
+    display_cols = [
+        col for col in ["symbol", "order_type", "quantity", "price", "status", "broker_name", "created_at"]
+        if col in orders_df.columns
+    ]
+    if "created_at" in display_cols:
+        orders_df["created_at"] = orders_df["created_at"].apply(_format_timestamp)
+    st.dataframe(
+        orders_df[display_cols].rename(
+            columns={
+                "symbol": "Symbol",
+                "order_type": "Type",
+                "quantity": "Qty",
+                "price": "Price",
+                "status": "Status",
+                "broker_name": "Broker",
+                "created_at": "Timestamp",
+            }
+        ),
+        width="stretch",
+        hide_index=True,
+    )
 
 @st.dialog("Connect Broker")
 def _connect_broker_dialog(username: str):
@@ -482,6 +543,12 @@ def _render_broker_settings_section(username: str) -> None:
     else:
         st.caption("No broker connections yet. Use the buttons above to connect.")
 
+
+def _render_broker_settings_section_enhanced(username: str) -> None:
+    st.markdown("### Broker Settings")
+    _render_broker_settings_section(username)
+    active_count = len(_get_active_broker_names(username))
+    st.caption(f"Connection Status: {'🟢 Connected' if active_count else '🔴 Not Connected'}")
 
 
 
@@ -947,6 +1014,8 @@ def _render_mf_lab_tab(api_url: str) -> None:
     mf_lab_ui = _load_module("mf_lab.ui")
     st.subheader("📈 MF Lab")
     st.caption("Use the sidebar to trigger server-side MF jobs. Analysis results appear below.")
+    if st.session_state.get("ENABLE_NEW_FEATURES", False):
+        _render_mf_job_controls(api_url, key_prefix="mf_main", sidebar=False)
     st.session_state["mf_job_controls_rendered"] = True
     st.markdown("---")
     mf_lab_ui.render()
@@ -1044,6 +1113,10 @@ def _render_authenticated_app() -> None:
     api_url = st.session_state["fastapi_url"]
     os.environ["FORTRESS_API_URL"] = api_url
 
+    modules = _available_modules()
+    if st.session_state.get("active_module") not in modules:
+        st.session_state["active_module"] = modules[0]
+
     with st.sidebar:
         st.markdown("## 🏹 Fortress")
         st.divider()
@@ -1051,7 +1124,7 @@ def _render_authenticated_app() -> None:
         # ── Navigation ──────────────────────────────────────────────────────
         module = st.radio(
             "Navigate",
-            MODULES,
+            modules,
             key="active_module",
             label_visibility="collapsed",
         )
@@ -1066,8 +1139,12 @@ def _render_authenticated_app() -> None:
             _render_profile_section(profile)
 
         if username != "guest_user":
-            with st.expander("🔑 Broker Connections", expanded=False):
-                _render_broker_settings_section(username)
+            if st.session_state.get("ENABLE_NEW_FEATURES", False):
+                with st.expander("🔑 Broker Settings", expanded=False):
+                    _render_broker_settings_section_enhanced(username)
+            else:
+                with st.expander("🔑 Broker Connections", expanded=False):
+                    _render_broker_settings_section(username)
 
         with st.expander("⚙️ Settings", expanded=False):
             st.text_input("API URL", key="fastapi_url", help="Backend FastAPI endpoint.")
@@ -1082,7 +1159,17 @@ def _render_authenticated_app() -> None:
     # ── Main Content ─────────────────────────────────────────────────────────
     st.session_state["mf_job_controls_rendered"] = False
     if module == "🏠 Dashboard":
-        _render_dashboard_tab(profile, username)
+        if st.session_state.get("ENABLE_NEW_FEATURES", False):
+            tab_overview, tab_orders = st.tabs(["Overview", "Orders"])
+            with tab_overview:
+                _render_dashboard_tab(profile, username)
+            with tab_orders:
+                st.subheader("📋 Orders")
+                _render_enhanced_orders_table(username)
+        else:
+            _render_dashboard_tab(profile, username)
+    elif module == "👤 Profile":
+        _render_profile_page(profile, username)
     elif module == "📊 Stock Screener":
         _render_stock_screener_tab(username, api_url, filters)
     elif module == "📈 MF Lab":
