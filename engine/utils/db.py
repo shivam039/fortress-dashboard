@@ -880,6 +880,101 @@ def init_db():
         conn.commit()
 
 
+def ensure_users_table() -> None:
+    """Create feature-flagged `users` table if it does not already exist."""
+    if _can_use_neon():
+        _exec(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGSERIAL PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL UNIQUE,
+                full_name TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_login TIMESTAMPTZ,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE
+            )
+            """
+        )
+        _exec("CREATE INDEX IF NOT EXISTS idx_users_created_at ON users (created_at DESC)")
+        _exec("CREATE INDEX IF NOT EXISTS idx_users_is_active ON users (is_active)")
+        return
+
+    with _sqlite_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL UNIQUE,
+                full_name TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_login TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1))
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_created_at ON users (created_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_is_active ON users (is_active)")
+        conn.commit()
+
+
+def seed_dummy_users() -> int:
+    """Seed five fixed dummy users into `users` table. Returns number of new rows inserted."""
+    from utils.security import hash_password
+
+    ensure_users_table()
+    password_hash = hash_password("password123")
+    dummy_users = [
+        {"username": "rahul", "email": "rahul.sharma@email.com", "full_name": "Rahul Sharma"},
+        {"username": "priya", "email": "priya.patel@email.com", "full_name": "Priya Patel"},
+        {"username": "amit", "email": "amit.kumar@email.com", "full_name": "Amit Kumar"},
+        {"username": "sneha", "email": "sneha.gupta@email.com", "full_name": "Sneha Gupta"},
+        {"username": "vikram", "email": "vikram.singh@email.com", "full_name": "Vikram Singh"},
+    ]
+
+    inserted = 0
+    if _can_use_neon():
+        for user in dummy_users:
+            before = _query(
+                "SELECT user_id FROM users WHERE username = :username OR email = :email LIMIT 1",
+                {"username": user["username"], "email": user["email"]},
+            )
+            if before:
+                continue
+            _exec(
+                """
+                INSERT INTO users (username, email, full_name, password_hash, is_active)
+                VALUES (:username, :email, :full_name, :password_hash, TRUE)
+                ON CONFLICT (username) DO NOTHING
+                """,
+                {**user, "password_hash": password_hash},
+            )
+            inserted += 1
+        return inserted
+
+    with _sqlite_connection() as conn:
+        for user in dummy_users:
+            row = conn.execute(
+                "SELECT user_id FROM users WHERE username = :username OR email = :email LIMIT 1",
+                {"username": user["username"], "email": user["email"]},
+            ).fetchone()
+            if row:
+                continue
+            conn.execute(
+                """
+                INSERT INTO users (username, email, full_name, password_hash, is_active)
+                VALUES (:username, :email, :full_name, :password_hash, 1)
+                """,
+                {**user, "password_hash": password_hash},
+            )
+            inserted += 1
+        conn.commit()
+    return inserted
+
+
 def _serialize_json(value: Optional[Dict[str, Any]]) -> str:
     return json.dumps(value or {})
 

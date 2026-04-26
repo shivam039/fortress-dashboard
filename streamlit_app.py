@@ -1148,6 +1148,14 @@ def _render_authenticated_app() -> None:
 
         with st.expander("⚙️ Settings", expanded=False):
             st.text_input("API URL", key="fastapi_url", help="Backend FastAPI endpoint.")
+        if st.session_state.get("ENABLE_NEW_FEATURES", False):
+            with st.expander("🛠️ Setup", expanded=False):
+                st.caption("One-time development helpers.")
+                if st.button("Seed 5 Dummy Users", use_container_width=True):
+                    from utils.db import seed_dummy_users
+
+                    added_count = seed_dummy_users()
+                    st.success(f"Dummy user setup complete. Added {added_count} user(s).")
 
         st.divider()
         if st.button("🚪 Logout", use_container_width=True, type="secondary"):
