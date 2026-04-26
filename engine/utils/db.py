@@ -43,15 +43,15 @@ DB_NAME = "fortress_history.db"
 
 
 def _encrypt_token(value: str) -> str:
-    from utils.security import encrypt_token
+    from utils.token_encryption import encrypt_broker_token
 
-    return encrypt_token(value)
+    return encrypt_broker_token(value)
 
 
 def _decrypt_token(value: str) -> str:
-    from utils.security import decrypt_token
+    from utils.token_encryption import decrypt_broker_token
 
-    return decrypt_token(value)
+    return decrypt_broker_token(value)
 
 
 def _sqlite_connection():
