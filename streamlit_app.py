@@ -867,6 +867,9 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
 
     st.subheader("📊 Stock Screener")
     st.caption("Scan controls are in the sidebar. Use Advanced Settings below for fine-tuning.")
+    show_ai_score = True
+    if st.session_state.get("ENABLE_NEW_FEATURES", False):
+        show_ai_score = st.checkbox("Show Fortress AI Score", value=True, help="Danelfin-inspired Fortress AI Score for momentum-quality ranking.")
 
     # Defaults (overridden by widgets inside the expander)
     enable_regime = True
@@ -955,6 +958,43 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
         st.info("Run a scan to see actionable stock setups here.")
         return
 
+    feature_ai_enabled = st.session_state.get("ENABLE_NEW_FEATURES", False) and show_ai_score and "ai_score" in results.columns
+    if not feature_ai_enabled and "ai_score" in results.columns:
+        results = results.drop(columns=["ai_score"])
+
+    def _score_style(v):
+        try:
+            val = float(v)
+        except Exception:
+            return ""
+        if val >= 85:
+            return "background-color: #d9f2d9; color: #0f5132; font-weight: 700;"
+        if val >= 70:
+            return "background-color: #e9f9e9; color: #1f7a1f; font-weight: 600;"
+        return ""
+
+    def _display_scan_table(df):
+        if df.empty:
+            st.dataframe(df, width="stretch", hide_index=True)
+            return
+        table_df = df.copy()
+        rename_map = {"Score": "Conviction Score"}
+        if feature_ai_enabled and "ai_score" in table_df.columns:
+            rename_map["ai_score"] = "AI Score"
+        table_df = table_df.rename(columns=rename_map)
+        if feature_ai_enabled and "AI Score" in table_df.columns and "Conviction Score" in table_df.columns:
+            cols = list(table_df.columns)
+            ai_col = cols.pop(cols.index("AI Score"))
+            conv_idx = cols.index("Conviction Score")
+            cols.insert(conv_idx + 1, ai_col)
+            table_df = table_df[cols]
+            styled = table_df.style.format({"Conviction Score": "{:.1f}", "AI Score": "{:.1f}"}).map(
+                _score_style, subset=["Conviction Score", "AI Score"]
+            )
+            st.dataframe(styled, width="stretch", hide_index=True)
+            return
+        st.dataframe(table_df, width="stretch", hide_index=True)
+
     # ── Strategic Splits ──────────────────────────────────────────────────
     momentum_picks = results[results["Strategy"] == "Momentum Pick"].copy()
     lt_picks = results[results["Strategy"] == "Long-Term Pick"].copy()
@@ -962,19 +1002,19 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
     if not momentum_picks.empty:
         st.markdown(f"#### 🚀 Momentum Picks ({len(momentum_picks)})")
         if "Actions" in momentum_picks.columns: momentum_picks.drop(columns=["Actions"], inplace=True)
-        st.dataframe(momentum_picks, width="stretch", hide_index=True)
+        _display_scan_table(momentum_picks)
 
     if not lt_picks.empty:
         st.markdown(f"#### 💎 Long-Term Picks ({len(lt_picks)})")
         if "Actions" in lt_picks.columns: lt_picks.drop(columns=["Actions"], inplace=True)
-        st.dataframe(lt_picks, width="stretch", hide_index=True)
+        _display_scan_table(lt_picks)
 
     # ── Full Results ─────────────────────────────────────────────────────
     st.markdown("#### 📋 All Actionable Setups")
     display_df = results.copy()
     if "Actions" in display_df.columns:
         display_df = display_df.drop(columns=["Actions"])
-    st.dataframe(display_df, width="stretch", hide_index=True)
+    _display_scan_table(display_df)
 
     symbol_options = display_df["Symbol"].dropna().astype(str).tolist() if "Symbol" in display_df.columns else []
     if not symbol_options:
