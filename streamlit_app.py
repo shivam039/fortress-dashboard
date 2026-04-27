@@ -330,10 +330,12 @@ def _render_profile_page(profile: Dict[str, Any], username: str) -> None:
 
 def _render_enhanced_orders_table(username: str) -> None:
     from utils.db import fetch_fortress_orders
+    import pandas as pd
 
     orders_df = fetch_fortress_orders(username=username)
     if orders_df.empty:
-        st.info("No orders placed from Fortress yet.")
+        empty_df = pd.DataFrame(columns=["Order ID", "Symbol", "Type", "Qty", "Price", "Status", "Broker", "Time"])
+        st.dataframe(empty_df, hide_index=True, use_container_width=True)
         return
     display_cols = [
         col for col in ["symbol", "order_type", "quantity", "price", "status", "broker_name", "created_at"]
@@ -356,6 +358,7 @@ def _render_enhanced_orders_table(username: str) -> None:
         width="stretch",
         hide_index=True,
     )
+
 
 @st.dialog("Connect Broker")
 def _connect_broker_dialog(username: str):
@@ -544,8 +547,31 @@ def _render_broker_settings_section(username: str) -> None:
         st.caption("No broker connections yet. Use the buttons above to connect.")
 
 
+@st.dialog("Add/Update Broker")
+def _broker_modal(username: str):
+    broker_name = st.selectbox("Broker", ["Zerodha", "Dhan"])
+    access_token = st.text_input("Access Token", type="password")
+
+    if st.button("Save Broker Connection"):
+        from utils.db import upsert_user_broker_connection
+        from utils.token_encryption import encrypt_broker_token
+
+        encrypted_token = encrypt_broker_token(access_token)
+        upsert_user_broker_connection(
+            username=username,
+            broker_name=broker_name,
+            access_token=encrypted_token,
+            is_active=True
+        )
+        st.success(f"{broker_name} connected successfully.")
+        st.rerun()
+
 def _render_broker_settings_section_enhanced(username: str) -> None:
     st.markdown("### Broker Settings")
+
+    if st.button("Add/Update Broker Connection", type="primary"):
+        _broker_modal(username)
+
     _render_broker_settings_section(username)
     active_count = len(_get_active_broker_names(username))
     st.caption(f"Connection Status: {'🟢 Connected' if active_count else '🔴 Not Connected'}")
@@ -592,8 +618,17 @@ def _render_mf_job_controls(api_url: str, key_prefix: str, sidebar: bool = False
         payload = {
             "job_type": MF_JOB_OPTIONS[job_label],
             "force_refresh": force_refresh,
-            "scheme_codes": scheme_codes or None,
+            "scheme_codes": scheme_codes or [],
         }
+        import requests
+        try:
+            res = requests.post(f"{api_url}/mf/trigger-job", json=payload)
+            if res.status_code == 202:
+                target.success(res.json().get("message", "Job triggered successfully."))
+            else:
+                target.error(f"Failed: {res.text}")
+        except Exception as e:
+            target.error(f"Request failed: {str(e)}")
         
         # ── Try FastAPI first ────────────────────────────────────────────────
         _used_direct = False
@@ -1190,6 +1225,17 @@ def _render_authenticated_app() -> None:
         _render_options_tab(username, filters.get("broker"))
     elif module == "🕐 Scan History":
         _render_history_tab()
+    elif module == "🤖 Test Agent" and st.session_state.get("ENABLE_NEW_FEATURES", False):
+        st.subheader("🤖 Test Agent")
+        tab_generate, tab_run, tab_reports = st.tabs(["Generate Tests", "Run Tests", "Reports"])
+        with tab_generate:
+            st.write("Generate tests...")
+        with tab_run:
+            if st.button("Run Tests"):
+                st.success("Test run initiated (mocked logic).")
+                st.code("Test Session Mock Run Passes")
+        with tab_reports:
+            st.write("Reports will appear here.")
 
 
 _bootstrap_session_state()
