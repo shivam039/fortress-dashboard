@@ -245,6 +245,63 @@ def _normalize_series(series):
     return ((clipped - min_v) / (max_v - min_v) * 100).fillna(50.0)
 
 
+def calculate_ai_score(df, min_floor=18.0):
+    """Calculate Fortress AI Score (0-100) using momentum, volume, volatility, and sector context."""
+    if df is None or df.empty:
+        return pd.Series(dtype=float)
+
+    work_df = df
+    rsi = pd.to_numeric(work_df.get("RSI", np.nan), errors="coerce")
+    rs_score = pd.to_numeric(work_df.get("RS_Score", 0), errors="coerce").fillna(0)
+    ret_30 = pd.to_numeric(work_df.get("Ret_30D", 0), errors="coerce").fillna(0)
+    ret_90 = pd.to_numeric(work_df.get("Ret_90D", 0), errors="coerce").fillna(0)
+    rs_comp = pd.to_numeric(work_df.get("RS_Composite", 1.0), errors="coerce").fillna(1.0)
+    dist_52w = pd.to_numeric(work_df.get("Dist_52W_High_Pct", 25), errors="coerce").fillna(25)
+    vol_ratio = pd.to_numeric(work_df.get("Vol_Surge_Ratio", 1.0), errors="coerce").fillna(1.0)
+    value_cr = pd.to_numeric(work_df.get("Avg_Value_20D_Cr", 0), errors="coerce").fillna(0)
+    extension = pd.to_numeric(work_df.get("Extension_Pct", 0), errors="coerce").fillna(0)
+    sector_z = pd.to_numeric(work_df.get("Sector_Conviction_Z", 0), errors="coerce").fillna(0)
+    coiling = work_df.get("Is_Coiling", False).astype(float)
+
+    # Momentum block (heavier weight): trend quality + price change + 52W strength
+    rsi_quality = (100 - (rsi - 58).abs() * 2.2).clip(lower=0, upper=100).fillna(45)
+    rs_comp_score = ((rs_comp - 0.85) / 0.5 * 100).clip(lower=0, upper=100)
+    rs_score_norm = ((rs_score + 12) / 24 * 100).clip(lower=0, upper=100)
+    price_change_score = ((ret_30 * 0.6 + ret_90 * 0.4 + 20) / 50 * 100).clip(lower=0, upper=100)
+    high_proximity = (100 - dist_52w * 2.2).clip(lower=0, upper=100)
+    momentum_score = (
+        rsi_quality * 0.25
+        + rs_comp_score * 0.25
+        + rs_score_norm * 0.20
+        + price_change_score * 0.20
+        + high_proximity * 0.10
+    )
+
+    # Volume block: participation + liquidity
+    vol_ratio_score = ((vol_ratio - 0.7) / 1.3 * 100).clip(lower=0, upper=100)
+    liquidity_score = np.log1p(value_cr).replace([np.inf, -np.inf], np.nan).fillna(0)
+    liquidity_score = (liquidity_score / max(np.log1p(150), 1e-6) * 100).clip(lower=0, upper=100)
+    volume_score = (vol_ratio_score * 0.7) + (liquidity_score * 0.3)
+
+    # Volatility block: reward constructive contraction, penalize over-extension
+    extension_penalty = (extension.abs() * 2.8).clip(lower=0, upper=70)
+    volatility_score = (70 - extension_penalty + (coiling * 20)).clip(lower=0, upper=100)
+
+    # Sector relative block
+    sector_score = ((sector_z + 2.0) / 4.0 * 100).clip(lower=0, upper=100)
+
+    ai_score = (
+        momentum_score * 0.45
+        + volume_score * 0.25
+        + volatility_score * 0.15
+        + sector_score * 0.15
+    ).clip(lower=0, upper=100)
+
+    pass_mask = work_df.get("Quality_Gate_Pass", True).astype(bool) & ~work_df.get("Avoid_Flag", False).astype(bool)
+    ai_score = pd.Series(ai_score, index=work_df.index).where(~pass_mask, ai_score.clip(lower=min_floor))
+    return ai_score.round(1)
+
+
 def _normalize_weight_map(weight_map):
     merged = {
         "technical": _safe_float(weight_map.get("technical", DEFAULT_SCORING_CONFIG["weights"]["technical"]), 0.0),
@@ -399,6 +456,14 @@ def apply_advanced_scoring(df, scoring_config=None):
     df["Fund_Score"] = df["Fundamental_Score"]
     df["Sent_Score"] = df["Sentiment_Score"]
     df["Context_Score"] = df["Context_Score"]
+    df["ai_score"] = calculate_ai_score(df)
+
+    if "Score" in df.columns and "ai_score" in df.columns:
+        score_idx = df.columns.get_loc("Score")
+        cols = list(df.columns)
+        ai_col = cols.pop(cols.index("ai_score"))
+        cols.insert(score_idx + 1, ai_col)
+        df = df[cols]
     return df
 
 def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk_per_trade, selected_universe=None, regime_data=None):
@@ -761,6 +826,7 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
             "Gap_Integrity": gap_integrity,
             "Above_EMA200": price > ema200,
             "RS_Score": round(rs_score, 2),
+            "Dist_52W_High_Pct": round(distance_to_high_pct, 2),
             "Vol_Surge_Ratio": round(vol_surge_ratio, 2),
             "Extension_Pct": round(extension_pct, 2),
             "Is_Coiling": is_coiling,
