@@ -124,7 +124,7 @@ def _format_timestamp(value: Any) -> str:
 
 
 def _authenticate(username: str, password: str) -> bool:
-    from engine.utils.db import verify_user_credentials
+    from utils.db import verify_user_credentials
 
     username = username.strip()
 
@@ -145,7 +145,7 @@ def _authenticate(username: str, password: str) -> bool:
 
 
 def _sync_user_profile(username: str) -> Dict[str, Any]:
-    from engine.utils.db import get_app_user, upsert_app_user
+    from utils.db import get_app_user, upsert_app_user
 
     user_config = _configured_users().get(username, {})
     upsert_app_user(
@@ -185,7 +185,7 @@ def _render_login_screen() -> None:
 
             if submitted:
                 if _authenticate(username, password):
-                    from engine.utils.db import record_user_login
+                    from utils.db import record_user_login
                     username = username.strip()
                     profile = _sync_user_profile(username)
                     record_user_login(username)
@@ -205,7 +205,7 @@ def _render_login_screen() -> None:
                 signup_btn = st.form_submit_button("Create Account", type="primary", use_container_width=True)
 
             if signup_btn:
-                from engine.utils.db import get_app_user, upsert_app_user
+                from utils.db import get_app_user, upsert_app_user
 
                 clean_user = new_user.strip()
                 clean_pass = new_pass.strip()
@@ -262,7 +262,7 @@ def _logout_dialog() -> None:
 
 @st.dialog("⚠️ Delete Account")
 def _delete_account_dialog(username: str) -> None:
-    from engine.utils.db import delete_app_user
+    from utils.db import delete_app_user
 
     st.error("This will **permanently delete** your account, all broker connections, and order history. This action cannot be undone.")
     confirm_text = st.text_input("Type your username to confirm", placeholder=username)
@@ -282,7 +282,7 @@ def _delete_account_dialog(username: str) -> None:
 def _get_active_broker_names(username: str) -> List[str]:
     """Returns cached active broker names. Refreshes from DB only on first call per session or after invalidation."""
     if "active_brokers_cache" not in st.session_state:
-        from engine.utils.db import list_user_broker_connections
+        from utils.db import list_user_broker_connections
         df = list_user_broker_connections(username)
         st.session_state["brokers_df_cache"] = df
         st.session_state["active_brokers_cache"] = (
@@ -333,7 +333,7 @@ def _render_profile_page(profile: Dict[str, Any], username: str) -> None:
 
 
 def _render_enhanced_orders_table(username: str) -> None:
-    from engine.utils.db import fetch_fortress_orders
+    from utils.db import fetch_fortress_orders
     import pandas as pd
 
     orders_df = fetch_fortress_orders(username=username)
@@ -366,7 +366,7 @@ def _render_enhanced_orders_table(username: str) -> None:
 
 @st.dialog("Connect Broker")
 def _connect_broker_dialog(username: str):
-    from engine.utils.db import upsert_user_broker_connection
+    from utils.db import upsert_user_broker_connection
     st.write("Link your Zerodha or Dhan account by providing an access token. All tokens are encrypted before storage.")
 
     with st.form("broker_connection_form", clear_on_submit=True):
@@ -400,7 +400,7 @@ def _connect_broker_dialog(username: str):
 @st.dialog("🔗 Broker Login")
 def _broker_login_dialog(username: str) -> None:
     """Guides user through broker OAuth login and captures the returned token."""
-    from engine.utils.db import upsert_user_broker_connection
+    from utils.db import upsert_user_broker_connection
 
     st.write("Choose your broker and follow the steps to authenticate via their official login page.")
     broker_name = st.selectbox("Broker", BROKER_OPTIONS, key="broker_login_dialog_broker")
@@ -464,7 +464,7 @@ def _broker_login_dialog(username: str) -> None:
 
 def _handle_broker_oauth_callback(username: str) -> None:
     """Reads query params after a broker OAuth redirect and auto-saves the token."""
-    from engine.utils.db import upsert_user_broker_connection
+    from utils.db import upsert_user_broker_connection
 
     params = st.query_params
     request_token = params.get("request_token", "")
@@ -506,7 +506,7 @@ def _check_token_expiry(expires_at_raw) -> tuple[str, str]:
 
 
 def _render_broker_settings_section(username: str) -> None:
-    from engine.utils.db import delete_user_broker_connection
+    from utils.db import delete_user_broker_connection
 
     st.markdown("### 🔑 Broker Connections")
     # Use cached brokers_df from session state if available
@@ -557,8 +557,8 @@ def _broker_modal(username: str):
     access_token = st.text_input("Access Token", type="password")
 
     if st.button("Save Broker Connection"):
-        from engine.utils.db import upsert_user_broker_connection
-        from engine.utils.token_encryption import encrypt_broker_token
+        from utils.db import upsert_user_broker_connection
+        from utils.token_encryption import encrypt_broker_token
 
         encrypted_token = encrypt_broker_token(access_token)
         upsert_user_broker_connection(
@@ -588,7 +588,7 @@ def _run_mf_job_directly(payload: dict) -> None:
     
     Uses threading to keep Streamlit responsive since MF jobs can be heavy.
     """
-    from engine.mf_lab.jobs import _run_job_sync
+    from mf_lab.jobs import _run_job_sync
     
     def _thread_target():
         try:
@@ -733,13 +733,13 @@ def _fetch_universes(api_url: str) -> List[str]:
         response.raise_for_status()
         return response.json()
     except Exception:
-        from engine.fortress_config import TICKER_GROUPS
+        from fortress_config import TICKER_GROUPS
         return list(TICKER_GROUPS.keys())
 
 
 
 def _build_order_link(symbol: str, quantity: float, price: float, broker_name: str) -> str:
-    from engine.utils.broker_mappings import generate_dhan_url, generate_zerodha_url
+    from utils.broker_mappings import generate_dhan_url, generate_zerodha_url
 
     if broker_name == "Dhan":
         return generate_dhan_url(symbol, quantity, price) or ""
@@ -747,7 +747,7 @@ def _build_order_link(symbol: str, quantity: float, price: float, broker_name: s
 
 
 def _render_dashboard_tab(profile: Dict[str, Any], username: str) -> None:
-    from engine.utils.db import fetch_fortress_orders, list_user_broker_connections
+    from utils.db import fetch_fortress_orders, list_user_broker_connections
 
     brokers_df = list_user_broker_connections(username)
     orders_df = fetch_fortress_orders(username)
@@ -794,15 +794,15 @@ def _run_scan_directly(payload: dict) -> list:
     works on Streamlit Cloud where no separate FastAPI process is running.
     """
     import logging
-    from engine.stock_scanner.logic import (
+    from stock_scanner.logic import (
         check_institutional_fortress,
         apply_advanced_scoring,
         get_stock_data,
         DEFAULT_SCORING_CONFIG,
     )
-    from engine.stock_scanner.ui import generate_action_link
-    from engine.stock_scanner.pulse import get_current_regime
-    from engine.fortress_config import TICKER_GROUPS
+    from stock_scanner.ui import generate_action_link
+    from stock_scanner.pulse import get_current_regime
+    from fortress_config import TICKER_GROUPS
 
     logger = logging.getLogger("fortress-direct-scan")
 
@@ -859,7 +859,7 @@ def _run_scan_directly(payload: dict) -> list:
 
 
 def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dict = None) -> None:
-    from engine.utils.db import create_fortress_order
+    from utils.db import create_fortress_order
 
     f = sidebar_filters or {}
     universe = f.get("universe", "NIFTY50")
@@ -1216,7 +1216,7 @@ def _render_mf_lab_tab(api_url: str) -> None:
 
 
 def _render_orders_tab(username: str, sidebar_filters: dict = None) -> None:
-    from engine.utils.db import fetch_fortress_orders
+    from utils.db import fetch_fortress_orders
 
     f = sidebar_filters or {}
     status_filter = f.get("status", "All")
@@ -1345,7 +1345,7 @@ def _render_authenticated_app() -> None:
             with st.expander("🛠️ Setup", expanded=False):
                 st.caption("One-time development helpers.")
                 if st.button("Seed 5 Dummy Users", use_container_width=True):
-                    from engine.utils.db import seed_dummy_users
+                    from utils.db import seed_dummy_users
 
                     added_count = seed_dummy_users()
                     st.success(f"Dummy user setup complete. Added {added_count} user(s).")
@@ -1403,7 +1403,7 @@ _bootstrap_session_state()
 # Import is deferred here (not at module top-level) so a transient import failure
 # during Streamlit's pre-load phase never causes a NameError at startup.
 if not st.session_state.get("_db_initialized"):
-    from engine.utils.db import init_db
+    from utils.db import init_db
     init_db()
     st.session_state["_db_initialized"] = True
 
