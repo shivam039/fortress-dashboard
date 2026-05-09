@@ -995,9 +995,54 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
             return
         st.dataframe(table_df, width="stretch", hide_index=True)
 
+    actionable_df = results[results.get("Quality_Gate_Pass", True) == True].copy()
+    filtered_out_df = results[results.get("Quality_Gate_Pass", True) == False].copy()
+
+    # ── Sector Intelligence & Rotation ────────────────────────────────────
+    if not results.empty and "Sector" in results.columns:
+        st.markdown("#### 🔥 Sector Intelligence & Rotation")
+        sector_df = results.copy()
+        if "Velocity" not in sector_df.columns:
+            sector_df["Velocity"] = pd.to_numeric(sector_df.get("Ret_7D", 0), errors="coerce").fillna(0) - pd.to_numeric(sector_df.get("Ret_30D", 0), errors="coerce").fillna(0)
+        
+        sector_stats = sector_df.groupby("Sector").agg({
+            "Velocity": "mean",
+            "Above_EMA200": "mean", # Breadth (0-1)
+            "Score": "mean"
+        }).reset_index()
+
+        sector_stats["Breadth (%)"] = (sector_stats["Above_EMA200"] * 100).round(1)
+        sector_stats["Avg Score"] = sector_stats["Score"].round(1)
+        sector_stats["Velocity"] = sector_stats["Velocity"].round(2)
+
+        def get_thesis(row):
+            if row["Score"] > 75 and row["Velocity"] > 0: return "🐂 Bullish Accumulation"
+            elif row["Score"] < 35 and row["Breadth (%)"] < 40: return "❄️ Structural Weakness"
+            elif row["Velocity"] > 2: return "🚀 High Momentum"
+            else: return "⚖️ Neutral / Rotation"
+
+        sector_stats["Thesis"] = sector_stats.apply(get_thesis, axis=1)
+
+        def check_rise(row): return "🔥 YES" if row['Velocity'] > 0 and row['Breadth (%)'] > 70 else ""
+        def check_fall(row): return "❄️ YES" if row['Velocity'] < 0 or row['Breadth (%)'] < 40 else ""
+
+        sector_stats['On the Rise'] = sector_stats.apply(check_rise, axis=1)
+        sector_stats['On the Fall'] = sector_stats.apply(check_fall, axis=1)
+
+        st.dataframe(
+            sector_stats[["Sector", "Thesis", "Velocity", "Breadth (%)", "Avg Score", "On the Rise", "On the Fall"]].sort_values("Velocity", ascending=False),
+            width='stretch',
+            column_config={
+                "Velocity": st.column_config.NumberColumn("Momentum Vel", format="%.2f%%"),
+                "Breadth (%)": st.column_config.ProgressColumn("Inst. Breadth", min_value=0, max_value=100, format="%.1f%%"),
+                "Avg Score": st.column_config.ProgressColumn("Sector Strength", min_value=0, max_value=100)
+            },
+            hide_index=True
+        )
+
     # ── Strategic Splits ──────────────────────────────────────────────────
-    momentum_picks = results[results["Strategy"] == "Momentum Pick"].copy()
-    lt_picks = results[results["Strategy"] == "Long-Term Pick"].copy()
+    momentum_picks = actionable_df[actionable_df["Strategy"] == "Momentum Pick"].copy()
+    lt_picks = actionable_df[actionable_df["Strategy"] == "Long-Term Pick"].copy()
 
     if not momentum_picks.empty:
         st.markdown(f"#### 🚀 Momentum Picks ({len(momentum_picks)})")
@@ -1011,10 +1056,17 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
 
     # ── Full Results ─────────────────────────────────────────────────────
     st.markdown("#### 📋 All Actionable Setups")
-    display_df = results.copy()
+    display_df = actionable_df.copy()
     if "Actions" in display_df.columns:
         display_df = display_df.drop(columns=["Actions"])
     _display_scan_table(display_df)
+
+    if not filtered_out_df.empty:
+        with st.expander(f"Filtered Out ({len(filtered_out_df)}) - Hard Quality Gates", expanded=False):
+            f_display_df = filtered_out_df.copy()
+            if "Actions" in f_display_df.columns:
+                f_display_df = f_display_df.drop(columns=["Actions"])
+            _display_scan_table(f_display_df)
 
     symbol_options = display_df["Symbol"].dropna().astype(str).tolist() if "Symbol" in display_df.columns else []
     if not symbol_options:

@@ -442,6 +442,7 @@ def render(portfolio_val, risk_pct, selected_universe, selected_columns, broker_
                 )
                 if search_res:
                     search_df = pd.DataFrame([search_res])
+                    search_df = apply_advanced_scoring(search_df, scoring_config)
                     search_df["Actions"] = search_df.apply(lambda row: generate_action_link(row, broker_choice), axis=1)
 
                     # Show columns based on sidebar selection

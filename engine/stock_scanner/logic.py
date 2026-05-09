@@ -693,6 +693,9 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         elif atr > 0 and atr100 > 0 and atr < (atr100 * 0.8):
             conviction += 3   # Mild volatility contraction only
 
+        # Apply news / earnings adjustments even when the stock is not yet in the ideal trend structure.
+        conviction += score_mod
+
         # Mean reversion / over-extension guard
         extension_pct = ((price - ema50) / ema50) * 100 if ema50 > 0 else 0.0
         extension_ema200_pct = ((price - ema200) / ema200) * 100 if ema200 > 0 else 0.0
@@ -753,6 +756,16 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         ret_6m = (_return_ratio(close, 126) - 1) * 100
         vol_adj_mom = ret_6m / atr if atr > 0 else 0
         context_raw += min(max(vol_adj_mom, -10), 20)
+
+        # Raw conviction fallback: preserve a meaningful base score even when ideal trend structure
+        # is not present, while still allowing trend-based conviction to dominate when available.
+        base_score_estimate = (
+            technical_raw * 0.4
+            + fundamental_raw * 0.25
+            + sentiment_raw * 0.15
+            + context_raw * 0.20
+        )
+        conviction = max(conviction, min(100, round(base_score_estimate, 2)))
 
         conviction = max(0,min(100,conviction))
         verdict = "🔥 HIGH" if conviction>=85 and mtf_aligned else "🚀 PASS" if conviction>=60 else "🟡 WATCH" if tech_base else "❌ FAIL"
