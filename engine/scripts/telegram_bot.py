@@ -122,9 +122,96 @@ def send_telegram_message(message: str):
             
     return success
 
+
+def format_commodity_message(row):
+    """Format a commodity alert using a rich template."""
+    name = row.get("Commodity", "UNKNOWN")
+    price = row.get("Price (₹)", 0)
+    score = row.get("Conviction Score", 0)
+    label = row.get("Conviction Label", "HOLD")
+    emoji = row.get("Conviction Emoji", "🟡")
+    trend = row.get("Trend", "—")
+    atr_regime = row.get("ATR Regime", "—")
+    spread = row.get("Spread %", 0)
+    ret_1m = row.get("1M Return %", 0)
+    ret_3m = row.get("3M Return %", 0)
+    ret_6m = row.get("6M Return %", 0)
+    decision = row.get("Decision", "")
+    usdinr = row.get("USDINR", 84.0)
+
+    msg = f"{emoji} COMMODITY ALERT: {name}\n\n"
+    msg += f"Conviction: {score}/100 ({label})\n"
+    msg += f"Price: ₹{price:,.2f}\n"
+    msg += f"Trend: {trend}\n"
+    msg += f"ATR Regime: {atr_regime}\n\n"
+    msg += f"Returns:\n"
+    msg += f"  📊 1M: {ret_1m:+.2f}%\n"
+    msg += f"  📊 3M: {ret_3m:+.2f}%\n"
+    msg += f"  📊 6M: {ret_6m:+.2f}%\n\n"
+    msg += f"Spread vs Global: {spread:+.2f}%\n"
+    msg += f"USDINR: {usdinr:.2f}\n\n"
+    msg += f"Decision: {decision}\n"
+    msg += f"Disclaimer: Not financial advice. Educational purposes only."
+    return msg
+
+
+def broadcast_commodities():
+    """Fetch latest commodity scan and broadcast alerts."""
+    print("Checking Commodities...")
+    
+    scan_data = get_latest_scan_for_universe("Commodities")
+    if not scan_data:
+        # Try running live if no scan exists
+        try:
+            from commodities.logic import build_commodities_frame
+            df = build_commodities_frame()
+        except Exception as e:
+            print(f"  Could not load commodities: {e}")
+            return
+    else:
+        df = scan_data["df"]
+    
+    if df.empty:
+        print("  No commodity data available.")
+        return
+    
+    # Ensure Conviction Score column exists
+    score_col = "Conviction Score" if "Conviction Score" in df.columns else None
+    if not score_col:
+        for col in df.columns:
+            if "conviction" in col.lower() and "score" in col.lower():
+                score_col = col
+                break
+    
+    if not score_col:
+        print("  No conviction score column found.")
+        return
+    
+    df[score_col] = pd.to_numeric(df[score_col], errors="coerce").fillna(0)
+    top_commodities = df.sort_values(score_col, ascending=False)
+    
+    if top_commodities.empty:
+        print("  No commodities to broadcast.")
+        return
+    
+    print(f"  Broadcasting {len(top_commodities)} commodities.")
+    
+    header_msg = f"🌍 <b>Commodities Intelligence Report</b>\n<i>{datetime.now().strftime('%d-%b-%Y %H:%M')}</i>"
+    send_telegram_message(header_msg)
+    
+    for _, row in top_commodities.iterrows():
+        msg = format_commodity_message(row)
+        success = send_telegram_message(msg)
+        if success:
+            print(f"  -> Sent {row.get('Commodity')}")
+        else:
+            print(f"  -> Failed to send {row.get('Commodity')}")
+
+
 def main():
     print(f"Starting Telegram Bot broadcaster at {datetime.now()}")
     
+    # ── Stock Picks ──────────────────────────────────────────────────────
     indices_to_check = ["Nifty 50", "Nifty Next 50", "Nifty Midcap 150", "Nifty Smallcap 250", "Nifty Microcap 250"]
     
     for index_name in indices_to_check:
@@ -165,8 +252,12 @@ def main():
                 print(f"  -> Sent {row.get('Symbol')}")
             else:
                 print(f"  -> Failed to send {row.get('Symbol')}")
+    
+    # ── Commodities ──────────────────────────────────────────────────────
+    broadcast_commodities()
                 
     print("Done.")
 
 if __name__ == "__main__":
     main()
+

@@ -1272,6 +1272,42 @@ def _render_commodities_tab(username: str, broker: str = None) -> None:
         st.caption(f"Broker: **{broker_name}** — change in the sidebar.")
     commodities_ui.render(broker_name)
 
+    # ── Telegram Alert for Commodities ───────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### ✈️ Send Commodity Telegram Alert")
+    commodity_options = ["Gold", "Silver", "Crude", "Copper"]
+    tip_col1, tip_col2 = st.columns([3, 1])
+    with tip_col1:
+        selected_commodity = st.selectbox("Select Commodity to Alert", commodity_options, key="commodity_tip_select")
+    with tip_col2:
+        st.write("")
+        if st.button("📤 Send Alert Now", use_container_width=True, type="primary", key="send_commodity_tip"):
+            try:
+                from commodities.logic import build_commodities_frame
+                with st.spinner(f"Fetching {selected_commodity} data..."):
+                    df = build_commodities_frame(selected_commodity)
+                if df.empty:
+                    st.error(f"No data available for {selected_commodity}.")
+                else:
+                    row = df.iloc[0]
+                    import sys as _sys
+                    engine_scripts_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'engine', 'scripts'))
+                    if engine_scripts_path not in _sys.path:
+                        _sys.path.append(engine_scripts_path)
+                    from telegram_bot import format_commodity_message, send_telegram_message
+                    subscribers = st.session_state.get("telegram_subscribers", "").strip()
+                    if subscribers:
+                        import telegram_bot
+                        telegram_bot.TELEGRAM_CHAT_ID = subscribers
+                    msg = format_commodity_message(row)
+                    success = send_telegram_message(msg)
+                    if success:
+                        st.success(f"✅ {selected_commodity} alert sent!")
+                    else:
+                        st.error("Failed to send alert.")
+            except Exception as e:
+                st.error(f"Error: {e}")
+
 
 def _render_options_tab(username: str, broker: str = None) -> None:
     options_ui = _load_module("options_algo.ui")
