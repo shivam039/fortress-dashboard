@@ -224,14 +224,18 @@ def _render_login_screen() -> None:
         with tab_guest:
             st.write("Explore the Fortress terminal with a temporary guest session. Note: Broker connections are saved per account.")
             if st.button("Continue as Guest", type="secondary", use_container_width=True):
-                from engine.utils.db import record_user_login, upsert_app_user
-                guest_username = "guest_user"
-                upsert_app_user(username=guest_username, full_name="Guest Explorer", account_status="Trial")
-                profile = _sync_user_profile(guest_username)
-                record_user_login(guest_username)
+                # Fast guest login: skip DB round-trips for instant access
+                guest_profile = {
+                    "username": "guest_user",
+                    "full_name": "Guest Explorer",
+                    "email": "",
+                    "phone": "",
+                    "account_status": "Trial",
+                    "last_login_at": None,
+                }
                 st.session_state["logged_in"] = True
-                st.session_state["current_user"] = guest_username
-                st.session_state["current_user_profile"] = profile
+                st.session_state["current_user"] = "guest_user"
+                st.session_state["current_user_profile"] = guest_profile
                 st.rerun()
 
 
@@ -725,7 +729,7 @@ def _render_sidebar_module_filters(module: str, username: str, api_url: str) -> 
 @st.cache_data(ttl=300)
 def _fetch_universes(api_url: str) -> List[str]:
     try:
-        response = requests.get(f"{api_url.rstrip('/')}/api/universes", timeout=10)
+        response = requests.get(f"{api_url.rstrip('/')}/api/universes", timeout=3)
         response.raise_for_status()
         return response.json()
     except Exception:
@@ -973,74 +977,47 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
             return "background-color: #e9f9e9; color: #1f7a1f; font-weight: 600;"
         return ""
 
-    def _send_telegram_tip_from_row(row):
-        import sys
-        import os
-        engine_scripts_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'engine', 'scripts'))
-        if engine_scripts_path not in sys.path:
-            sys.path.append(engine_scripts_path)
+    def _send_telegram_tip(row_data):
+        """Send a single stock tip to all configured Telegram subscribers."""
+        import sys as _sys
+        import os as _os
+        engine_scripts_path = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), 'engine', 'scripts'))
+        if engine_scripts_path not in _sys.path:
+            _sys.path.append(engine_scripts_path)
         try:
-            from telegram_bot import format_telegram_message, send_telegram_message
-            # Ensure row has all needed fields for format_telegram_message
-            msg = format_telegram_message(row)
-            success = send_telegram_message(msg)
-            return success
+            from telegram_bot import format_telegram_message, send_telegram_message as _tg_send
+            # Read subscriber list from session state if available
+            subscribers = st.session_state.get("telegram_subscribers", "").strip()
+            if subscribers:
+                import telegram_bot
+                telegram_bot.TELEGRAM_CHAT_ID = subscribers
+            msg = format_telegram_message(row_data)
+            return _tg_send(msg)
         except Exception as e:
             st.error(f"Telegram error: {e}")
             return False
 
-    def _display_scan_table(df, key):
+    def _display_scan_table(df):
         if df.empty:
             st.dataframe(df, width="stretch", hide_index=True)
             return
-        
         table_df = df.copy()
-        # Add Telegram column if not present
-        if "Telegram" not in table_df.columns:
-            table_df.insert(0, "Telegram", False)
-            
         rename_map = {"Score": "Conviction Score"}
         if feature_ai_enabled and "ai_score" in table_df.columns:
             rename_map["ai_score"] = "AI Score"
         table_df = table_df.rename(columns=rename_map)
-        
         if feature_ai_enabled and "AI Score" in table_df.columns and "Conviction Score" in table_df.columns:
             cols = list(table_df.columns)
             ai_col = cols.pop(cols.index("AI Score"))
             conv_idx = cols.index("Conviction Score")
             cols.insert(conv_idx + 1, ai_col)
             table_df = table_df[cols]
-
-        column_config = {
-            "Telegram": st.column_config.CheckboxColumn("✈️ Tip", default=False, help="Toggle to send as Telegram Tip"),
-            "Conviction Score": st.column_config.NumberColumn("Conviction Score", format="%.1f"),
-            "AI Score": st.column_config.NumberColumn("AI Score", format="%.1f"),
-        }
-        
-        # Use data_editor to allow row interactions
-        edited_df = st.data_editor(
-            table_df,
-            column_config=column_config,
-            disabled=[c for c in table_df.columns if c != "Telegram"],
-            hide_index=True,
-            use_container_width=True,
-            key=key
-        )
-        
-        # Handle logic if Tip was toggled
-        if edited_df["Telegram"].any():
-            toggled_rows = edited_df[edited_df["Telegram"] == True]
-            for _, row in toggled_rows.iterrows():
-                symbol = row['Symbol']
-                tip_key = f"tip_sent_{symbol}_{key}"
-                
-                if not st.session_state.get(tip_key, False):
-                    # We need to map back renamed columns if needed
-                    orig_row = row.rename(index={"Conviction Score": "Score", "AI Score": "ai_score"})
-                    success = _send_telegram_tip_from_row(orig_row)
-                    if success:
-                        st.toast(f"✅ Tip sent for {symbol}!", icon="🚀")
-                        st.session_state[tip_key] = True
+            styled = table_df.style.format({"Conviction Score": "{:.1f}", "AI Score": "{:.1f}"}).map(
+                _score_style, subset=["Conviction Score", "AI Score"]
+            )
+            st.dataframe(styled, width="stretch", hide_index=True)
+            return
+        st.dataframe(table_df, width="stretch", hide_index=True)
 
     if "Quality_Gate_Pass" in results.columns:
         actionable_df = results[results["Quality_Gate_Pass"] == True].copy()
@@ -1098,30 +1075,68 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
     if not momentum_picks.empty:
         st.markdown(f"#### 🚀 Momentum Picks ({len(momentum_picks)})")
         if "Actions" in momentum_picks.columns: momentum_picks.drop(columns=["Actions"], inplace=True)
-        _display_scan_table(momentum_picks, key="momentum_picks_table")
+        _display_scan_table(momentum_picks)
 
     if not lt_picks.empty:
         st.markdown(f"#### 💎 Long-Term Picks ({len(lt_picks)})")
         if "Actions" in lt_picks.columns: lt_picks.drop(columns=["Actions"], inplace=True)
-        _display_scan_table(lt_picks, key="lt_picks_table")
+        _display_scan_table(lt_picks)
 
     # ── Full Results ─────────────────────────────────────────────────────
-    st.markdown("#### 📋 All Actionable Setups")
-    display_df = actionable_df.copy()
+    st.markdown("#### 📋 All Scan Results")
+    display_df = results.copy()
     if "Actions" in display_df.columns:
         display_df = display_df.drop(columns=["Actions"])
-    _display_scan_table(display_df, key="all_actionable_table")
+    _display_scan_table(display_df)
 
     if not filtered_out_df.empty:
         with st.expander(f"Filtered Out ({len(filtered_out_df)}) - Hard Quality Gates", expanded=False):
             f_display_df = filtered_out_df.copy()
             if "Actions" in f_display_df.columns:
                 f_display_df = f_display_df.drop(columns=["Actions"])
-            _display_scan_table(f_display_df, key="filtered_out_table")
+            _display_scan_table(f_display_df)
 
     symbol_options = display_df["Symbol"].dropna().astype(str).tolist() if "Symbol" in display_df.columns else []
     if not symbol_options:
         return
+
+    # ── Send Telegram Tip ────────────────────────────────────────────────
+    st.markdown("#### ✈️ Send Telegram Alert")
+    tip_col1, tip_col2 = st.columns([3, 1])
+    with tip_col1:
+        tip_symbol = st.selectbox("Select Stock to Tip", symbol_options, key="tip_symbol_select")
+    with tip_col2:
+        st.write("")  # spacing
+        if st.button("📤 Send Tip Now", use_container_width=True, type="primary"):
+            tip_row = display_df[display_df["Symbol"] == tip_symbol].iloc[0]
+            success = _send_telegram_tip(tip_row)
+            if success:
+                st.success(f"✅ Tip sent for {tip_symbol}!")
+            else:
+                st.error("Failed to send tip. Check Telegram settings below.")
+
+    # ── Telegram Subscriber Management ───────────────────────────────────
+    with st.expander("📢 Telegram Alert Settings", expanded=False):
+        st.caption(
+            "Enter comma-separated Telegram Chat IDs below. "
+            "To get a Chat ID: have the user message @fortress_screener_bot, then check "
+            "`https://api.telegram.org/bot<TOKEN>/getUpdates` for their chat ID. "
+            "For channels, add the bot as admin and use the channel's numeric ID (starts with -100)."
+        )
+        current_subs = st.session_state.get("telegram_subscribers", "677141544")
+        new_subs = st.text_area("Chat IDs (comma-separated)", value=current_subs, key="tg_subs_input", height=80)
+        if st.button("💾 Save Subscriber List", use_container_width=True):
+            st.session_state["telegram_subscribers"] = new_subs.strip()
+            # Also persist to file for the cron script
+            subs_file = os.path.join(os.path.dirname(__file__), 'engine', 'scripts', 'telegram_subscribers.txt')
+            try:
+                with open(subs_file, 'w') as f:
+                    f.write(new_subs.strip())
+                st.success(f"Saved {len([s for s in new_subs.split(',') if s.strip()])} subscriber(s).")
+            except Exception as e:
+                st.error(f"Could not save subscriber file: {e}")
+
+    st.markdown("---")
 
     st.markdown("#### Record Order From Fortress")
     with st.form("fortress_order_form"):
@@ -1140,27 +1155,8 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
         submitted = st.form_submit_button("Save Order", type="primary", use_container_width=True)
 
     broker_link = _build_order_link(selected_symbol, quantity, price, broker_name)
-    btn_col1, btn_col2 = st.columns(2)
-    with btn_col1:
-        if broker_link and username != "guest_user":
-            st.link_button("Open Broker Order Page", broker_link, use_container_width=True)
-    with btn_col2:
-        if st.button("✈️ Send Tip to Telegram", use_container_width=True):
-            import sys
-            import os
-            engine_scripts_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'engine', 'scripts'))
-            if engine_scripts_path not in sys.path:
-                sys.path.append(engine_scripts_path)
-            try:
-                from telegram_bot import format_telegram_message, send_telegram_message
-                msg = format_telegram_message(selected_row)
-                success = send_telegram_message(msg)
-                if success:
-                    st.success(f"Successfully sent {selected_symbol} to Telegram!")
-                else:
-                    st.error("Failed to send to Telegram. Check terminal logs.")
-            except Exception as e:
-                st.error(f"Telegram error: {e}")
+    if broker_link and username != "guest_user":
+        st.link_button("Open Broker Order Page", broker_link, use_container_width=False)
 
     # ── Conviction Heatmap ──────────────────────────────────────────────
     if not results.empty and "Score" in results.columns:

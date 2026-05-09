@@ -12,7 +12,18 @@ from fortress_config import TICKER_GROUPS
 from utils.db import _read_df
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8586585011:AAHFal_zfoGEtjol86GMI49OKCSlCgvclMA")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "677141544")
+
+# Read subscriber list: env var > subscribers file > default
+_DEFAULT_CHAT_ID = "677141544"
+_SUBS_FILE = os.path.join(os.path.dirname(__file__), "telegram_subscribers.txt")
+if os.environ.get("TELEGRAM_CHAT_ID"):
+    TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+elif os.path.exists(_SUBS_FILE):
+    with open(_SUBS_FILE, "r") as _f:
+        _file_ids = _f.read().strip()
+    TELEGRAM_CHAT_ID = _file_ids if _file_ids else _DEFAULT_CHAT_ID
+else:
+    TELEGRAM_CHAT_ID = _DEFAULT_CHAT_ID
 
 def get_latest_scan_for_universe(universe: str):
     """Fetch the latest completed scan for a given universe."""
