@@ -1123,7 +1123,7 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
             "`https://api.telegram.org/bot<TOKEN>/getUpdates` for their chat ID. "
             "For channels, add the bot as admin and use the channel's numeric ID (starts with -100)."
         )
-        current_subs = st.session_state.get("telegram_subscribers", "677141544")
+        current_subs = st.session_state.get("telegram_subscribers", "677141544,-1003933571318")
         new_subs = st.text_area("Chat IDs (comma-separated)", value=current_subs, key="tg_subs_input", height=80)
         if st.button("💾 Save Subscriber List", use_container_width=True):
             st.session_state["telegram_subscribers"] = new_subs.strip()

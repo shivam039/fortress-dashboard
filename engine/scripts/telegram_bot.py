@@ -14,7 +14,7 @@ from utils.db import _read_df
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8586585011:AAHFal_zfoGEtjol86GMI49OKCSlCgvclMA")
 
 # Read subscriber list: env var > subscribers file > default
-_DEFAULT_CHAT_ID = "677141544"
+_DEFAULT_CHAT_ID = "677141544,-1003933571318"
 _SUBS_FILE = os.path.join(os.path.dirname(__file__), "telegram_subscribers.txt")
 if os.environ.get("TELEGRAM_CHAT_ID"):
     TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
