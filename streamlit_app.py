@@ -1089,8 +1089,27 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
         submitted = st.form_submit_button("Save Order", type="primary", use_container_width=True)
 
     broker_link = _build_order_link(selected_symbol, quantity, price, broker_name)
-    if broker_link and username != "guest_user":
-        st.link_button("Open Broker Order Page", broker_link, use_container_width=False)
+    btn_col1, btn_col2 = st.columns(2)
+    with btn_col1:
+        if broker_link and username != "guest_user":
+            st.link_button("Open Broker Order Page", broker_link, use_container_width=True)
+    with btn_col2:
+        if st.button("✈️ Send Tip to Telegram", use_container_width=True):
+            import sys
+            import os
+            engine_scripts_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'engine', 'scripts'))
+            if engine_scripts_path not in sys.path:
+                sys.path.append(engine_scripts_path)
+            try:
+                from telegram_bot import format_telegram_message, send_telegram_message
+                msg = format_telegram_message(selected_row)
+                success = send_telegram_message(msg)
+                if success:
+                    st.success(f"Successfully sent {selected_symbol} to Telegram!")
+                else:
+                    st.error("Failed to send to Telegram. Check terminal logs.")
+            except Exception as e:
+                st.error(f"Telegram error: {e}")
 
     # ── Conviction Heatmap ──────────────────────────────────────────────
     if not results.empty and "Score" in results.columns:
