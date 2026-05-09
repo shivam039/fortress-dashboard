@@ -1029,22 +1029,25 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
         
         # Handle logic if Tip was toggled
         if edited_df["Telegram"].any():
-            # Find the row(s) newly checked. 
-            # To avoid re-sending, we compare with original or just pick the first True.
-            # In Streamlit, this will trigger a rerun.
             toggled_rows = edited_df[edited_df["Telegram"] == True]
             for _, row in toggled_rows.iterrows():
-                # We need to map back renamed columns if needed
-                orig_row = row.rename(index={"Conviction Score": "Score", "AI Score": "ai_score"})
-                success = _send_telegram_tip_from_row(orig_row)
-                if success:
-                    st.toast(f"✅ Tip sent for {row['Symbol']}!", icon="🚀")
-            
-            # Note: The state persists in edited_df. To "uncheck" it, we'd need session_state logic.
-            # For now, this provides the "button in each row" functionality.
+                symbol = row['Symbol']
+                tip_key = f"tip_sent_{symbol}_{key}"
+                
+                if not st.session_state.get(tip_key, False):
+                    # We need to map back renamed columns if needed
+                    orig_row = row.rename(index={"Conviction Score": "Score", "AI Score": "ai_score"})
+                    success = _send_telegram_tip_from_row(orig_row)
+                    if success:
+                        st.toast(f"✅ Tip sent for {symbol}!", icon="🚀")
+                        st.session_state[tip_key] = True
 
-    actionable_df = results[results.get("Quality_Gate_Pass", True) == True].copy()
-    filtered_out_df = results[results.get("Quality_Gate_Pass", True) == False].copy()
+    if "Quality_Gate_Pass" in results.columns:
+        actionable_df = results[results["Quality_Gate_Pass"] == True].copy()
+        filtered_out_df = results[results["Quality_Gate_Pass"] == False].copy()
+    else:
+        actionable_df = results.copy()
+        filtered_out_df = pd.DataFrame()
 
     # ── Sector Intelligence & Rotation ────────────────────────────────────
     if not results.empty and "Sector" in results.columns:
