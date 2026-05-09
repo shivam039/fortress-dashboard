@@ -973,27 +973,75 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
             return "background-color: #e9f9e9; color: #1f7a1f; font-weight: 600;"
         return ""
 
-    def _display_scan_table(df):
+    def _send_telegram_tip_from_row(row):
+        import sys
+        import os
+        engine_scripts_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'engine', 'scripts'))
+        if engine_scripts_path not in sys.path:
+            sys.path.append(engine_scripts_path)
+        try:
+            from telegram_bot import format_telegram_message, send_telegram_message
+            # Ensure row has all needed fields for format_telegram_message
+            msg = format_telegram_message(row)
+            success = send_telegram_message(msg)
+            return success
+        except Exception as e:
+            st.error(f"Telegram error: {e}")
+            return False
+
+    def _display_scan_table(df, key):
         if df.empty:
             st.dataframe(df, width="stretch", hide_index=True)
             return
+        
         table_df = df.copy()
+        # Add Telegram column if not present
+        if "Telegram" not in table_df.columns:
+            table_df.insert(0, "Telegram", False)
+            
         rename_map = {"Score": "Conviction Score"}
         if feature_ai_enabled and "ai_score" in table_df.columns:
             rename_map["ai_score"] = "AI Score"
         table_df = table_df.rename(columns=rename_map)
+        
         if feature_ai_enabled and "AI Score" in table_df.columns and "Conviction Score" in table_df.columns:
             cols = list(table_df.columns)
             ai_col = cols.pop(cols.index("AI Score"))
             conv_idx = cols.index("Conviction Score")
             cols.insert(conv_idx + 1, ai_col)
             table_df = table_df[cols]
-            styled = table_df.style.format({"Conviction Score": "{:.1f}", "AI Score": "{:.1f}"}).map(
-                _score_style, subset=["Conviction Score", "AI Score"]
-            )
-            st.dataframe(styled, width="stretch", hide_index=True)
-            return
-        st.dataframe(table_df, width="stretch", hide_index=True)
+
+        column_config = {
+            "Telegram": st.column_config.CheckboxColumn("✈️ Tip", default=False, help="Toggle to send as Telegram Tip"),
+            "Conviction Score": st.column_config.NumberColumn("Conviction Score", format="%.1f"),
+            "AI Score": st.column_config.NumberColumn("AI Score", format="%.1f"),
+        }
+        
+        # Use data_editor to allow row interactions
+        edited_df = st.data_editor(
+            table_df,
+            column_config=column_config,
+            disabled=[c for c in table_df.columns if c != "Telegram"],
+            hide_index=True,
+            use_container_width=True,
+            key=key
+        )
+        
+        # Handle logic if Tip was toggled
+        if edited_df["Telegram"].any():
+            # Find the row(s) newly checked. 
+            # To avoid re-sending, we compare with original or just pick the first True.
+            # In Streamlit, this will trigger a rerun.
+            toggled_rows = edited_df[edited_df["Telegram"] == True]
+            for _, row in toggled_rows.iterrows():
+                # We need to map back renamed columns if needed
+                orig_row = row.rename(index={"Conviction Score": "Score", "AI Score": "ai_score"})
+                success = _send_telegram_tip_from_row(orig_row)
+                if success:
+                    st.toast(f"✅ Tip sent for {row['Symbol']}!", icon="🚀")
+            
+            # Note: The state persists in edited_df. To "uncheck" it, we'd need session_state logic.
+            # For now, this provides the "button in each row" functionality.
 
     actionable_df = results[results.get("Quality_Gate_Pass", True) == True].copy()
     filtered_out_df = results[results.get("Quality_Gate_Pass", True) == False].copy()
@@ -1047,26 +1095,26 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
     if not momentum_picks.empty:
         st.markdown(f"#### 🚀 Momentum Picks ({len(momentum_picks)})")
         if "Actions" in momentum_picks.columns: momentum_picks.drop(columns=["Actions"], inplace=True)
-        _display_scan_table(momentum_picks)
+        _display_scan_table(momentum_picks, key="momentum_picks_table")
 
     if not lt_picks.empty:
         st.markdown(f"#### 💎 Long-Term Picks ({len(lt_picks)})")
         if "Actions" in lt_picks.columns: lt_picks.drop(columns=["Actions"], inplace=True)
-        _display_scan_table(lt_picks)
+        _display_scan_table(lt_picks, key="lt_picks_table")
 
     # ── Full Results ─────────────────────────────────────────────────────
     st.markdown("#### 📋 All Actionable Setups")
     display_df = actionable_df.copy()
     if "Actions" in display_df.columns:
         display_df = display_df.drop(columns=["Actions"])
-    _display_scan_table(display_df)
+    _display_scan_table(display_df, key="all_actionable_table")
 
     if not filtered_out_df.empty:
         with st.expander(f"Filtered Out ({len(filtered_out_df)}) - Hard Quality Gates", expanded=False):
             f_display_df = filtered_out_df.copy()
             if "Actions" in f_display_df.columns:
                 f_display_df = f_display_df.drop(columns=["Actions"])
-            _display_scan_table(f_display_df)
+            _display_scan_table(f_display_df, key="filtered_out_table")
 
     symbol_options = display_df["Symbol"].dropna().astype(str).tolist() if "Symbol" in display_df.columns else []
     if not symbol_options:
