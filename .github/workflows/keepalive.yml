@@ -24,14 +24,15 @@ jobs:
             
             # Try the health endpoint first
             HEALTH_URL="${APP_URL%%/}/_stcore/health"
-            HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}\n" "$HEALTH_URL" || echo "Failed")
+            HTTP_STATUS=$(curl -c cookies.txt -b cookies.txt -L -o /dev/null -s -w "%{http_code}\n" "$HEALTH_URL" || echo "Failed")
             
-            if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "Ok" ]; then
+            if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "Ok" ] || [ "$HTTP_STATUS" = "303" ]; then
               echo "✅ Successfully pinged health endpoint (Status: $HTTP_STATUS)"
             else
               echo "⚠️ Health endpoint returned $HTTP_STATUS. Trying root URL..."
               # Fallback to root URL
-              ROOT_STATUS=$(curl -o /dev/null -s -w "%{http_code}\n" "$APP_URL" || echo "Failed")
+              ROOT_STATUS=$(curl -c cookies.txt -b cookies.txt -L -o /dev/null -s -w "%{http_code}\n" "$APP_URL" || echo "Failed")
               echo "Root URL ping status: $ROOT_STATUS"
             fi
+            rm -f cookies.txt
           done
