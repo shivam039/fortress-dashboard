@@ -1,0 +1,39 @@
+name: Streamlit Keep-Alive Pinger
+
+on:
+  schedule:
+    # Run every 5 minutes
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit App
+        env:
+          # You can set this URL in your GitHub repository secrets:
+          # Settings -> Secrets and variables -> Actions -> New repository secret
+          # Name: FORTRESS_APP_URL, Value: https://your-app-url.streamlit.app
+          APP_URL: ${{ secrets.FORTRESS_APP_URL }}
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "FORTRESS_APP_URL secret is not set. Please add it to your GitHub repository secrets."
+            echo "Settings -> Secrets and variables -> Actions -> New repository secret"
+            exit 0
+          fi
+          
+          echo "Pinging $APP_URL to prevent Streamlit Cloud from sleeping..."
+          
+          # Try the health endpoint first
+          HEALTH_URL="${APP_URL%%/}/_stcore/health"
+          HTTP_STATUS=$(curl -o /dev/null -s -w "%{http_code}\n" "$HEALTH_URL" || echo "Failed")
+          
+          if [ "$HTTP_STATUS" = "200" ] || [ "$HTTP_STATUS" = "Ok" ]; then
+            echo "✅ Successfully pinged health endpoint (Status: $HTTP_STATUS)"
+          else
+            echo "⚠️ Health endpoint returned $HTTP_STATUS. Trying root URL..."
+            # Fallback to root URL
+            ROOT_STATUS=$(curl -o /dev/null -s -w "%{http_code}\n" "$APP_URL" || echo "Failed")
+            echo "Root URL ping status: $ROOT_STATUS"
+          fi
