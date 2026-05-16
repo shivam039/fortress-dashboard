@@ -338,7 +338,10 @@ def _apply_quality_gates(df, cfg):
     else:
         gate_conditions["LowLiquidityFlag"] = pd.Series(False, index=df.index)
 
-    gate_frame = pd.DataFrame({k: v.fillna(False) for k, v in gate_conditions.items()}, index=df.index)
+    gate_frame = pd.DataFrame({
+        k: (v.fillna(False) if isinstance(v, pd.Series) else pd.Series(v, index=df.index).fillna(False))
+        for k, v in gate_conditions.items()
+    }, index=df.index)
     df["Quality_Gate_Pass"] = ~gate_frame.any(axis=1)
     df["Quality_Gate_Failures"] = gate_frame.apply(lambda row: "|".join(row.index[row.values]), axis=1)
     return df
