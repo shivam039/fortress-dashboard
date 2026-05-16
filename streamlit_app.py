@@ -1377,6 +1377,32 @@ def _render_authenticated_app() -> None:
 
         with st.expander("⚙️ Settings", expanded=False):
             st.text_input("API URL", key="fastapi_url", help="Backend FastAPI endpoint.")
+
+        with st.expander("📡 Telegram Scheduler", expanded=False):
+            try:
+                from scripts.scheduler import _scheduler_started, BROADCAST_HOUR, BROADCAST_MINUTE, _seconds_until_next_broadcast
+                if _scheduler_started:
+                    next_secs = _seconds_until_next_broadcast()
+                    hours_left = next_secs / 3600
+                    from datetime import datetime as _dt, timedelta as _td
+                    import pytz as _ptz
+                    _ist = _ptz.timezone("Asia/Kolkata")
+                    next_time = _dt.now(_ist) + _td(seconds=next_secs)
+                    st.success(f"✅ Scheduler Active")
+                    st.caption(f"Next broadcast: **{next_time.strftime('%d-%b %H:%M IST')}** ({hours_left:.1f}h)")
+                else:
+                    st.warning("⏸️ Scheduler not started")
+            except Exception:
+                st.info("Scheduler module not loaded")
+
+            if st.button("📤 Send Broadcast Now", use_container_width=True, type="primary", key="manual_tg_broadcast"):
+                try:
+                    from scripts.scheduler import _run_telegram_broadcast
+                    with st.spinner("Broadcasting to Telegram..."):
+                        _run_telegram_broadcast()
+                    st.success("✅ Broadcast sent!")
+                except Exception as e:
+                    st.error(f"Broadcast failed: {e}")
         if st.session_state.get("ENABLE_NEW_FEATURES", False):
             with st.expander("🛠️ Setup", expanded=False):
                 st.caption("One-time development helpers.")
@@ -1442,6 +1468,19 @@ if not st.session_state.get("_db_initialized"):
     from utils.db import init_db
     init_db()
     st.session_state["_db_initialized"] = True
+
+# ── Background Scheduler ────────────────────────────────────────────────────
+# Starts the Telegram broadcast scheduler (09:45 IST daily) and keep-alive
+# pinger to prevent Streamlit Cloud from sleeping.  The scheduler module has
+# its own process-level idempotency guard so this is safe to call on every
+# re-run — it will only actually start threads once per Python process.
+try:
+    from scripts.scheduler import start_scheduler
+    _scheduler_just_started = start_scheduler()
+    if _scheduler_just_started:
+        logging.getLogger("fortress").info("Background scheduler initialized.")
+except Exception as _sched_err:
+    logging.getLogger("fortress").warning(f"Scheduler start skipped: {_sched_err}")
 
 if not st.session_state["logged_in"]:
     _render_login_screen()
