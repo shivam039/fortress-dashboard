@@ -48,7 +48,7 @@
 The conviction score is computed in **five sequential phases**, each adding a different layer of intelligence:
 
 ```
-Phase 1: Raw Conviction        → Integer score 0–100 per stock (per-stock technical/news signals)
+Phase 1: Raw Conviction        → Integer score 0–100 per stock (per-stock technical/news signals + explicit risk penalties)
 Phase 2: Sub-Score Components  → technical_raw, fundamental_raw, sentiment_raw, context_raw
 Phase 3: Normalization         → Universe-relative percentile scoring via IQR normalization
 Phase 4: Regime Multiplier     → Market context adjustment (Bull/Bear/Range etc.)
@@ -59,7 +59,7 @@ Verdict:     🔥 HIGH / 🚀 PASS / 🟡 WATCH / ❌ FAIL / 🚨 AVOID
 ```
 
 **Why two scoring paths (conviction + sub-scores)?**  
-`check_institutional_fortress()` computes *absolute* conviction points per stock in isolation. `apply_advanced_scoring()` computes *relative* scores comparing stocks within the scanned universe. The final `Score` shown in the UI is the universe-relative score after regime adjustment — this is more useful than an absolute number because the market itself changes what "good" means.
+`check_institutional_fortress()` computes *absolute* conviction points per stock in isolation, including explicit negative penalties for risk events. `apply_advanced_scoring()` computes *relative* scores comparing stocks within the scanned universe. The final `Score` shown in the UI is the universe-relative score after regime adjustment, while the raw per-stock conviction remains available for audit and debugging.
 
 ---
 
@@ -499,6 +499,8 @@ Verdict = "❌ FAIL"
 ```
 
 **Why subtract 1000 instead of set to 0:** The current normalization structure means score 0 could overlap with a legitimate low scorer. Subtracting 1000 before the final `clip(0, 100)` produces a clean 0 guaranteed to be below all passing stocks, while preserving the original pre-gate score in `Score_Pre_Regime` for transparency.
+
+**Important:** The raw conviction fallback no longer replaces penalized scores. If a stock already accumulated risk penalties, those penalties remain in force; the fallback only fills cases where conviction would otherwise stay at zero.
 
 **Note:** All gate thresholds use strict `<` / `>` operators. A stock at exactly the threshold *passes* — this prevents border-case stocks from being incorrectly disqualified.
 

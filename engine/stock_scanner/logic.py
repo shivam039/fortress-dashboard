@@ -400,17 +400,6 @@ def apply_advanced_scoring(df, scoring_config=None):
     rs_gate = (pd.to_numeric(df.get("RS_Composite", 0), errors="coerce") > 1.0) | (df["RS_Rank"] >= 75)
     df.loc[rs_gate.fillna(False), "Context_Score"] = (df.loc[rs_gate.fillna(False), "Context_Score"] + 20).clip(upper=100)
 
-    sentiment = pd.to_numeric(df.get("sentiment_score", df.get("Sentiment_Raw", np.nan)), errors="coerce")
-    if "news_date" in df.columns:
-        news_ts = pd.to_datetime(df["news_date"], errors="coerce")
-        days_old = (pd.Timestamp.now().normalize() - news_ts).dt.days.clip(lower=0)
-        decay = np.exp(-(days_old.fillna(0) / 5.0))
-        sentiment = sentiment.fillna(50) * decay
-    if "Sector" in df.columns:
-        sector_avg = sentiment.groupby(df["Sector"]).transform("mean")
-        sentiment = sentiment - sector_avg.fillna(0)
-    df["Sentiment_Score"] = _normalize_series(sentiment.fillna(50)).round(2)
-
     # Regime handling
     regime = cfg.get("regime", _get_default_regime()) if cfg.get("enable_regime", True) else _get_default_regime()
     df["Market_Regime"] = regime["Market_Regime"]
@@ -765,15 +754,17 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         vol_adj_mom = ret_6m / atr if atr > 0 else 0
         context_raw += min(max(vol_adj_mom, -10), 20)
 
-        # Raw conviction fallback: preserve a meaningful base score even when ideal trend structure
-        # is not present, while still allowing trend-based conviction to dominate when available.
+        # Raw conviction fallback: preserve a meaningful base score when the setup has
+        # no trend-based conviction yet, but never resurrect a score that was already
+        # penalized by explicit risk signals.
         base_score_estimate = (
             technical_raw * 0.4
             + fundamental_raw * 0.25
             + sentiment_raw * 0.15
             + context_raw * 0.20
         )
-        conviction = max(conviction, min(100, round(base_score_estimate, 2)))
+        if conviction <= 0:
+            conviction = min(100, round(base_score_estimate, 2))
 
         conviction = max(0,min(100,conviction))
         verdict = "🔥 HIGH" if conviction>=85 and mtf_aligned else "🚀 PASS" if conviction>=60 else "🟡 WATCH" if tech_base else "❌ FAIL"
