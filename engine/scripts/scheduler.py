@@ -31,7 +31,7 @@ IST = pytz.timezone("Asia/Kolkata")
 # ── Configuration ────────────────────────────────────────────────────────────
 BROADCAST_HOUR = int(os.environ.get("FORTRESS_BROADCAST_HOUR", "9"))
 BROADCAST_MINUTE = int(os.environ.get("FORTRESS_BROADCAST_MINUTE", "45"))
-KEEPALIVE_INTERVAL_SEC = int(os.environ.get("FORTRESS_KEEPALIVE_INTERVAL", "600"))  # 10 min
+KEEPALIVE_INTERVAL_SEC = int(os.environ.get("FORTRESS_KEEPALIVE_INTERVAL", "60"))  # 1 min
 
 # Module-level guard: ensures we only start one scheduler per Python process.
 _scheduler_started = False

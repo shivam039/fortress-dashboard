@@ -24,6 +24,7 @@ jobs:
       - name: Ping Streamlit Apps with Playwright
         run: |
           python -c "
+          import time
           from playwright.sync_api import sync_playwright
           
           URLS = [
@@ -35,28 +36,36 @@ jobs:
               browser = p.chromium.launch(headless=True)
               context = browser.new_context()
               
-              for url in URLS:
-                  print('----------------------------------------')
-                  print(f'Pinging {url} to prevent Streamlit Cloud from sleeping...')
-                  page = context.new_page()
-                  try:
-                      # Navigate to the Streamlit app
-                      page.goto(url, wait_until='networkidle', timeout=60000)
+              # GitHub Actions limits cron jobs to every 5 minutes maximum.
+              # We run an internal loop here to ping twice per run (every ~2.5 mins).
+              for iteration in range(2):
+                  if iteration > 0:
+                      print('Waiting 2 minutes before next internal ping...')
+                      time.sleep(120)
                       
-                      # If the app went to sleep, Streamlit Cloud shows a wake up button
-                      wake_button = page.locator('button:has-text(\"Yes, get this app back up!\")')
-                      if wake_button.is_visible():
-                          print('App is asleep! Clicking wake up button...')
-                          wake_button.click()
-                          page.wait_for_timeout(15000) # Give it time to spin up
-                      
-                      # Keep the page open for a few seconds to ensure WebSocket registers
-                      page.wait_for_timeout(5000)
-                      print('✅ Successfully pinged and established WebSocket connection.')
-                  except Exception as e:
-                      print(f'⚠️ Error pinging {url}: {e}')
-                  finally:
-                      page.close()
+                  print(f'=== Iteration {iteration+1}/2 ===')
+                  for url in URLS:
+                      print('----------------------------------------')
+                      print(f'Pinging {url} to prevent Streamlit Cloud from sleeping...')
+                      page = context.new_page()
+                      try:
+                          # Navigate to the Streamlit app
+                          page.goto(url, wait_until='networkidle', timeout=60000)
+                          
+                          # If the app went to sleep, Streamlit Cloud shows a wake up button
+                          wake_button = page.locator('button:has-text(\"Yes, get this app back up!\")')
+                          if wake_button.is_visible():
+                              print('App is asleep! Clicking wake up button...')
+                              wake_button.click()
+                              page.wait_for_timeout(15000) # Give it time to spin up
+                          
+                          # Keep the page open for a few seconds to ensure WebSocket registers
+                          page.wait_for_timeout(5000)
+                          print('✅ Successfully pinged and established WebSocket connection.')
+                      except Exception as e:
+                          print(f'⚠️ Error pinging {url}: {e}')
+                      finally:
+                          page.close()
               
               browser.close()
           "
