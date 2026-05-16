@@ -424,12 +424,18 @@ def apply_advanced_scoring(df, scoring_config=None):
     df["Weight_Fundamental"] = round(w["fundamental"] * 100, 2)
     df["Weight_Sentiment"] = round(w["sentiment"] * 100, 2)
     df["Weight_Context"] = round(w["context"] * 100, 2)
+    df["Technical_Score"] = _normalize_series(df.get("Technical_Raw", 50)).fillna(50.0).round(2)
+    df["Fundamental_Score"] = _normalize_series(df.get("Fundamental_Raw", 50)).fillna(50.0).round(2)
+    df["Sentiment_Score"] = _normalize_series(df.get("Sentiment_Raw", 50)).fillna(50.0).round(2)
+    df["Context_Score"] = _normalize_series(df.get("Context_Raw", 50)).fillna(50.0).round(2)
+
     df["Score_Pre_Regime"] = (
-        df["Technical_Score"] * w["technical"]
-        + df["Fundamental_Score"] * w["fundamental"]
-        + df["Sentiment_Score"] * w["sentiment"]
-        + df["Context_Score"] * w["context"]
-    )
+        df["Technical_Score"] * w.get("technical", 0.5)
+        + df["Fundamental_Score"] * w.get("fundamental", 0.25)
+        + df["Sentiment_Score"] * w.get("sentiment", 0.15)
+        + df["Context_Score"] * w.get("context", 0.1)
+    ).fillna(50.0)
+
     df["sub_scores"] = df.apply(
         lambda row: {
             "technical": round(_safe_float(row.get("Technical_Score")), 2),

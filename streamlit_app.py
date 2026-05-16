@@ -1087,7 +1087,7 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
             st.dataframe(df, width="stretch", hide_index=True)
             return
         table_df = df.copy()
-        rename_map = {"Score": "Conviction Score"}
+        rename_map = {"Score": "Conviction Score", "Quality_Gate_Failures": "Gate Failures"}
         if feature_ai_enabled and "ai_score" in table_df.columns:
             rename_map["ai_score"] = "AI Score"
         table_df = table_df.rename(columns=rename_map)
