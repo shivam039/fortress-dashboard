@@ -334,7 +334,10 @@ def _apply_quality_gates(df, cfg):
         f"Price<{cfg['price_min']}": pd.to_numeric(df.get("Price", np.nan), errors="coerce") < cfg["price_min"],
     }
     if market_cap_col:
-        gate_conditions[f"MCap<{cfg['market_cap_cr_min']}Cr"] = pd.to_numeric(df.get(market_cap_col), errors="coerce") < cfg["market_cap_cr_min"]
+        market_cap = pd.to_numeric(df.get(market_cap_col), errors="coerce")
+        gate_conditions[f"MCap<{cfg['market_cap_cr_min']}Cr"] = (
+            market_cap.gt(0) & market_cap.lt(cfg["market_cap_cr_min"])
+        )
     if debt_col:
         gate_conditions[f"Debt/Equity>{cfg['max_debt_to_equity']}"] = pd.to_numeric(df.get(debt_col), errors="coerce") > cfg["max_debt_to_equity"]
 

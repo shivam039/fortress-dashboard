@@ -49,6 +49,40 @@ def test_quality_gate_fail_forces_score_to_zero():
     assert scored.loc[0, "Verdict"] == "❌ FAIL"
 
 
+def test_missing_market_cap_does_not_zero_score():
+    df = pd.DataFrame(
+        [
+            {
+                "Symbol": "TEST",
+                "Score": 55,
+                "Price": 100.0,
+                "Avg_Value_20D_Cr": 12.0,
+                "Market_Cap_Cr": 0.0,
+                "Debt_To_Equity": 0.5,
+                "Technical_Raw": 60.0,
+                "Fundamental_Raw": 60.0,
+                "Sentiment_Raw": 60.0,
+                "Context_Raw": 60.0,
+                "RSI": 55.0,
+                "RS_Score": 0.0,
+                "RS_Composite": 1.0,
+                "Vol_Surge_Ratio": 1.0,
+                "Dist_52W_High_Pct": 10.0,
+                "Extension_Pct": 0.0,
+                "Is_Coiling": False,
+                "Sector": "General",
+                "Black_Swan_Flag": 0,
+                "News": "Neutral",
+            }
+        ]
+    )
+
+    scored = apply_advanced_scoring(df)
+    assert scored.loc[0, "Quality_Gate_Pass"] == True
+    assert scored.loc[0, "Score"] > 0
+    assert "MCap<1500.0Cr" not in scored.loc[0, "Quality_Gate_Failures"]
+
+
 def test_apply_quality_gates_marks_failure_reasons():
     df = pd.DataFrame(
         [

@@ -488,7 +488,7 @@ These are **binary hard filters** — fail any gate and the stock is penalized, 
 |---|---|---|---|
 | Liquidity | Avg daily value < threshold | ₹8 Cr | Illiquid stocks have high impact cost, slippage risk, and can't be exited quickly in adverse conditions. |
 | Price | Price < threshold | ₹80 | Very low-priced stocks attract retail speculation, have erratic price behaviour, and are vulnerable to operator activity. |
-| Market Cap | Market cap < threshold | ₹1,500 Cr | Below this, institutional coverage drops sharply, analyst targets are unreliable, and corporate governance risk rises. |
+| Market Cap | Known market cap > 0 and < threshold | ₹1,500 Cr | Below this, institutional coverage drops sharply, analyst targets are unreliable, and corporate governance risk rises. Missing metadata does not trigger this hard fail. |
 | Debt/Equity | D/E ratio > threshold | 2.0 | High leverage amplifies losses in downturns and increases bankruptcy risk. |
 | Liquidity Flag | `Liquidity_Flag == "Low Liquidity - Avoid"` | — | Explicit override from pre-computed liquidity analysis. |
 
