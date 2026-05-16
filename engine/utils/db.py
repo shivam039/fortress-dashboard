@@ -681,12 +681,202 @@ def _ensure_fortress_orders_neon():
     _exec("CREATE INDEX IF NOT EXISTS idx_fortress_orders_created_at ON fortress_orders (created_at DESC)")
 
 
+def _ensure_pick_outcomes_neon():
+    _exec(
+        """
+        CREATE TABLE IF NOT EXISTS pick_outcomes (
+            id              BIGSERIAL PRIMARY KEY,
+            user_id         BIGINT NOT NULL REFERENCES app_users(user_id) ON DELETE CASCADE,
+            symbol          TEXT NOT NULL,
+            universe        TEXT,
+            pick_date       TIMESTAMPTZ NOT NULL,
+            entry_price     REAL NOT NULL,
+            target_price    REAL NOT NULL,
+            target_2_price  REAL,
+            stop_loss       REAL NOT NULL,
+            score           REAL,
+            strategy        TEXT,
+            sector          TEXT,
+            outcome         TEXT DEFAULT 'TRAILING',
+            outcome_date    TIMESTAMPTZ,
+            outcome_price   REAL,
+            max_price       REAL,
+            min_price       REAL,
+            pnl_pct         REAL,
+            days_to_resolve INT,
+            scan_id         BIGINT,
+            created_at      TIMESTAMPTZ DEFAULT NOW(),
+            updated_at      TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE (user_id, symbol, pick_date)
+        )
+        """
+    )
+    _exec("CREATE INDEX IF NOT EXISTS idx_pick_outcomes_user ON pick_outcomes (user_id)")
+    _exec("CREATE INDEX IF NOT EXISTS idx_pick_outcomes_outcome ON pick_outcomes (outcome)")
+
+
+def upsert_pick_outcome(user_id: int, symbol: str, pick_date, entry_price: float,
+                        target_price: float, stop_loss: float,
+                        target_2_price: float = None, score: float = None,
+                        strategy: str = None, sector: str = None,
+                        universe: str = None, scan_id: int = None):
+    """Insert or update a pick outcome record for a user."""
+    _exec(
+        """
+        INSERT INTO pick_outcomes
+            (user_id, symbol, universe, pick_date, entry_price, target_price, target_2_price,
+             stop_loss, score, strategy, sector, outcome, max_price, min_price, scan_id)
+        VALUES
+            (:user_id, :symbol, :universe, :pick_date, :entry_price, :target_price, :target_2_price,
+             :stop_loss, :score, :strategy, :sector, 'TRAILING', :entry_price, :entry_price, :scan_id)
+        ON CONFLICT (user_id, symbol, pick_date) DO UPDATE SET
+            entry_price = EXCLUDED.entry_price,
+            target_price = EXCLUDED.target_price,
+            target_2_price = EXCLUDED.target_2_price,
+            stop_loss = EXCLUDED.stop_loss,
+            score = EXCLUDED.score,
+            strategy = EXCLUDED.strategy,
+            sector = EXCLUDED.sector,
+            updated_at = NOW()
+        """,
+        {
+            "user_id": user_id, "symbol": symbol, "universe": universe,
+            "pick_date": pick_date, "entry_price": entry_price,
+            "target_price": target_price, "target_2_price": target_2_price,
+            "stop_loss": stop_loss, "score": score, "strategy": strategy,
+            "sector": sector, "scan_id": scan_id,
+        },
+    )
+
+
+def get_user_picks(user_id: int, status: str = None) -> pd.DataFrame:
+    """Fetch pick outcomes for a specific user, optionally filtered by outcome status."""
+    if status:
+        return _read_df(
+            """
+            SELECT * FROM pick_outcomes
+            WHERE user_id = :user_id AND outcome = :status
+            ORDER BY pick_date DESC
+            """,
+            {"user_id": user_id, "status": status},
+        )
+    return _read_df(
+        """
+        SELECT * FROM pick_outcomes
+        WHERE user_id = :user_id
+        ORDER BY pick_date DESC
+        """,
+        {"user_id": user_id},
+    )
+
+
+def get_all_trailing_picks() -> pd.DataFrame:
+    """Fetch ALL users' trailing picks for bulk evaluation."""
+    return _read_df(
+        """
+        SELECT * FROM pick_outcomes
+        WHERE outcome = 'TRAILING'
+        ORDER BY pick_date ASC
+        """
+    )
+
+
+def update_pick_outcome(pick_id: int, outcome: str, outcome_price: float,
+                        outcome_date, pnl_pct: float, days_to_resolve: int,
+                        max_price: float = None, min_price: float = None):
+    """Resolve a pick outcome (HIT_T1, HIT_T2, MISS, EXPIRED)."""
+    _exec(
+        """
+        UPDATE pick_outcomes SET
+            outcome = :outcome,
+            outcome_price = :outcome_price,
+            outcome_date = :outcome_date,
+            pnl_pct = :pnl_pct,
+            days_to_resolve = :days_to_resolve,
+            max_price = COALESCE(:max_price, max_price),
+            min_price = COALESCE(:min_price, min_price),
+            updated_at = NOW()
+        WHERE id = :pick_id
+        """,
+        {
+            "pick_id": pick_id, "outcome": outcome, "outcome_price": outcome_price,
+            "outcome_date": outcome_date, "pnl_pct": pnl_pct,
+            "days_to_resolve": days_to_resolve,
+            "max_price": max_price, "min_price": min_price,
+        },
+    )
+
+
+def update_pick_trailing(pick_id: int, max_price: float, min_price: float, pnl_pct: float):
+    """Update max/min prices and unrealized P&L for a trailing pick."""
+    _exec(
+        """
+        UPDATE pick_outcomes SET
+            max_price = :max_price,
+            min_price = :min_price,
+            pnl_pct = :pnl_pct,
+            updated_at = NOW()
+        WHERE id = :pick_id
+        """,
+        {"pick_id": pick_id, "max_price": max_price, "min_price": min_price, "pnl_pct": pnl_pct},
+    )
+
+
+def get_pick_outcome_summary(user_id: int) -> dict:
+    """Return aggregated performance stats for a user's picks."""
+    rows = _query(
+        """
+        SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE outcome IN ('HIT_T1', 'HIT_T2')) AS hits,
+            COUNT(*) FILTER (WHERE outcome = 'MISS') AS misses,
+            COUNT(*) FILTER (WHERE outcome = 'EXPIRED') AS expired,
+            COUNT(*) FILTER (WHERE outcome = 'TRAILING') AS trailing,
+            COALESCE(AVG(pnl_pct) FILTER (WHERE outcome != 'TRAILING'), 0) AS avg_pnl,
+            COALESCE(AVG(days_to_resolve) FILTER (WHERE outcome != 'TRAILING'), 0) AS avg_days,
+            COALESCE(MAX(pnl_pct), 0) AS best_pnl,
+            COALESCE(MIN(pnl_pct) FILTER (WHERE outcome != 'TRAILING'), 0) AS worst_pnl
+        FROM pick_outcomes
+        WHERE user_id = :user_id
+        """,
+        {"user_id": user_id},
+    )
+    if rows:
+        r = rows[0]
+        total_resolved = r.get("hits", 0) + r.get("misses", 0) + r.get("expired", 0)
+        hit_rate = (r.get("hits", 0) / total_resolved * 100) if total_resolved > 0 else 0
+        return {
+            "total": r.get("total", 0),
+            "hits": r.get("hits", 0),
+            "misses": r.get("misses", 0),
+            "expired": r.get("expired", 0),
+            "trailing": r.get("trailing", 0),
+            "hit_rate": round(hit_rate, 1),
+            "avg_pnl": round(r.get("avg_pnl", 0), 2),
+            "avg_days": round(r.get("avg_days", 0), 1),
+            "best_pnl": round(r.get("best_pnl", 0), 2),
+            "worst_pnl": round(r.get("worst_pnl", 0), 2),
+        }
+    return {"total": 0, "hits": 0, "misses": 0, "expired": 0, "trailing": 0,
+            "hit_rate": 0, "avg_pnl": 0, "avg_days": 0, "best_pnl": 0, "worst_pnl": 0}
+
+
+def get_user_id_by_username(username: str) -> Optional[int]:
+    """Resolve a username to its user_id. Returns None if not found."""
+    rows = _query(
+        "SELECT user_id FROM app_users WHERE username = :username LIMIT 1",
+        {"username": username},
+    )
+    return rows[0]["user_id"] if rows else None
+
+
 def init_db():
     if _can_use_neon():
         # Postgres / Neon Path
         _ensure_app_users_neon()
         _ensure_user_broker_connections_neon()
         _ensure_fortress_orders_neon()
+        _ensure_pick_outcomes_neon()
         _ensure_scan_history_table_neon()
         _ensure_scan_history_details_neon()
         _ensure_ticker_metadata_neon()

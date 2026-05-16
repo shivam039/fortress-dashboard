@@ -858,6 +858,91 @@ def _run_scan_directly(payload: dict) -> list:
     return df.to_dict(orient="records")
 
 
+@st.dialog("📌 Track Pick")
+def track_pick_dialog(uid: int, symbol: str, row_dict: dict):
+    st.write(f"**{symbol}**")
+    
+    entry = float(row_dict.get("Price", 0))
+    t1 = float(row_dict.get("Target_10D", 0))
+    sl = float(row_dict.get("Stop_Loss", 0))
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Entry Price", f"₹{entry:.2f}")
+    col2.metric("🎯 Target", f"₹{t1:.2f}")
+    col3.metric("🛑 Stop Loss", f"₹{sl:.2f}")
+    
+    st.write("Timeframe: 10 trading days")
+    
+    import datetime
+    pick_date = st.date_input("Pick Date", value=datetime.date.today(), max_value=datetime.date.today())
+    
+    if st.button("✅ Confirm & Track", use_container_width=True, type="primary"):
+        import sys, os
+        engine_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "engine"))
+        if engine_dir not in sys.path:
+            sys.path.insert(0, engine_dir)
+        from scripts.pick_tracker import record_pick
+        
+        # Convert date to datetime
+        pick_dt = datetime.datetime.combine(pick_date, datetime.datetime.now().time())
+        record_pick(uid, row_dict, pick_date=pick_dt)
+        st.success(f"Tracked {symbol}!")
+        time.sleep(1)
+        st.rerun()
+
+
+def _render_pick_tracker_section(username: str, display_df: pd.DataFrame, symbol_options: list):
+    from utils.db import get_user_id_by_username, get_user_picks, get_pick_outcome_summary
+    
+    uid = get_user_id_by_username(username)
+    if not uid:
+        return
+        
+    st.markdown("#### 📌 Track a Pick")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        track_symbol = st.selectbox("Select Stock to Track", symbol_options, key="track_symbol_select")
+    with col2:
+        st.write("")
+        if st.button("📌 Track Selected", use_container_width=True):
+            track_row = display_df[display_df["Symbol"] == track_symbol].iloc[0]
+            track_pick_dialog(uid, track_symbol, track_row.to_dict())
+
+    st.markdown("#### 📊 My Picks")
+    
+    summary = get_pick_outcome_summary(uid)
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1.metric("Win Rate", f"{summary['hit_rate']}%", f"{summary['hits']} Hits / {summary['misses']} Misses")
+    sc2.metric("Avg P&L", f"{summary['avg_pnl']}%")
+    sc3.metric("Avg Days to Resolve", f"{summary['avg_days']}d")
+    sc4.metric("Best Pick", f"{summary['best_pnl']}%")
+    
+    tab1, tab2 = st.tabs(["📈 Active Picks (Trailing)", "✅ Resolved Picks"])
+    
+    with tab1:
+        active_picks = get_user_picks(uid, status="TRAILING")
+        if active_picks.empty:
+            st.info("No active picks trailing.")
+        else:
+            disp_active = active_picks[["symbol", "pick_date", "entry_price", "target_price", "stop_loss", "max_price", "min_price", "pnl_pct"]].copy()
+            # Format display
+            disp_active["pick_date"] = pd.to_datetime(disp_active["pick_date"]).dt.strftime('%Y-%m-%d')
+            st.dataframe(disp_active, hide_index=True, use_container_width=True)
+            
+    with tab2:
+        resolved_picks = get_user_picks(uid)
+        resolved_picks = resolved_picks[resolved_picks["outcome"] != "TRAILING"]
+        if resolved_picks.empty:
+            st.info("No resolved picks yet.")
+        else:
+            disp_resolved = resolved_picks[["symbol", "pick_date", "outcome", "outcome_date", "outcome_price", "pnl_pct", "days_to_resolve"]].copy()
+            disp_resolved["pick_date"] = pd.to_datetime(disp_resolved["pick_date"]).dt.strftime('%Y-%m-%d')
+            disp_resolved["outcome_date"] = pd.to_datetime(disp_resolved["outcome_date"]).dt.strftime('%Y-%m-%d')
+            st.dataframe(disp_resolved, hide_index=True, use_container_width=True)
+
+
+
+
 def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dict = None) -> None:
     from utils.db import create_fortress_order
 
@@ -1112,6 +1197,17 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
             success = _send_telegram_tip(tip_row)
             if success:
                 st.success(f"✅ Tip sent for {tip_symbol}!")
+                # Auto-record pick for signed-up users
+                if username != "guest_user":
+                    try:
+                        from utils.db import get_user_id_by_username, upsert_pick_outcome
+                        uid = get_user_id_by_username(username)
+                        if uid:
+                            from scripts.pick_tracker import record_pick
+                            record_pick(uid, tip_row.to_dict())
+                            st.info(f"📌 Pick auto-tracked for {tip_symbol}")
+                    except Exception as e:
+                        logging.getLogger("fortress").debug(f"Auto-track on tip failed: {e}")
             else:
                 st.error("Failed to send tip. Check Telegram settings below.")
 
@@ -1137,6 +1233,13 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
                 st.error(f"Could not save subscriber file: {e}")
 
     st.markdown("---")
+
+    # ── 📌 Pick Tracking (Signed-up users only) ─────────────────────────
+    if username != "guest_user":
+        _render_pick_tracker_section(username, display_df, symbol_options)
+
+    st.markdown("---")
+
 
     st.markdown("#### Record Order From Fortress")
     with st.form("fortress_order_form"):

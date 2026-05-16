@@ -5,6 +5,7 @@ Runs inside the Streamlit process as a daemon thread.
 Handles:
   1. Daily Telegram broadcast at 09:45 IST (stocks + commodities)
   2. Self-ping keep-alive to prevent Streamlit Cloud from sleeping
+  3. Daily pick outcome evaluation at 16:00 IST (post-market)
 
 This module is designed to be started ONCE per Streamlit process
 (guarded by a module-level flag) so it survives Streamlit re-runs.
@@ -31,6 +32,8 @@ IST = pytz.timezone("Asia/Kolkata")
 # ── Configuration ────────────────────────────────────────────────────────────
 BROADCAST_HOUR = int(os.environ.get("FORTRESS_BROADCAST_HOUR", "9"))
 BROADCAST_MINUTE = int(os.environ.get("FORTRESS_BROADCAST_MINUTE", "45"))
+EVALUATION_HOUR = int(os.environ.get("FORTRESS_EVALUATION_HOUR", "16"))
+EVALUATION_MINUTE = int(os.environ.get("FORTRESS_EVALUATION_MINUTE", "0"))
 KEEPALIVE_INTERVAL_SEC = int(os.environ.get("FORTRESS_KEEPALIVE_INTERVAL", "60"))  # 1 min
 
 # Module-level guard: ensures we only start one scheduler per Python process.
@@ -84,6 +87,52 @@ def _broadcast_loop():
         else:
             logger.warning(f"⏰ Woke up at {now.strftime('%H:%M')} IST — outside broadcast window, skipping.")
         # Small sleep to avoid re-triggering within the same minute
+        time.sleep(120)
+
+
+def _seconds_until_next_evaluation() -> float:
+    """Calculate seconds until the next 16:00 IST evaluation window."""
+    now = datetime.now(IST)
+    target = now.replace(hour=EVALUATION_HOUR, minute=EVALUATION_MINUTE, second=0, microsecond=0)
+    if now >= target:
+        target += timedelta(days=1)
+    delta = (target - now).total_seconds()
+    return max(delta, 0)
+
+
+def _run_pick_evaluation():
+    """Evaluate all open picks against current market prices."""
+    import sys
+    engine_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    scripts_dir = os.path.abspath(os.path.dirname(__file__))
+    for p in (engine_dir, scripts_dir):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+    try:
+        from pick_tracker import evaluate_open_picks
+        logger.info("📊 Starting scheduled pick evaluation...")
+        stats = evaluate_open_picks()
+        logger.info(f"✅ Pick evaluation done: {stats}")
+    except Exception:
+        logger.exception("❌ Pick evaluation failed")
+
+
+def _evaluation_loop():
+    """Infinite loop: sleep until 16:00 IST, evaluate picks, repeat."""
+    while True:
+        wait = _seconds_until_next_evaluation()
+        next_run = datetime.now(IST) + timedelta(seconds=wait)
+        logger.info(
+            f"📊 Next pick evaluation at {next_run.strftime('%Y-%m-%d %H:%M IST')} "
+            f"(in {wait/3600:.1f}h)"
+        )
+        time.sleep(wait)
+        now = datetime.now(IST)
+        if now.hour == EVALUATION_HOUR and abs(now.minute - EVALUATION_MINUTE) <= 2:
+            _run_pick_evaluation()
+        else:
+            logger.warning(f"⏰ Woke up at {now.strftime('%H:%M')} IST — outside evaluation window, skipping.")
         time.sleep(120)
 
 
@@ -143,8 +192,17 @@ def start_scheduler():
     )
     keepalive_thread.start()
 
+    # Thread 3: Pick outcome evaluation at 16:00 IST
+    evaluation_thread = threading.Thread(
+        target=_evaluation_loop,
+        name="fortress-pick-eval",
+        daemon=True,
+    )
+    evaluation_thread.start()
+
     logger.info(
         f"✅ Scheduler active — broadcast at {BROADCAST_HOUR:02d}:{BROADCAST_MINUTE:02d} IST, "
+        f"pick eval at {EVALUATION_HOUR:02d}:{EVALUATION_MINUTE:02d} IST, "
         f"keep-alive every {KEEPALIVE_INTERVAL_SEC}s"
     )
     return True
