@@ -158,6 +158,12 @@ def _sync_user_profile(username: str) -> Dict[str, Any]:
     return get_app_user(username)
 
 
+def _prepare_screener_table(df: pd.DataFrame, feature_ai_enabled: bool) -> pd.DataFrame:
+    from stock_scanner.ui_helpers import prepare_screener_table
+
+    return prepare_screener_table(df, feature_ai_enabled)
+
+
 def _render_login_screen() -> None:
     st.title("🏹 Fortress Terminal")
     st.caption("Professional quantitative dashboard and execution engine.")
@@ -1086,17 +1092,8 @@ def _render_stock_screener_tab(username: str, api_url: str, sidebar_filters: dic
         if df.empty:
             st.dataframe(df, width="stretch", hide_index=True)
             return
-        table_df = df.copy()
-        rename_map = {"Score": "Conviction Score", "Quality_Gate_Failures": "Gate Failures"}
-        if feature_ai_enabled and "ai_score" in table_df.columns:
-            rename_map["ai_score"] = "AI Score"
-        table_df = table_df.rename(columns=rename_map)
+        table_df = _prepare_screener_table(df, feature_ai_enabled)
         if feature_ai_enabled and "AI Score" in table_df.columns and "Conviction Score" in table_df.columns:
-            cols = list(table_df.columns)
-            ai_col = cols.pop(cols.index("AI Score"))
-            conv_idx = cols.index("Conviction Score")
-            cols.insert(conv_idx + 1, ai_col)
-            table_df = table_df[cols]
             styled = table_df.style.format({"Conviction Score": "{:.1f}", "AI Score": "{:.1f}"}).map(
                 _score_style, subset=["Conviction Score", "AI Score"]
             )

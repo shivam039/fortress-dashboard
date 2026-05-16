@@ -251,16 +251,22 @@ def calculate_ai_score(df, min_floor=18.0):
         return pd.Series(dtype=float)
 
     work_df = df
+    def _series_or_default(column, default):
+        value = work_df.get(column, None)
+        if isinstance(value, pd.Series):
+            return pd.to_numeric(value, errors="coerce").fillna(default)
+        return pd.Series(default, index=work_df.index, dtype=float)
+
     rsi = pd.to_numeric(work_df.get("RSI", np.nan), errors="coerce")
-    rs_score = pd.to_numeric(work_df.get("RS_Score", 0), errors="coerce").fillna(0)
-    ret_30 = pd.to_numeric(work_df.get("Ret_30D", 0), errors="coerce").fillna(0)
-    ret_90 = pd.to_numeric(work_df.get("Ret_90D", 0), errors="coerce").fillna(0)
-    rs_comp = pd.to_numeric(work_df.get("RS_Composite", 1.0), errors="coerce").fillna(1.0)
-    dist_52w = pd.to_numeric(work_df.get("Dist_52W_High_Pct", 25), errors="coerce").fillna(25)
-    vol_ratio = pd.to_numeric(work_df.get("Vol_Surge_Ratio", 1.0), errors="coerce").fillna(1.0)
-    value_cr = pd.to_numeric(work_df.get("Avg_Value_20D_Cr", 0), errors="coerce").fillna(0)
-    extension = pd.to_numeric(work_df.get("Extension_Pct", 0), errors="coerce").fillna(0)
-    sector_z = pd.to_numeric(work_df.get("Sector_Conviction_Z", 0), errors="coerce").fillna(0)
+    rs_score = _series_or_default("RS_Score", 0)
+    ret_30 = _series_or_default("Ret_30D", 0)
+    ret_90 = _series_or_default("Ret_90D", 0)
+    rs_comp = _series_or_default("RS_Composite", 1.0)
+    dist_52w = _series_or_default("Dist_52W_High_Pct", 25)
+    vol_ratio = _series_or_default("Vol_Surge_Ratio", 1.0)
+    value_cr = _series_or_default("Avg_Value_20D_Cr", 0)
+    extension = _series_or_default("Extension_Pct", 0)
+    sector_z = _series_or_default("Sector_Conviction_Z", 0)
     coiling = work_df.get("Is_Coiling", False).astype(float)
 
     # Momentum block (heavier weight): trend quality + price change + 52W strength
@@ -345,6 +351,18 @@ def _apply_quality_gates(df, cfg):
     df["Quality_Gate_Pass"] = ~gate_frame.any(axis=1)
     df["Quality_Gate_Failures"] = gate_frame.apply(lambda row: "|".join(row.index[row.values]), axis=1)
     return df
+
+
+def _resolve_conviction_score(conviction, base_score_estimate, score_mod=0):
+    """
+    Combine the raw trend conviction with the fallback estimate.
+
+    The fallback only fills cases where the trend path produced no score yet.
+    Risk penalties are preserved in that fallback path via score_mod.
+    """
+    if conviction <= 0:
+        conviction = min(100, round(base_score_estimate + score_mod, 2))
+    return max(0, min(100, conviction))
 
 
 def apply_advanced_scoring(df, scoring_config=None):
@@ -755,18 +773,14 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         context_raw += min(max(vol_adj_mom, -10), 20)
 
         # Raw conviction fallback: preserve a meaningful base score when the setup has
-        # no trend-based conviction yet, but never resurrect a score that was already
-        # penalized by explicit risk signals.
+        # no trend-based conviction yet, while still respecting explicit risk penalties.
         base_score_estimate = (
             technical_raw * 0.4
             + fundamental_raw * 0.25
             + sentiment_raw * 0.15
             + context_raw * 0.20
         )
-        if conviction <= 0:
-            conviction = min(100, round(base_score_estimate, 2))
-
-        conviction = max(0,min(100,conviction))
+        conviction = _resolve_conviction_score(conviction, base_score_estimate, score_mod)
         verdict = "🔥 HIGH" if conviction>=85 and mtf_aligned else "🚀 PASS" if conviction>=60 else "🟡 WATCH" if tech_base else "❌ FAIL"
         if overextended:
             verdict = "⚠️ OVEREXTENDED"

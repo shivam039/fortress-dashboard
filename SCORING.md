@@ -500,7 +500,9 @@ Verdict = "❌ FAIL"
 
 **Why subtract 1000 instead of set to 0:** The current normalization structure means score 0 could overlap with a legitimate low scorer. Subtracting 1000 before the final `clip(0, 100)` produces a clean 0 guaranteed to be below all passing stocks, while preserving the original pre-gate score in `Score_Pre_Regime` for transparency.
 
-**Important:** The raw conviction fallback no longer replaces penalized scores. If a stock already accumulated risk penalties, those penalties remain in force; the fallback only fills cases where conviction would otherwise stay at zero.
+**Important:** The raw conviction fallback only runs when the core conviction is still zero. In that case it uses the base estimate plus any accumulated `score_mod`, so explicit risk penalties still matter even when the trend gate never activated.
+
+**UI note:** The stock screener table displays the `Score` column as `Conviction Score`. The display mapping lives in [`engine/stock_scanner/ui_helpers.py`]( /Users/shivamdixit/Desktop/fortress-dashboard/engine/stock_scanner/ui_helpers.py ) so the table rename logic can be tested without importing the full Streamlit app. When `ENABLE_NEW_FEATURES` is on and the AI score toggle is enabled, `ai_score` is shown separately as `AI Score`.
 
 **Note:** All gate thresholds use strict `<` / `>` operators. A stock at exactly the threshold *passes* — this prevents border-case stocks from being incorrectly disqualified.
 
