@@ -650,8 +650,6 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
                 conviction += 8   # Healthy consolidation within striking range
             elif distance_to_high_pct > 35:
                 conviction -= 10  # Heavy overhead resistance
-                
-            conviction += score_mod
 
         # Relative Strength vs Nifty 50
         benchmark_close = _get_benchmark_series(NIFTY_SYMBOL)
@@ -702,7 +700,8 @@ def check_institutional_fortress(ticker, data, ticker_obj, portfolio_value, risk
         elif atr > 0 and atr100 > 0 and atr < (atr100 * 0.8):
             conviction += 3   # Mild volatility contraction only
 
-        # Apply news / earnings adjustments even when the stock is not yet in the ideal trend structure.
+        # Apply news / earnings / resilience adjustments once, outside the trend gate,
+        # so they affect both trend-following and non-trend setups without double-counting.
         conviction += score_mod
 
         # Mean reversion / over-extension guard

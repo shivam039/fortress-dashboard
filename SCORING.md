@@ -247,7 +247,7 @@ if curr_open < prev_close:
     else → "⚠️ Gap Risk"
 ```
 
-These are informational fields displayed to the user. Resilience breakdown triggers a −40 `score_mod` applied within the `tech_base` block.
+These are informational fields displayed to the user. Resilience breakdown triggers a −40 `score_mod`, and that penalty is applied once in the final raw-conviction aggregation so it affects both trend and non-trend setups without double-counting.
 
 ---
 
@@ -266,7 +266,7 @@ combined_text = join(title + summary for last 10 news items)
 
 | Result | Points |
 |---|---|
-| Black Swan confirmed | **−40** (score_mod), `news_sentiment = "🚨 BLACK SWAN"` |
+| Black Swan confirmed | **−40** (`score_mod`), `news_sentiment = "🚨 BLACK SWAN"` |
 | Clean news | 0 |
 
 ---
@@ -281,7 +281,7 @@ if 0 ≤ days_to_earnings ≤ 7:
     score_mod −= 20
 ```
 
-**Why:** Holding a position into earnings carries binary event risk that invalidates all technical analysis. A 7-day warning allows the user to either tighten stops or avoid entry entirely.
+**Why:** Holding a position into earnings carries binary event risk that invalidates all technical analysis. A 7-day warning allows the user to either tighten stops or avoid entry entirely. Like the Black Swan and resilience penalties, this adjustment is accumulated once and applied once in the final conviction pass.
 
 ---
 
