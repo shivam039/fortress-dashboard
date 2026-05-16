@@ -155,7 +155,10 @@ def _display_scan_results(df, universe, broker_choice, scoring_config, timestamp
         st.warning("No data retrieved.")
         return
 
-    df = _apply_advanced_scoring_cached(df, scoring_config).sort_values("Score",ascending=False)
+    # Only apply advanced scoring if not already applied (check for Score_Pre_Regime indicator)
+    if "Score_Pre_Regime" not in df.columns:
+        df = _apply_advanced_scoring_cached(df, scoring_config)
+    df = df.sort_values("Score", ascending=False)
     filtered_out_df = df[df.get("Quality_Gate_Pass", True) == False].copy()
     actionable_df = df[df.get("Quality_Gate_Pass", True) == True].copy()
 
@@ -380,6 +383,8 @@ def _run_scan_fragment(broker_choice, scoring_config):
 
                 df = pd.DataFrame(state["results"])
                 if not df.empty:
+                    # Apply advanced scoring BEFORE saving to ensure conviction scores are properly calculated
+                    df = _apply_advanced_scoring_cached(df, scoring_config)
                     timestamp = _save_scan(df, universe)
                     state["timestamp"] = timestamp
 
@@ -393,6 +398,8 @@ def _run_scan_fragment(broker_choice, scoring_config):
 
         if results:
             df = pd.DataFrame(results)
+            # Apply advanced scoring to ensure scores are properly calculated
+            df = _apply_advanced_scoring_cached(df, scoring_config)
             _display_scan_results(df, universe, broker_choice, scoring_config, timestamp=state.get("timestamp"))
         else:
              st.warning("No actionable setups found.")
